@@ -20,6 +20,15 @@ Iterations 1 and 2 have already been completed.
 ### Iteration 1
 The original prototype detected a Kubernetes `OOMKilled` incident using a Python-based investigator.
 
+It also included:
+- a Prometheus-based T1–T8 timeline;
+- quantified impact;
+- an LLM-written narrative with recommendations;
+- Slack posting.
+
+Code is archived in `archive/iteration1/`. Iteration 2 intentionally dropped the LLM narrative,
+recommendations, quantified impact and the metric-derived timeline; they have not been restored.
+
 ### Iteration 2
 The system was generalized into an evidence-driven investigation pipeline capable of diagnosing four failure scenarios without being told which scenario was intentionally injected:
 
@@ -40,7 +49,24 @@ The current investigator can collect and reason over:
 
 It produces structured reports containing incident ID, affected component, failure category, dependencies, symptoms, evidence, diagnosis, likely root cause, confidence, rejected alternatives, timeline, and investigation trace.
 
-A fake Kubernetes environment exists for offline testing. 7/7 offline tests pass, and all four scenarios have been tested live.
+A fake Kubernetes environment exists for offline testing. At the end of Iteration 2, 7/7 offline tests
+passed and all four scenarios were tested live. Those tests remain the regression baseline within the
+current suite.
+
+### Repository layout (actual)
+
+| Path | Contents |
+|---|---|
+| `app/` | Demo system: `frontend.py`, `backend.py` (PostgreSQL + invoice job), `loadgen.py`/`loadgenctl.py`, Dockerfile |
+| `k8s/` | Manifests: namespaces, PostgreSQL, shop (frontend/backend), load generator, Prometheus |
+| `scripts/` | `setup.ps1`, `inject/*.ps1` (one per failure scenario), `restore.ps1` (manual recovery) |
+| `investigator/` | The investigator (see `README.md` for the layer table) |
+| `investigator/capabilities/` | Capability interface + Kubernetes / Prometheus adapters |
+| `tests/` | Offline tests against `tests/fake_cluster.py` (a fake Kubernetes API) |
+| `archive/iteration1/` | Iteration 1 investigator, kept for reference |
+| `docs/` | Vision, roadmap, architecture, incidents |
+
+`reports/` and `state/` are generated at runtime and are not in git. There is no `src/` directory.
 
 ### Iteration 3 — in progress (branch `iteration-3/capability-based-investigation`)
 

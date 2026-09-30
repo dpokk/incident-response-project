@@ -52,7 +52,7 @@ def check_dependency(caps: Capabilities, store: EvidenceStore, consumer: str, re
         summary.update(exists=True, ready=h.ready_endpoints, backing=[b.component for b in h.backing])
         store.add(f"{src}.services", subject, "service_lookup",
                   f"{h.kind} {h.scope}/{h.name} exists ({h.address_kind} {h.address}, ports {h.ports})",
-                  host=ref.host, found=True, service=h.name, namespace=h.scope, ports=h.ports)
+                  host=ref.host, found=True, service=h.name, namespace=h.scope, ports=h.ports, address=h.address)
         if ref.port and ref.port not in h.ports:
             store.add(f"{src}.services", subject, "service_port_mismatch",
                       f"{h.kind} {h.scope}/{h.name} does not expose port {ref.port} (exposes {h.ports})",

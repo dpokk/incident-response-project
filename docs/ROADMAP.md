@@ -5,7 +5,12 @@
 ### Iteration 1 — COMPLETED
 **Goal:** Detect a Kubernetes OOMKilled incident.
 
-The original prototype used a Python-based investigator to identify an `OOMKilled` failure.
+The original prototype did more than OOM detection (code archived in `archive/iteration1/`):
+- a Python investigator that detected a traffic-spike → OOMKilled incident;
+- a Prometheus-based T1–T8 timeline (traffic onset → CPU/memory saturation → OOMKill → 5xx → recovery);
+- quantified impact (failed requests, duration);
+- an LLM-written narrative (Claude; later NVIDIA-hosted models) with recommendations;
+- Slack posting.
 
 ### Iteration 2 — COMPLETED
 **Goal:** Generalize the investigator into an evidence-driven multi-scenario investigation system.
@@ -36,8 +41,15 @@ Implemented:
 - Timeline reconstruction.
 - Investigation trace.
 - Fake Kubernetes environment for offline testing.
-- 7/7 offline tests pass.
+- 7/7 offline tests passed at the end of Iteration 2. These remain the regression baseline inside the
+  larger suite.
 - All four failure scenarios tested live.
+
+Iteration 1 capabilities intentionally not carried into Iteration 2 (not yet restored):
+- the LLM narrative and its recommendations;
+- quantified impact / blast radius (failed requests, impact duration);
+- Prometheus-based T1–T8 timeline reconstruction. Iteration 2's timeline lists timestamped facts; it
+  does not derive threshold crossings.
 
 ### Deliberately NOT Implemented in Iteration 2
 - Automated remediation
@@ -120,7 +132,7 @@ Success criteria as currently evidenced:
 |---|---|
 | 1. Evidence via capabilities | `tests/test_architecture.py`, which also covers detection and the neutral vocabulary |
 | 2. Four scenarios still work | Fake-cluster tests, plus a live run on 2026-09-30 through the planner (below) |
-| 3. Tests green | 25/25 |
+| 3. Tests green | 34/34 (after the stabilization pass) |
 | 4. Evidence traceable | Every capability call is traced with its provider |
 | 5. Relevance decided | Planner decisions with reasons; `tests/test_planner.py` |
 | 6. Diagnosis evidence-driven | Unchanged diagnosis engine; planned and exhaustive strategies agree |
@@ -151,6 +163,32 @@ Iteration 3 should demonstrate that:
 4. Evidence remains traceable.
 5. The system can decide which evidence/capabilities are relevant to an incident.
 6. The final diagnosis remains evidence-driven.
+
+## Stabilization pass — DONE (branch `stabilization/post-iteration-2`, merged into Iteration 3)
+
+Corrections found when the project context documents were reconciled with the code:
+
+| Item | Resolution |
+|---|---|
+| Iteration numbering drift | Docs, README and `.env.example` follow this roadmap: Iteration 3 is capabilities, Iteration 4 is observability + Slack. |
+| Iteration 1 under-described | Iteration 1 section above corrected. |
+| Traffic-spike scenario | Marked **partially implemented** in `docs/INCIDENTS.md` (Incident 5). |
+| Scenario C representation | Reports now give a **root-cause component** (postgres) separately from the **affected component** (backend) and the **impacted components** (frontend). |
+| Timestamp precision | Events that began before the window keep their real first timestamp and are marked `before_window`; they are never re-dated to the window start (`tests/test_timeline.py`). |
+| Similar-symptom tests | `tests/test_similar_symptoms.py`, 4 cases. These found and fixed a real gap: errors naming a dependency by IP address were not linked to it. |
+| Repository structure | Documented in `docs/ARCHITECTURE.md` §18 and `CLAUDE.md`. |
+| Report contract: quantified impact and recommendations | **Open decision** (below). |
+
+### Open decision: impact and recommendations in the report contract
+
+Reports currently list impacted components but no **quantified impact** (failed requests, error rate,
+impact duration) and no **recommendations**.
+
+Recommendation, pending confirmation:
+- **Quantified impact → Iteration 4.** It depends on the richer observability that iteration brings,
+  such as retained metrics and logs.
+- **Recommendations → Iteration 5 (remediation planning).** Putting them into diagnosis reports now
+  would blur the diagnosis/remediation boundary in `docs/ARCHITECTURE.md` §9.
 
 ## Iteration 4 — Richer Observability + Slack Workflow
 
