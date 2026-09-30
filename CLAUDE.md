@@ -1,0 +1,139 @@
+# CLAUDE.md — Project Instructions and Persistent Context
+
+## Purpose
+
+This repository contains a research/prototype project that is evolving toward a provider-agnostic production incident investigation and remediation platform.
+
+Claude Code MUST read and use these files as persistent project context:
+
+- `docs/PROJECT_VISION.md` — long-term product vision and target user workflow.
+- `docs/ROADMAP.md` — current project status, completed iterations, next milestones, and sequencing.
+- `docs/ARCHITECTURE.md` — architectural principles and decisions that should guide implementation.
+- `docs/INCIDENTS.md` — simulated incidents, evidence expectations, and test scenarios.
+
+These documents are the source of truth for project direction. Before making substantial architectural or implementation changes, consult the relevant documents.
+
+## Current Project State
+
+Iterations 1 and 2 have already been completed.
+
+### Iteration 1
+The original prototype detected a Kubernetes `OOMKilled` incident using a Python-based investigator.
+
+### Iteration 2
+The system was generalized into an evidence-driven investigation pipeline capable of diagnosing four failure scenarios without being told which scenario was intentionally injected:
+
+1. OOMKilled / memory exhaustion
+2. Database configuration/connectivity failure
+3. PostgreSQL unavailable
+4. Application crash
+
+The current investigator can collect and reason over:
+- Pod/container state
+- Kubernetes events
+- Current and previous logs
+- Services and endpoints
+- Configuration
+- Dependencies
+- Deployment/ConfigMap changes
+- Optional metrics
+
+It produces structured reports containing incident ID, affected component, failure category, dependencies, symptoms, evidence, diagnosis, likely root cause, confidence, rejected alternatives, timeline, and investigation trace.
+
+A fake Kubernetes environment exists for offline testing. 7/7 offline tests pass, and all four scenarios have been tested live.
+
+### Important Current Boundary
+
+Iteration 2 deliberately stops at diagnosis.
+
+There is currently:
+- No automated remediation
+- No autonomous production actions
+- No LLM/AI investigator
+- No provider-agnostic multi-cloud implementation yet
+- No SaaS/multi-tenant control plane yet
+- No customer connector yet
+
+Do not assume these capabilities already exist.
+
+## Immediate Direction
+
+The next major step is NOT to add many more Kubernetes failure scenarios.
+
+The next step is to evolve the existing deterministic investigator into a more general, capability-based investigation system.
+
+The intended progression is:
+
+Current deterministic investigator
+→ capability abstraction
+→ adaptive/AI-assisted investigation
+→ richer observability and Slack workflow
+→ remediation planning
+→ human-approved remediation
+→ verification
+→ second provider
+→ SaaS control plane + customer connector
+→ external pilot
+
+## Engineering Principles
+
+1. Preserve working functionality. Do not rewrite the existing investigator without a concrete reason.
+2. Prefer incremental refactoring over a large rewrite.
+3. Separate provider-specific mechanisms from provider-independent investigation logic.
+4. Represent infrastructure operations as explicit capabilities/interfaces rather than embedding provider-specific commands throughout the reasoning layer.
+5. Evidence must remain traceable. Diagnoses should be linked to facts/evidence whenever practical.
+6. Distinguish symptoms, evidence, diagnosis, root cause, impacted components, and alternatives.
+7. Do not make the LLM the sole source of truth for factual infrastructure state.
+8. Do not introduce autonomous remediation before the investigation and remediation-plan workflows are reliable.
+9. Production-changing actions must eventually cross an explicit authorization boundary.
+10. Any remediation system must verify the resulting system state rather than assuming command success means incident resolution.
+11. Keep the prototype simple enough to demonstrate locally, but avoid design choices that make future provider abstraction impossible.
+12. Do not claim provider agnosticism until at least two meaningfully different provider/infrastructure implementations have exercised the same investigation abstractions.
+
+## How Claude Should Work
+
+Before substantial work:
+- Read `CLAUDE.md`.
+- Read the relevant docs under `docs/`.
+- Inspect the existing implementation before proposing replacement architecture.
+- Identify what is already implemented versus what is only planned.
+- Preserve the existing iteration-2 capabilities unless the task explicitly changes them.
+
+When implementing:
+- Explain important architectural changes.
+- Add or update tests for investigation behavior.
+- Keep simulated incidents reproducible.
+- Prefer deterministic evidence collection and validation around model-assisted reasoning.
+- Keep provider-specific code behind explicit adapters/capabilities where practical.
+
+When discussing future functionality:
+- Clearly label it as planned/not implemented.
+- Never describe roadmap items as existing capabilities.
+
+## Current Demonstration Goal
+
+The near-term demonstration is a local Kubernetes incident investigation flow:
+
+incident occurs
+→ incident detected
+→ context created
+→ relevant evidence collected
+→ evidence correlated
+→ timeline reconstructed
+→ likely root cause identified
+→ impact/blast radius determined
+→ structured report generated
+→ report posted to Slack
+
+The initial remediation workflow is a later milestone and should not be silently introduced into the current diagnosis implementation.
+
+## Source of Truth Rule
+
+If there is a conflict:
+1. Actual working code/tests determine what is implemented.
+2. `docs/ROADMAP.md` determines intended project sequencing.
+3. `docs/PROJECT_VISION.md` determines long-term goals.
+4. `docs/ARCHITECTURE.md` determines architectural principles/decisions.
+5. `docs/INCIDENTS.md` determines the canonical simulated incident scenarios.
+
+If implementation and documentation disagree, do not silently assume the docs are correct. Call out the discrepancy and update the appropriate documentation when the intended direction is confirmed.
