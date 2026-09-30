@@ -1,0 +1,63 @@
+﻿# PostgreSQL dependency for the backend (Iteration 2). Local development only: data lives in an
+# emptyDir and the password below is a generated dev value, not a secret worth protecting.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-credentials
+  namespace: shop
+type: Opaque
+stringData:
+  POSTGRES_USER: shop
+  POSTGRES_DB: shop
+  POSTGRES_PASSWORD: "FUxVxWiTCKajOM9Vt678uumr"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: shop
+  labels: {app: postgres, tier: database}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: postgres}
+  template:
+    metadata:
+      labels: {app: postgres, tier: database}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - {name: postgres, containerPort: 5432}
+          envFrom:
+            - secretRef: {name: postgres-credentials}
+          env:
+            - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 512Mi}
+          readinessProbe:
+            exec: {command: ["pg_isready", "-U", "shop", "-d", "shop"]}
+            periodSeconds: 5
+          livenessProbe:
+            exec: {command: ["pg_isready", "-U", "shop", "-d", "shop"]}
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/postgresql/data}
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: shop
+  labels: {app: postgres}
+spec:
+  selector: {app: postgres}
+  ports:
+    - {name: postgres, port: 5432, targetPort: postgres}

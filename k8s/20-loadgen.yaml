@@ -1,0 +1,28 @@
+﻿# Simulated users. Lives outside the "shop" namespace so the investigator treats it as external traffic.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  namespace: loadtest
+  labels: {app: loadgen}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: loadgen}
+  template:
+    metadata:
+      labels: {app: loadgen}
+    spec:
+      containers:
+        - name: loadgen
+          image: incident-demo/app:0.2
+          imagePullPolicy: Never
+          command: ["python", "loadgen.py"]
+          env:
+            - {name: SERVICE_NAME, value: loadgen}
+            - {name: TARGET_URL, value: "http://frontend.shop.svc.cluster.local:8080/api/orders"}
+            - {name: BASE_RPS, value: "100"}
+            - {name: REQUEST_TIMEOUT_S, value: "5"}
+          resources:
+            requests: {cpu: 200m, memory: 128Mi}
+            limits: {memory: 768Mi}

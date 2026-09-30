@@ -1,0 +1,6 @@
+# Investigation service (runs on the host, talks to the cluster via kubeconfig)
+kubernetes>=29
+requests>=2.31
+python-dotenv>=1.0
+# Tests
+pytest>=7

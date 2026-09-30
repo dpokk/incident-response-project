@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop
+  labels:
+    environment: production-sim
+    team: commerce
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: loadtest
+  labels:
+    purpose: simulated-users
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
