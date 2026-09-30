@@ -156,11 +156,20 @@ def record_events(store: EvidenceStore, caps: Capabilities, tr: TimeRange) -> No
         g["objects"].add(e.object_name)
     start = tr.start
     for g in sorted(groups.values(), key=lambda g: g["first"] or 0):
+        # Providers aggregate repeats into one record with first/last timestamps. If the first occurrence is
+        # before the window (or unknown), say so: never move its start to the window edge - that would invent
+        # a start time nobody observed.
+        before = g["first"] is None or g["first"] < start
+        when = (f"first seen {hms(g['first']) if g['first'] else 'at an unknown time'}, before the investigation "
+                f"window; last seen {hms(g['last'])}; count includes earlier occurrences") if before \
+            else f"{hms(g['first'])}-{hms(g['last'])}"
         store.add(f"{src}.events", f"component/{g['component']}", "event",
                   f"{g['type']} event {g['reason']} on {g['kind']} {', '.join(sorted(g['objects']))[:120]} "
-                  f"(x{g['count']}, {hms(max(g['first'] or start, start))}-{hms(g['last'])}): {g['message'][:200]}",
-                  t=max(g["first"] or start, start), reason=g["reason"], category=g["category"], type=g["type"],
-                  count=g["count"], object_kind=g["kind"], message=g["message"], last=g["last"])
+                  f"(x{g['count']}, {when}): {g['message'][:200]}",
+                  t=g["last"] if before else g["first"], t_basis="before_window" if before else "exact",
+                  reason=g["reason"], category=g["category"], type=g["type"], count=g["count"], object_kind=g["kind"],
+                  message=g["message"], first_seen=g["first"], observed_at=g["last"] if before else g["first"],
+                  last=g["last"])
     for e in caps.get_events(tr, infrastructure=True) or []:
         if e.type == "Warning":
             store.add(f"{src}.events", f"{e.object_kind.lower()}/{e.object_name}", "infrastructure_event",
