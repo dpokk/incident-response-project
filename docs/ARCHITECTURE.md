@@ -186,6 +186,14 @@ The system should not fabricate exact timestamps.
 
 If timestamps are uncertain, represent uncertainty rather than inventing precision.
 
+**As implemented:**
+- **Time basis on every fact.** Each fact carries `t_basis`, which is `exact` or `before_window`.
+- **Pre-window events.** An aggregated event whose first occurrence predates the investigation window
+  keeps the source's own `first_seen` and is placed at `observed_at`, its last observation. Reports list
+  it as "before window" and never re-date it to the window start.
+- **Metric threshold crossings** (CPU/memory saturation, error-rate recovery) are not yet timeline
+  entries. See `docs/INCIDENTS.md`, Incident 5.
+
 ## 8. AI/LLM Boundary
 
 The eventual system may use an LLM for:
@@ -422,3 +430,28 @@ Do not add yet:
 - Complex UI unless needed for demonstration
 
 These belong to later milestones in `ROADMAP.md`.
+
+## 18. Actual Implementation Map (as of Iteration 3)
+
+The architecture above as it exists in the repository (there is no `src/`; the investigator is the
+`investigator/` package):
+
+```text
+Detection            investigator/detector.py            symptoms only, via capabilities
+Incident context     investigator/context.py             signals + window + suspect components
+Planner              investigator/planner.py             decides what to examine next; decisions traced
+Capability layer     investigator/capabilities/          interface (base.py), traced facade (__init__.py)
+  adapters           capabilities/kubernetes.py          Kubernetes (the only resource provider so far)
+                     capabilities/prometheus.py          metrics (optional)
+Composition root     investigator/providers.py           the one place that chooses adapters
+Evidence             collect.py, dependencies.py, metrics.py, logparse.py -> evidence.py (facts)
+Diagnosis            investigator/diagnosis.py            neutral causes/categories -> findings -> root cause
+Report               investigator/report.py, slack.py    text / markdown / json / Slack
+```
+
+`tests/test_architecture.py` enforces two boundaries:
+- **§2 boundary.** It fails if a provider-independent module imports provider code.
+- **Vocabulary.** It fails if reasoning code uses Kubernetes vocabulary.
+
+Kubernetes is the only resource provider. Provider agnosticism is not claimed until a second provider
+exercises the same interface (Iteration 8).
