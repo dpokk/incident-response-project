@@ -42,6 +42,9 @@ class Settings:
 
     # Active dependency probes: a fixed, read-only DNS + TCP check run inside a consumer pod
     active_probes: bool = field(default_factory=lambda: _bool("ALLOW_ACTIVE_PROBES", True))
+    # "planned": the investigation planner follows the evidence (default, Iteration 3)
+    # "exhaustive": the fixed Iteration 2 procedure over every component (kept for comparison)
+    investigation_strategy: str = field(default_factory=lambda: _env("INVESTIGATION_STRATEGY", "planned").lower())
 
     # Detection
     poll_interval_s: float = field(default_factory=lambda: _float("POLL_INTERVAL_S", 5))

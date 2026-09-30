@@ -15,7 +15,9 @@ from .capabilities import Capabilities
 from .capabilities.kubernetes import KubernetesAdapter
 from .capabilities.prometheus import PrometheusMetrics
 from .collect import collect
+from .context import IncidentContext
 from .detector import Detector, format_sample
+from .planner import plan_and_collect
 from .diagnosis import diagnose
 from .evidence import EvidenceStore
 from .kube import PodJournal
@@ -47,10 +49,15 @@ def investigate(settings, kube, prom, incident: dict, start: float, end: float,
     log(f"Investigating {incident['id']} (window {rpt.hms(start)}-{rpt.hms(end)}); the investigator is not told what failed")
     store = EvidenceStore()
     caps = build_capabilities(settings, kube, prom, store)
-    log(f"Stage 1/3: evidence collection (providers: {caps.resources.name}"
+    entry = (settings.entry_service, settings.entry_port, settings.entry_path)
+    log(f"Stage 1/3: evidence collection, strategy '{settings.investigation_strategy}' (providers: {caps.resources.name}"
         + (f", {caps.metrics.name}" if caps.metrics else "") + ")")
-    collect(caps, incident, start, end, entry=(settings.entry_service, settings.entry_port, settings.entry_path),
-            metrics_target=settings.entry_app, log=log)
+    if settings.investigation_strategy == "exhaustive":
+        collect(caps, incident, start, end, entry=entry, metrics_target=settings.entry_app, log=log)
+    else:
+        ctx = IncidentContext.from_incident(incident, start, end, entry=entry, metrics_target=settings.entry_app)
+        log(f"  incident context: suspects {ctx.suspects or 'none'} from {len(ctx.signals)} signal(s)")
+        plan_and_collect(caps, ctx, log=log)
     log(f"  {len(store.facts)} facts collected with {sum(1 for s in store.trace if s['step'] == 'capability')} "
         f"capability calls")
     return diagnose_and_report(settings, incident, store, (start, end), post_to_slack, ongoing)

@@ -164,7 +164,10 @@ def record_events(store: EvidenceStore, caps: Capabilities, tr: TimeRange) -> No
                       f"{e.object_kind} {e.object_name}: {e.reason}: {e.message[:200]}", t=e.first, reason=e.reason)
 
 
-def record_logs(store: EvidenceStore, caps: Capabilities, rs: ResourceState, tr: TimeRange) -> None:
+def record_logs(store: EvidenceStore, caps: Capabilities, rs: ResourceState, tr: TimeRange,
+                include_previous: bool | None = None) -> None:
+    """Logs of every instance/process. include_previous: None = for processes that restarted (default),
+    True/False = the caller (the planner) has decided."""
     start, end = tr.start, tr.end
     subj = f"workload/{rs.component}"
     sigs: dict[tuple, dict] = {}
@@ -173,7 +176,7 @@ def record_logs(store: EvidenceStore, caps: Capabilities, rs: ResourceState, tr:
     for inst in rs.instances:
         for p in inst.processes:
             generations = [("current", caps.get_logs(rs.component, inst.name, p.name, tr) or [])]
-            if p.restarts > 0:
+            if p.restarts > 0 and include_previous is not False:
                 generations.append(("previous", caps.get_logs(rs.component, inst.name, p.name, tr, previous=True) or []))
             for generation, lines in generations:
                 recs = [r for r in logparse.parse_records(lines) if r["_t"] is None or start - 5 <= r["_t"] <= end + 5]

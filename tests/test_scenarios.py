@@ -18,15 +18,26 @@ from investigator.evidence import EvidenceStore  # noqa: E402
 from investigator.report import build, render_text  # noqa: E402
 from investigator.capabilities import Capabilities  # noqa: E402
 from investigator.capabilities.kubernetes import KubernetesAdapter  # noqa: E402
+from investigator.context import IncidentContext  # noqa: E402
+from investigator.planner import plan_and_collect  # noqa: E402
 
 
-def run(world: dict) -> tuple[dict, EvidenceStore]:
+USER_SYMPTOM = [{"kind": "entry_probe_failure", "subject": "workload/frontend", "t": None,
+                 "text": "Synthetic requests to frontend failing"}]
+
+
+def run(world: dict, strategy: str = "planned", signals: list | None = None) -> tuple[dict, EvidenceStore]:
+    """Investigate a fake cluster the same way the pipeline does. Only symptoms are passed in, never the scenario."""
     store = EvidenceStore()
     caps = Capabilities(KubernetesAdapter(FakeKube(world), "shop", journal_path=None, active_probes=True), store)
-    incident = {"id": "INC-TEST", "detected_at": NOW - 30, "namespace": "shop",
-                "signals": [{"kind": "entry_probe_failure", "subject": "workload/frontend", "t": NOW - 30,
-                             "text": "Synthetic requests to frontend failing"}]}
-    collect(caps, incident, NOW - 330, NOW, entry=("frontend", "8080", "/api/orders"), log=lambda *_: None)
+    sigs = [{**s, "t": s["t"] or NOW - 30} for s in (USER_SYMPTOM if signals is None else signals)]
+    incident = {"id": "INC-TEST", "detected_at": NOW - 30, "namespace": "shop", "signals": sigs}
+    entry = ("frontend", "8080", "/api/orders")
+    if strategy == "exhaustive":
+        collect(caps, incident, NOW - 330, NOW, entry=entry, log=lambda *_: None)
+    else:
+        ctx = IncidentContext.from_incident(incident, NOW - 330, NOW, entry=entry, metrics_target="frontend")
+        plan_and_collect(caps, ctx, log=lambda *_: None)
     dx = diagnose(store)
     render_text(build(incident, store, dx, (NOW - 330, NOW), True))  # must render without errors
     return dx, store
