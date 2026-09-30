@@ -42,6 +42,22 @@ It produces structured reports containing incident ID, affected component, failu
 
 A fake Kubernetes environment exists for offline testing. 7/7 offline tests pass, and all four scenarios have been tested live.
 
+### Iteration 3 — in progress (branch `iteration-3/capability-based-investigation`)
+
+Done on that branch, not yet merged to `main`:
+- **Capability layer** (`investigator/capabilities/`):
+  - `ResourceProvider` / `MetricsProvider` interfaces with neutral records;
+  - `KubernetesAdapter` and `PrometheusMetrics` as the adapters;
+  - a traced, cached `Capabilities` facade.
+- **Incident context and planner** (`context.py`, `planner.py`): deterministic, evidence-driven, and
+  every decision recorded with its reason.
+
+Still Kubernetes-specific:
+- `detector.py`;
+- fact-kind names.
+
+Kubernetes is the only resource provider, so provider agnosticism is not claimed.
+
 ### Important Current Boundary
 
 Iteration 2 deliberately stops at diagnosis.

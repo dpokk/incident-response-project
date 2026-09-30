@@ -103,6 +103,43 @@ Kubernetes should implement these capabilities through an adapter.
 
 Do not immediately rewrite the working investigator. Refactor incrementally.
 
+### Status — IN PROGRESS (branch `iteration-3/capability-based-investigation`, not yet merged to `main`)
+
+| Step | State | What exists |
+|---|---|---|
+| 1. Capability interface + Kubernetes adapter | Done | `investigator/capabilities/` (`base.py` interface and records, `kubernetes.py`, `prometheus.py`). Investigation modules no longer import provider code. Facts were verified byte-identical to Iteration 2 on all fake clusters. |
+| 2. Incident context + investigation planner | Done | `investigator/context.py`, `investigator/planner.py`: deterministic and evidence-driven, every decision traced with its reason. The Iteration 2 procedure is kept as `INVESTIGATION_STRATEGY=exhaustive`. |
+| 3. Detection on capabilities | Not started | `detector.py` still reads Kubernetes directly. |
+| 4. Provider-neutral fact vocabulary | Not started | Fact kinds still carry Kubernetes wording (e.g. `container_terminated`, `k8s_event`). |
+
+Success criteria as currently evidenced:
+
+| Criterion | Evidence |
+|---|---|
+| 1. Evidence via capabilities | `tests/test_architecture.py` |
+| 2. Four scenarios still work | Fake-cluster tests, plus a live run on 2026-09-30 through the planner (below) |
+| 3. Tests green | 17/17 |
+| 4. Evidence traceable | Every capability call is traced with its provider |
+| 5. Relevance decided | Planner decisions with reasons; `tests/test_planner.py` |
+| 6. Diagnosis evidence-driven | Unchanged diagnosis engine; planned and exhaustive strategies agree |
+
+Live run on 2026-09-30: all four scenarios were diagnosed correctly through the planner, with the same
+categories as in Iteration 2.
+
+| Scenario | Diagnosis | Confidence |
+|---|---|---|
+| Database misconfiguration | Dependency misconfiguration | 97% |
+| PostgreSQL down | Dependency unavailable | 97% |
+| Application crash | Application crash | 90% |
+| OOM | Memory exhaustion | 70% (85% in the Iteration 2 run) |
+
+The OOM confidence difference is evidence availability, not the planner:
+- The planner did read the previous-instance logs.
+- The crash-looping instance lived about 2 s, so it never logged its memory warning.
+- Kubernetes keeps only one previous instance's logs.
+
+Retaining logs across restarts is an Iteration 4 (observability) concern.
+
 ### Success Criteria
 
 Iteration 3 should demonstrate that:
