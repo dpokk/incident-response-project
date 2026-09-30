@@ -218,9 +218,11 @@ def check_dependencies(v: View, store: EvidenceStore) -> list[Finding]:
         subj = f"dependency/{host}:{port}"
         dep = {"host": host, "port": port, "type": ref.data["dep_type"], "variable": ref.data["variable"],
                "source": ref.data["config_source"], "endpoint": f"{host}:{port}"}
-        dep_logs = [s for s in v.sigs if s.data["signature"] in DEPENDENCY_SIGNATURES and _matches(s, host, port)]
-        dep_exc = [e for e in v.exceptions if e.data.get("dependency_signature") and host in e.data["message"]]
         lookup = next(iter(store.find(kind="service_lookup", subject=subj)), None)
+        address = lookup.data.get("address") if lookup else None
+        dep_logs = [s for s in v.sigs if s.data["signature"] in DEPENDENCY_SIGNATURES and _matches(s, host, port, address)]
+        dep_exc = [e for e in v.exceptions if e.data.get("dependency_signature")
+                   and _mentions(e.data["message"], host, port, address)]
         eps = next(iter(store.find(kind="service_endpoints", subject=subj)), None)
         backing = store.find(kind="backing_component", subject=subj)
         probe = next((p for p in store.find(kind="connectivity_probe", subject=subj) if not p.data.get("alternative_for")), None)
@@ -325,11 +327,18 @@ def check_dependencies(v: View, store: EvidenceStore) -> list[Finding]:
     return out
 
 
-def _matches(sig: Fact, host: str, port) -> bool:
+def _matches(sig: Fact, host: str, port, address: str | None = None) -> bool:
+    """Does a log signature refer to this dependency (by name, by its service address, or by port)?"""
     th = sig.data.get("target_host")
     if th:
-        return th == host or th.split(".")[0] == host.split(".")[0]
+        return th == host or th.split(".")[0] == host.split(".")[0] or (address is not None and th == address)
     return sig.data.get("target_port") is not None and str(sig.data["target_port"]) == str(port)
+
+
+def _mentions(message: str, host: str, port, address: str | None = None) -> bool:
+    """Does an error message refer to this dependency? Clients often report the resolved address, not the name."""
+    return (host in message or (address is not None and address in message)
+            or (port is not None and (f"port {port}" in message or f":{port}" in message)))
 
 
 def check_platform(v: View, store: EvidenceStore) -> list[Finding]:

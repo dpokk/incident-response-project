@@ -159,6 +159,83 @@ def world_crash() -> dict:
     return w
 
 
+# --------------------------------------------------------------------------- similar-symptom worlds
+# Each looks like one failure at first glance but the evidence says another (docs/INCIDENTS.md "Testing Rules").
+
+def world_crash_caused_by_db_down() -> dict:
+    """Backend crash-loops (like an app crash) - but it dies because PostgreSQL is gone."""
+    w = world_db_down()
+    last = {"state": "terminated", "reason": "Error", "exit_code": 1, "signal": None, "message": None,
+            "started_at": NOW - 40, "finished_at": NOW - 38}
+    waiting = {"state": "waiting", "reason": "CrashLoopBackOff", "message": "back-off 40s restarting failed container=backend"}
+    w["pods"][1] = _pod("backend-11111", "backend", ready=False, restarts=5, state=waiting, last=last)
+    w["pods"][2] = _pod("backend-22222", "backend", ready=False, restarts=5, state=waiting, last={**last, "finished_at": NOW - 33})
+    w["endpoints"]["backend"] = 0
+    w["events"].append({"type": "Warning", "reason": "BackOff", "message": "Back-off restarting failed container backend",
+                        "object_kind": "Pod", "object_name": "backend-11111", "count": 7, "first": NOW - 180, "last": NOW - 20})
+    tb = ["Traceback (most recent call last):",
+          '  File "/app/backend.py", line 360, in <module>',
+          "    main()",
+          '  File "/usr/local/lib/python3.12/site-packages/psycopg/connection.py", line 119, in connect',
+          "    raise last_ex.with_traceback(None)",
+          'psycopg.OperationalError: connection failed: connection to server at "10.96.0.12", port 5432 failed: Connection refused']
+    for pod in ("backend-11111", "backend-22222"):
+        w["logs"][(pod, False)] = []
+        w["logs"][(pod, True)] = [(NOW - 40, _j(level="info", msg="backend starting"))] + [(NOW - 39, line) for line in tb]
+    w["logs"][("frontend-aaaaa", False)] = [(NOW - 100, _j(level="error", msg="upstream request to backend failed",
+                                                           upstream="http://backend.shop.svc.cluster.local:8080",
+                                                           reason="upstream_connect_error", count=300,
+                                                           sample_error="Cannot connect to host backend.shop.svc.cluster.local:8080 Connection refused"))]
+    w["probes"]["backend.shop.svc.cluster.local"] = {"dns": "ok", "addresses": ["10.96.0.11"], "tcp": "refused"}
+    w["entry"] = (503, '{"error": "backend unavailable"}')
+    return w
+
+
+def world_liveness_kill() -> dict:
+    """Exit code 137 like an OOM kill - but the kubelet killed it for failing its liveness probe."""
+    w = base_world()
+    last = {"state": "terminated", "reason": "Error", "exit_code": 137, "signal": None, "message": None,
+            "started_at": NOW - 90, "finished_at": NOW - 45}
+    w["pods"][1] = _pod("backend-11111", "backend", ready=False, restarts=3, last=last)
+    w["pods"][2] = _pod("backend-22222", "backend", ready=False, restarts=3, last={**last, "finished_at": NOW - 40})
+    w["endpoints"]["backend"] = 0
+    w["events"] = [
+        {"type": "Warning", "reason": "Unhealthy", "message": "Liveness probe failed: Get \"http://10.0.0.1:8080/healthz\": "
+         "context deadline exceeded", "object_kind": "Pod", "object_name": "backend-11111", "count": 9,
+         "first": NOW - 150, "last": NOW - 50},
+        {"type": "Normal", "reason": "Killing", "message": "Container backend failed liveness probe, will be restarted",
+         "object_kind": "Pod", "object_name": "backend-11111", "count": 3, "first": NOW - 140, "last": NOW - 46}]
+    w["logs"][("frontend-aaaaa", False)] = [(NOW - 60, _j(level="error", msg="upstream request to backend failed",
+                                                          upstream="http://backend.shop.svc.cluster.local:8080",
+                                                          reason="upstream_timeout", count=200,
+                                                          sample_error="no response from backend within 3.0s"))]
+    w["entry"] = (504, '{"error": "upstream timeout"}')
+    return w
+
+
+def world_db_down_after_config_edit() -> dict:
+    """PostgreSQL is down shortly after the backend ConfigMap was edited (an unrelated setting changed)."""
+    w = world_db_down()
+    w["configmaps"][0]["data"]["CPU_WORK_MS"] = "2"
+    w["configmaps"][0]["last_modified"] = NOW - 240
+    w["replicasets"].append({"name": "backend-rs2", "deployment": "backend", "created": NOW - 235, "revision": "2",
+                             "replicas": 2, "ready": 2})
+    return w
+
+
+def world_healthy_after_rollout() -> dict:
+    """A normal rollout: new pods briefly fail readiness while starting, then everything is healthy."""
+    w = base_world()
+    w["replicasets"].append({"name": "backend-rs2", "deployment": "backend", "created": NOW - 120, "revision": "2",
+                             "replicas": 2, "ready": 2})
+    w["events"] = [{"type": "Warning", "reason": "Unhealthy",
+                    "message": "Readiness probe failed: Get \"http://10.0.0.1:8080/readyz\": connect: connection refused",
+                    "object_kind": "Pod", "object_name": "backend-11111", "count": 2, "first": NOW - 115, "last": NOW - 112},
+                   {"type": "Normal", "reason": "ScalingReplicaSet", "message": "Scaled up replica set backend-rs2 to 2",
+                    "object_kind": "Deployment", "object_name": "backend", "count": 1, "first": NOW - 120, "last": NOW - 120}]
+    return w
+
+
 class FakeKube:
     """Implements the subset of investigator.kube.Kube used by the toolset, from a world dict."""
 
