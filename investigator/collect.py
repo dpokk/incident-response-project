@@ -16,8 +16,6 @@ from .capabilities.base import ResourceState, Termination
 from .dependencies import check_dependency
 from .evidence import EvidenceStore
 
-BAD_WAITING = {"CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull", "CreateContainerConfigError",
-               "CreateContainerError", "InvalidImageName", "RunContainerError"}
 CHANGE_LOOKBACK_S = 1800  # how far before the window a change may still explain an incident
 
 
@@ -113,7 +111,7 @@ def record_resource_state(store: EvidenceStore, caps: Capabilities, rs: Resource
                           f"Container {p.name} in {inst.kind.lower()} {inst.name} is waiting: {p.waiting_reason}"
                           + (f" ({(p.waiting_message or '')[:160]})" if p.waiting_message else ""),
                           pod=inst.name, container=p.name, reason=p.waiting_reason, message=p.waiting_message,
-                          problematic=p.waiting_reason in BAD_WAITING)
+                          problematic=p.waiting_cause is not None)
             t = p.last_termination
             if t and (t.finished_at or 0) >= start - 60:
                 seen_terms.add((inst.name, p.name, round(t.finished_at or 0)))

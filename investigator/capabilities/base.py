@@ -41,8 +41,11 @@ class ProcessState:
     name: str
     state: str | None                  # running | waiting | terminated | None
     started_at: float | None = None
-    waiting_reason: str | None = None
+    waiting_reason: str | None = None      # provider's own word, e.g. "CrashLoopBackOff"
     waiting_message: str | None = None
+    # Neutral classification of an abnormal wait (None = a normal wait such as starting up):
+    #   restart_backoff | image_unavailable | invalid_configuration
+    waiting_cause: str | None = None
     restarts: int = 0
     last_termination: Termination | None = None
     memory_limit_bytes: float | None = None
@@ -210,6 +213,14 @@ class ResourceProvider(ABC):
     """Everything about the running system except metrics."""
 
     name: str = "provider"
+    scope: str = ""                    # what this provider covers, e.g. a namespace
+
+    # -- optional lifecycle hooks ---------------------------------------------------
+    def reset(self) -> None:
+        """Forget cached reads so the next calls see fresh state (used by pollers such as detection)."""
+
+    def start_background_recording(self) -> None:
+        """Begin recording state history the provider would otherwise forget (e.g. earlier crashes)."""
 
     @abstractmethod
     def list_components(self) -> list[str]: ...

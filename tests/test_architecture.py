@@ -9,7 +9,8 @@ from pathlib import Path
 
 PKG = Path(__file__).resolve().parent.parent / "investigator"
 ENGINE_MODULES = ["collect.py", "dependencies.py", "diagnosis.py", "metrics.py", "logparse.py", "evidence.py",
-                  "report.py", "planner.py", "context.py"]
+                  "report.py", "planner.py", "context.py", "detector.py", "pipeline.py", "__main__.py"]
+# providers.py is the composition root: the one place allowed to choose concrete adapters.
 FORBIDDEN = ("kubernetes", "kube", "prom", "capabilities.kubernetes", "capabilities.prometheus", "requests")
 
 

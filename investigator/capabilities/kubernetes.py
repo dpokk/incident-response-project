@@ -14,12 +14,38 @@ from .base import (BackingComponent, Change, ConfigEntry, ConnectivityResult, De
 from .references import PORT_TYPES, extract_references
 
 
+# Kubernetes waiting reasons -> neutral causes (capabilities/base.py ProcessState.waiting_cause)
+WAITING_CAUSES = {
+    "CrashLoopBackOff": "restart_backoff",
+    "ImagePullBackOff": "image_unavailable", "ErrImagePull": "image_unavailable", "InvalidImageName": "image_unavailable",
+    "CreateContainerConfigError": "invalid_configuration", "CreateContainerError": "invalid_configuration",
+    "RunContainerError": "invalid_configuration",
+}
+
+
 class KubernetesAdapter(ResourceProvider):
     name = "kubernetes"
 
-    def __init__(self, kube, namespace: str, journal_path: Path | None = None, active_probes: bool = True):
+    def __init__(self, kube, namespace: str, journal_path: Path | None = None, active_probes: bool = True,
+                 clock=None):
         self.kube, self.ns, self.journal_path, self.active_probes = kube, namespace, journal_path, active_probes
+        self.scope = namespace
+        self.clock = clock
         self._cache: dict = {}
+        self._journal = None
+
+    def reset(self) -> None:
+        self._cache.clear()
+
+    def start_background_recording(self) -> None:
+        """Kubernetes keeps only a container's latest termination; the pod journal records every one."""
+        if self.journal_path is None or self._journal is not None:
+            return
+        import time
+
+        from ..kube import PodJournal
+        self._journal = PodJournal(self.kube, self.ns, self.journal_path, clock=self.clock or time.time)
+        self._journal.start()
 
     # -- raw reads (cached per investigation) -----------------------------------------
     def _once(self, key, fn):
@@ -206,6 +232,7 @@ def _instance(p: dict) -> InstanceState:
         procs.append(ProcessState(
             name=c["name"], state=st.get("state"), started_at=st.get("started_at"),
             waiting_reason=st.get("reason") if st.get("state") == "waiting" else None,
+            waiting_cause=WAITING_CAUSES.get(st.get("reason")) if st.get("state") == "waiting" else None,
             waiting_message=st.get("message") if st.get("state") == "waiting" else None,
             restarts=c["restart_count"], last_termination=last,
             memory_limit_bytes=c["memory_limit_bytes"], cpu_limit_cores=c["cpu_limit_cores"]))
