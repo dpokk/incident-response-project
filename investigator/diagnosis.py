@@ -181,7 +181,11 @@ def check_crash(v: View, store: EvidenceStore, dep_health: dict) -> Finding:
         f.reject("the exception that ended the process is a dependency connection error, pointing at the dependency",
                  dep_exc[0])
     else:
-        f.reject("no exception/traceback was found in the logs of the terminated instances")
+        if all(t.data.get("instance_gone") for t in errored):
+            f.reject("the terminated instance no longer exists, so its logs (and any traceback) could not be read",
+                     errored[0])
+        else:
+            f.reject("no exception/traceback was found in the logs of the terminated instances")
     if backoff:
         f.add(0.15, backoff[:3], "restarts are being backed off (crash loop)")
         f.say("The platform keeps restarting the process and is now backing off between attempts: the failure recurs "
@@ -206,7 +210,9 @@ def check_crash(v: View, store: EvidenceStore, dep_health: dict) -> Finding:
                         + (f" in {site.get('func')}() at {site.get('file')}:{site.get('line')}" if site else "")
                         + f"; the process exits with code {code} and is restarted repeatedly")
     else:
-        f.root_cause = f"{v.name} process exits with code {code} on its own and is restarted repeatedly"
+        f.root_cause = f"{v.name} process exits with code {code} on its own" + (
+            "; why could not be determined because the crashed instance and its logs no longer exist"
+            if all(t.data.get("instance_gone") for t in errored) else " and is restarted repeatedly")
     f.score = min(f.score, 1.0)
     return f
 
@@ -422,14 +428,16 @@ def diagnose(store: EvidenceStore) -> dict:
         findings += check_dependencies(v, store)
         findings += check_platform(v, store)
 
-    # Follow the chain: a consumer's dependency symptoms are explained when the component it calls has its own,
-    # better-supported failure (a crash, OOM, or a broken dependency of its own further down).
+    # Follow the chain: a consumer's dependency symptoms are explained when the component it calls has a
+    # well-supported failure of its own (a crash, OOM, or a broken dependency further down). Deliberately NOT a
+    # comparison of scores: the more completely the callee fails, the more certain the caller's "dependency
+    # unavailable" becomes - that certainty is an effect of the callee's failure and must never outrank it.
     best: dict[str, Finding] = {}
     for f in sorted(findings, key=lambda f: -f.score):
         if f.score >= 0.4:
             best.setdefault(f.component, f)
     for f in findings:
-        root = next((best[b] for b in f.backing if b in best and best[b].score >= f.score * 0.8), None)
+        root = next((best[b] for b in f.backing if b in best and b != f.component), None)
         if f.category in ("dependency_unavailable", "dependency_misconfiguration") and root and f.score > 0:
             if f.component not in root.impacted:
                 root.impacted.append(f.component)
