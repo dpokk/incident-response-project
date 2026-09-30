@@ -44,19 +44,19 @@ A fake Kubernetes environment exists for offline testing. 7/7 offline tests pass
 
 ### Iteration 3 — in progress (branch `iteration-3/capability-based-investigation`)
 
-Done on that branch, not yet merged to `main`:
+Done on that branch (architecturally complete):
 - **Capability layer** (`investigator/capabilities/`):
   - `ResourceProvider` / `MetricsProvider` interfaces with neutral records;
   - `KubernetesAdapter` and `PrometheusMetrics` as the adapters;
   - a traced, cached `Capabilities` facade.
 - **Incident context and planner** (`context.py`, `planner.py`): deterministic, evidence-driven, and
   every decision recorded with its reason.
+- **Detection on capabilities** (`detector.py`), with `providers.py` as the composition root.
+- **Provider-neutral fact vocabulary and semantics:** termination causes, event categories and waiting
+  causes are mapped in the adapter, and `legacy.py` reads old evidence.
 
-Still Kubernetes-specific:
-- `detector.py`;
-- fact-kind names.
-
-Kubernetes is the only resource provider, so provider agnosticism is not claimed.
+Architecture tests keep provider code and vocabulary out of the reasoning modules. Kubernetes is the only
+resource provider, so provider agnosticism is not claimed.
 
 ### Important Current Boundary
 

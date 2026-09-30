@@ -15,8 +15,11 @@ Project direction, roadmap and architecture principles live in `CLAUDE.md` and `
 archived in `archive/iteration1/`.
 
 **Status:**
-- **Iteration 3 (this branch):** step 1 (capability interface + adapters) and step 2 (incident context +
-  planner) are done.
+- **Iteration 3 is architecturally complete.** Done:
+  - step 1: capability interface + adapters;
+  - step 2: incident context + planner;
+  - step 3: detection on capabilities;
+  - step 4: provider-neutral fact vocabulary.
 - **Kubernetes is the only resource provider implemented so far.** Provider agnosticism is not claimed
   until a second provider exercises the same interface (Iteration 8 in `docs/ROADMAP.md`).
 
@@ -37,14 +40,26 @@ Investigator layout:
 
 | Layer | Files | Provider-specific? |
 |---|---|---|
-| Detection | `detector.py` | yes (still reads Kubernetes directly; moving it onto capabilities is a later step) |
+| Detection | `detector.py` | no |
 | Incident context, planner | `context.py`, `planner.py` | no |
 | Evidence recording | `collect.py`, `dependencies.py`, `metrics.py`, `logparse.py`, `evidence.py` | no |
 | Capability interface | `capabilities/base.py`, `capabilities/__init__.py`, `capabilities/references.py` | no |
 | Adapters | `capabilities/kubernetes.py` (+ `kube.py`), `capabilities/prometheus.py` (+ `prom.py`) | yes, by design |
-| Diagnosis, report | `diagnosis.py`, `report.py`, `slack.py` | no |
+| Composition root | `providers.py` (chooses the adapters) | the one place that names them |
+| Diagnosis, report, CLI | `diagnosis.py`, `report.py`, `slack.py`, `pipeline.py`, `__main__.py` | no |
+| Compatibility | `legacy.py` (reads evidence saved in the old Kubernetes vocabulary) | yes, replay only |
 
-`tests/test_architecture.py` fails if any provider-independent module imports provider code.
+`tests/test_architecture.py` enforces two rules:
+- **No provider imports.** It fails if any provider-independent module imports provider code.
+- **No provider vocabulary.** It fails if reasoning code uses Kubernetes vocabulary (`OOMKilled`,
+  `CrashLoopBackOff`, exit code 137, …).
+
+Diagnosis reasons over neutral classifications that the adapter maps from provider values:
+- **termination cause:** `memory_limit`, `error_exit`, `killed`, `completed`;
+- **event category:** `restart_backoff`, `health_check_failed`, `scheduling_failed`, …;
+- **waiting cause.**
+
+Provider words such as "OOMKilled" still appear in reports, but only as values taken from facts.
 
 The backend stores every order in PostgreSQL. A background invoice job computes unit prices, and it
 fails fast by design: an unexpected exception terminates the process.

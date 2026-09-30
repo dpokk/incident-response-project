@@ -109,16 +109,18 @@ Do not immediately rewrite the working investigator. Refactor incrementally.
 |---|---|---|
 | 1. Capability interface + Kubernetes adapter | Done | `investigator/capabilities/` (`base.py` interface and records, `kubernetes.py`, `prometheus.py`). Investigation modules no longer import provider code. Facts were verified byte-identical to Iteration 2 on all fake clusters. |
 | 2. Incident context + investigation planner | Done | `investigator/context.py`, `investigator/planner.py`: deterministic and evidence-driven, every decision traced with its reason. The Iteration 2 procedure is kept as `INVESTIGATION_STRATEGY=exhaustive`. |
-| 3. Detection on capabilities | Not started | `detector.py` still reads Kubernetes directly. |
-| 4. Provider-neutral fact vocabulary | Not started | Fact kinds still carry Kubernetes wording (e.g. `container_terminated`, `k8s_event`). |
+| 3. Detection on capabilities | Done | `detector.py` uses only `ResourceProvider` / `MetricsProvider`. Optional `reset()` and `start_background_recording()` hooks; the Kubernetes pod journal now sits behind the adapter. `providers.py` is the composition root. |
+| 4. Provider-neutral fact vocabulary | Done | Neutral termination causes, event categories and waiting causes, mapped in the adapter. Neutral fact kinds (`component_status`, `process_terminated`, `event`, …). `legacy.py` replays older evidence. A test forbids Kubernetes vocabulary in reasoning code. Diagnoses are identical before and after. |
+
+Iteration 3 is architecturally complete once these steps are merged.
 
 Success criteria as currently evidenced:
 
 | Criterion | Evidence |
 |---|---|
-| 1. Evidence via capabilities | `tests/test_architecture.py` |
+| 1. Evidence via capabilities | `tests/test_architecture.py`, which also covers detection and the neutral vocabulary |
 | 2. Four scenarios still work | Fake-cluster tests, plus a live run on 2026-09-30 through the planner (below) |
-| 3. Tests green | 17/17 |
+| 3. Tests green | 25/25 |
 | 4. Evidence traceable | Every capability call is traced with its provider |
 | 5. Relevance decided | Planner decisions with reasons; `tests/test_planner.py` |
 | 6. Diagnosis evidence-driven | Unchanged diagnosis engine; planned and exhaustive strategies agree |
