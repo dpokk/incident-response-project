@@ -64,7 +64,8 @@ Iteration 1 capabilities intentionally not carried into Iteration 2 (not yet res
 
 The project is currently at:
 
-> Generalized, evidence-driven Kubernetes incident investigation and reporting.
+> Capability-based, evidence-driven incident investigation and reporting, proven on Kubernetes (Iteration 3
+> complete). Next: Iteration 4, richer observability + Slack workflow.
 
 The project is NOT currently a production SaaS platform and does NOT currently execute remediation.
 
@@ -115,7 +116,7 @@ Kubernetes should implement these capabilities through an adapter.
 
 Do not immediately rewrite the working investigator. Refactor incrementally.
 
-### Status — IN PROGRESS (branch `iteration-3/capability-based-investigation`, not yet merged to `main`)
+### Status — COMPLETED (merged to `main` together with the stabilization pass)
 
 | Step | State | What exists |
 |---|---|---|
@@ -124,7 +125,12 @@ Do not immediately rewrite the working investigator. Refactor incrementally.
 | 3. Detection on capabilities | Done | `detector.py` uses only `ResourceProvider` / `MetricsProvider`. Optional `reset()` and `start_background_recording()` hooks; the Kubernetes pod journal now sits behind the adapter. `providers.py` is the composition root. |
 | 4. Provider-neutral fact vocabulary | Done | Neutral termination causes, event categories and waiting causes, mapped in the adapter. Neutral fact kinds (`component_status`, `process_terminated`, `event`, …). `legacy.py` replays older evidence. A test forbids Kubernetes vocabulary in reasoning code. Diagnoses are identical before and after. |
 
-Iteration 3 is architecturally complete once these steps are merged.
+Iteration 3 is complete.
+
+Not part of it, and still planned:
+- an LLM-assisted planner;
+- a second provider (Iteration 8);
+- quantified impact / recommendations (open decision above).
 
 Success criteria as currently evidenced:
 

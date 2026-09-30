@@ -15,7 +15,8 @@ These documents are the source of truth for project direction. Before making sub
 
 ## Current Project State
 
-Iterations 1 and 2 have already been completed.
+Iterations 1, 2 and 3 have been completed. The next milestone is Iteration 4 (richer observability + Slack
+workflow).
 
 ### Iteration 1
 The original prototype detected a Kubernetes `OOMKilled` incident using a Python-based investigator.
@@ -68,9 +69,9 @@ current suite.
 
 `reports/` and `state/` are generated at runtime and are not in git. There is no `src/` directory.
 
-### Iteration 3 — in progress (branch `iteration-3/capability-based-investigation`)
+### Iteration 3 — completed (merged to `main`, together with the stabilization pass)
 
-Done on that branch (architecturally complete):
+Done:
 - **Capability layer** (`investigator/capabilities/`):
   - `ResourceProvider` / `MetricsProvider` interfaces with neutral records;
   - `KubernetesAdapter` and `PrometheusMetrics` as the adapters;
@@ -86,7 +87,7 @@ resource provider, so provider agnosticism is not claimed.
 
 ### Important Current Boundary
 
-Iteration 2 deliberately stops at diagnosis.
+The investigator deliberately stops at diagnosis (unchanged in Iteration 3).
 
 There is currently:
 - No automated remediation
