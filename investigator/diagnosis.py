@@ -437,7 +437,7 @@ def diagnose(store: EvidenceStore) -> dict:
     if primary is None:
         affected = [n for n, v in views.items() if v.symptomatic()]
         return {
-            "category": "undetermined", "category_label": CATEGORY_LABELS["undetermined"],
+            "category": "undetermined", "category_label": CATEGORY_LABELS["undetermined"], "root_cause_component": None,
             "affected_component": affected[0] if affected else None, "dependencies": [], "impacted_components": [],
             "symptoms": [f.id for f in symptoms] + [x.id for n in affected for x in views[n].symptom_facts()],
             "reasoning": [{"statement": "The collected evidence does not support any known failure category strongly "
@@ -477,6 +477,7 @@ def diagnose(store: EvidenceStore) -> dict:
     evidence = list(dict.fromkeys([s[0] for s in primary.support] + [fid for r in primary.reasoning for fid in r["facts"]]))
     return {
         "category": primary.category,
+        "root_cause_component": root_cause_component(primary),
         "category_label": CATEGORY_LABELS[primary.category],
         "affected_component": primary.component,
         "dependencies": [dep] if dep else [],
@@ -493,6 +494,26 @@ def diagnose(store: EvidenceStore) -> dict:
         "alternatives": _alternatives(ranked, primary),
         "component_summary": _component_summary(views),
     }
+
+
+def root_cause_component(f: Finding) -> dict:
+    """Where the cause is, as distinct from where the failure surfaced (the affected component).
+
+    Intrinsic failures (crash, memory, platform) are rooted in the affected component itself. An unavailable
+    dependency is rooted in the component that serves it; a misconfigured dependency in the affected
+    component's configuration.
+    """
+    dep = f.dependency or {}
+    if f.category == "dependency_unavailable":
+        if f.backing:
+            return {"name": f.backing[0], "kind": "component",
+                    "relation": f"{dep.get('type', 'dependency')} dependency of {f.component}, unavailable"}
+        return {"name": dep.get("endpoint"), "kind": "endpoint",
+                "relation": f"{dep.get('type', 'dependency')} endpoint used by {f.component}, unavailable"}
+    if f.category == "dependency_misconfiguration":
+        return {"name": f"{dep.get('variable')} ({dep.get('source')})", "kind": "configuration",
+                "relation": f"{f.component}'s configuration points at {dep.get('endpoint')}"}
+    return {"name": f.component, "kind": "component", "relation": "the affected component itself"}
 
 
 def _alternatives(ranked: list[Finding], primary: Finding | None) -> list[dict]:

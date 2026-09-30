@@ -74,6 +74,21 @@ def test_exception_exit_is_application_crash_not_oom():
     assert "memory_exhaustion" in rejected
 
 
+def test_root_cause_component_is_distinct_from_affected_component():
+    """Scenario C: the failure surfaces in backend, but the cause is PostgreSQL (docs/INCIDENTS.md Incident 3)."""
+    down, _ = run(world_db_down())
+    assert down["affected_component"] == "backend"
+    assert down["root_cause_component"]["name"] == "postgres" and down["root_cause_component"]["kind"] == "component"
+    assert "frontend" in down["impacted_components"]
+    wrong, _ = run(world_db_misconfig())
+    assert wrong["root_cause_component"]["kind"] == "configuration"
+    assert "DATABASE_URL" in wrong["root_cause_component"]["name"]
+    for w in (world_crash, world_oom):
+        dx, _ = run(w())
+        assert dx["root_cause_component"] == {"name": "backend", "kind": "component",
+                                              "relation": "the affected component itself"}
+
+
 def test_healthy_cluster_is_not_diagnosed():
     dx, _ = run(base_world())
     assert dx["category"] == "undetermined"

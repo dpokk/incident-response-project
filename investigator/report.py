@@ -18,6 +18,12 @@ def hms(t) -> str:
     return datetime.fromtimestamp(t).astimezone().strftime("%H:%M:%S") if t else "-"
 
 
+def _rcc(r: dict) -> str:
+    """Root-cause component: where the cause is (vs the affected component, where the failure surfaced)."""
+    c = r.get("root_cause_component")
+    return f"{c['name']} ({c['relation']})" if c else "not determined"
+
+
 def when(entry: dict) -> str:
     """Timeline time column. Entries that began before the window don't get a (made-up) start time."""
     return "before window" if entry.get("t_basis") == "before_window" else hms(entry["t"])
@@ -49,6 +55,7 @@ def build(incident: dict, store: EvidenceStore, dx: dict, window: tuple, ongoing
         },
         "failure_category": dx["category"],
         "failure_category_label": dx["category_label"],
+        "root_cause_component": dx.get("root_cause_component"),
         "dependencies": dx["dependencies"],
         "impacted_components": dx["impacted_components"],
         "observed_symptoms": fx(dx["symptoms"]),
@@ -99,7 +106,8 @@ def render_text(r: dict) -> str:
          f"Remediation:          {r['remediation']}", "",
          f"Affected component:   {r['affected_component']['namespace']}/{r['affected_component']['name']}  "
          f"({r['affected_component']['status']})",
-         f"Failure category:     {r['failure_category_label']}"]
+         f"Failure category:     {r['failure_category_label']}",
+         f"Root-cause component: {_rcc(r)}"]
     if r["dependencies"]:
         for d in r["dependencies"]:
             L.append(f"Dependency involved:  {d['type']} at {d['endpoint']} (configured via {d['variable']} from "
@@ -133,6 +141,7 @@ def render_markdown(r: dict) -> str:
            f"| Detected at | {hms(r['detected_at'])} |",
            f"| Affected component | **{r['affected_component']['name']}** ({r['affected_component']['status']}) |",
            f"| Failure category | **{r['failure_category_label']}** |",
+           f"| Root-cause component | **{_rcc(r)}** |",
            f"| Dependencies involved | {dep} |",
            f"| Also impacted | {', '.join(r['impacted_components']) or '-'} |",
            f"| Confidence | {r['confidence_label']} ({r['confidence']:.0%}) |",
@@ -166,6 +175,7 @@ def slack_payload(r: dict, report_path: str | None = None) -> dict:
         {"type": "section", "fields": [
             {"type": "mrkdwn", "text": f"*Affected component:*\n{r['affected_component']['name']}"},
             {"type": "mrkdwn", "text": f"*Failure category:*\n{r['failure_category_label']}"},
+            {"type": "mrkdwn", "text": f"*Root-cause component:*\n{_rcc(r)}"},
             {"type": "mrkdwn", "text": f"*Confidence:*\n{r['confidence_label']} ({r['confidence']:.0%})"},
             {"type": "mrkdwn", "text": f"*Status:*\n{r['investigation_status']}"},
         ]},
