@@ -29,11 +29,20 @@ class TimeRange:
 
 @dataclass
 class Termination:
-    """One ended run of a process."""
+    """One ended run of a process.
+
+    `reason` and `exit_code` are the provider's own values (shown in reports); `cause` is the neutral
+    classification the engine reasons with:
+      memory_limit - killed for exceeding its memory limit
+      error_exit   - the process exited on its own with an error
+      killed       - killed by a signal from outside (e.g. a failed health check, a stop)
+      completed    - exited successfully
+    """
     reason: str | None
     exit_code: int | None
     started_at: float | None
     finished_at: float | None
+    cause: str | None = None
 
 
 @dataclass
@@ -62,6 +71,7 @@ class InstanceState:
     unschedulable: bool
     created: float | None
     processes: list[ProcessState] = field(default_factory=list)
+    process_kind: str = "process"      # provider's word for a process, e.g. "container" (wording only)
 
     @property
     def restarts(self) -> int:
@@ -99,11 +109,15 @@ class EventRecord:
     object_kind: str
     object_name: str
     type: str | None                   # e.g. Normal / Warning
-    reason: str | None
+    reason: str | None                 # provider's own word, e.g. "BackOff"
     message: str
     count: int
     first: float | None
     last: float | None
+    # Neutral classification the engine reasons with (None = not significant for diagnosis):
+    #   restart_backoff | health_check_failed | killed_by_health_check | stopped | scheduling_failed |
+    #   scaled | instance_deleted | evicted | memory_limit | failed | node_problem
+    category: str | None = None
 
 
 @dataclass

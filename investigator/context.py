@@ -23,9 +23,9 @@ class IncidentContext:
                       metrics_target: str | None = None) -> "IncidentContext":
         suspects = []
         for s in incident.get("signals", []):
-            subject = s.get("subject") or ""
-            if subject.startswith("workload/") and subject[9:] not in suspects:
-                suspects.append(subject[9:])
+            kind, _, name = (s.get("subject") or "").partition("/")
+            if kind in ("component", "workload") and name and name not in suspects:  # "workload/": older records
+                suspects.append(name)
         return cls(id=incident["id"], window=TimeRange(start, end), detected_at=incident.get("detected_at"),
                    signals=list(incident.get("signals", [])), suspects=suspects, entry=entry,
                    metrics_target=metrics_target)

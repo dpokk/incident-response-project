@@ -38,21 +38,21 @@ class Detector:
                     key = (inst.name, p.name)
                     if self.primed and key in self.prev_restarts and p.restarts > self.prev_restarts[key]:
                         t = p.last_termination
-                        signals.append(_sig("container_restart", c, now,
-                                            f"Container {p.name} in {inst.kind.lower()} {inst.name} restarted "
+                        signals.append(_sig("process_restart", c, now,
+                                            f"{inst.process_kind.capitalize()} {p.name} in {inst.kind.lower()} {inst.name} restarted "
                                             f"(restart #{p.restarts}; previous instance ended with reason="
                                             f"{t.reason if t else None}, exit code {t.exit_code if t else None})"))
                     self.prev_restarts[key] = p.restarts
                     if p.state == "waiting" and p.waiting_cause:
-                        signals.append(_sig("container_waiting", c, now,
-                                            f"Container {p.name} in {inst.kind.lower()} {inst.name} is waiting: "
+                        signals.append(_sig("process_waiting", c, now,
+                                            f"{inst.process_kind.capitalize()} {p.name} in {inst.kind.lower()} {inst.name} is waiting: "
                                             f"{p.waiting_reason}"))
                 if inst.phase == "Running" and not inst.ready and inst.ready_since \
                         and now - inst.ready_since > self.s.not_ready_grace_s:
-                    signals.append(_sig("pod_not_ready", c, now,
+                    signals.append(_sig("instance_not_ready", c, now,
                                         f"{inst.kind} {inst.name} has been NotReady for {now - inst.ready_since:.0f}s"))
                 if inst.unschedulable:
-                    signals.append(_sig("pod_unschedulable", c, now, f"{inst.kind} {inst.name} cannot be scheduled"))
+                    signals.append(_sig("instance_unschedulable", c, now, f"{inst.kind} {inst.name} cannot be scheduled"))
         self.primed = True
 
         # Synthetic user request through the entry service
@@ -107,7 +107,7 @@ class Detector:
 
 
 def _sig(kind: str, subject: str, t: float, text: str) -> dict:
-    return {"kind": kind, "subject": f"workload/{subject}", "t": t, "text": text}
+    return {"kind": kind, "subject": f"component/{subject}", "t": t, "text": text}
 
 
 def format_sample(s: dict) -> str:

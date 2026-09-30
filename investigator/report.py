@@ -9,8 +9,8 @@ from pathlib import Path
 
 from .evidence import EvidenceStore
 
-TIMELINE_KINDS = {"detection_signal", "container_terminated", "k8s_event", "log_signature", "log_exception",
-                  "rollout", "config_changed", "metric_traffic_change", "metric_error_ratio", "metric_memory_high",
+TIMELINE_KINDS = {"detection_signal", "process_terminated", "event", "log_signature", "log_exception",
+                  "change", "config_changed", "metric_traffic_change", "metric_error_ratio", "metric_memory_high",
                   "log_tail_before_exit"}
 
 
@@ -24,8 +24,8 @@ def build(incident: dict, store: EvidenceStore, dx: dict, window: tuple, ongoing
     def fx(ids):
         return [{"id": i, "source": facts[i].source, "text": facts[i].text, "t": facts[i].t} for i in ids if i in facts]
 
-    ws = next((w for w in dx["workload_summary"] if w["workload"] == dx["affected_component"]), {})
-    status_fact = next(iter(store.find(kind="workload_status", subject=f"workload/{dx['affected_component']}")), None)
+    ws = next((w for w in dx["component_summary"] if w["component"] == dx["affected_component"]), {})
+    status_fact = next(iter(store.find(kind="component_status", subject=f"component/{dx['affected_component']}")), None)
     timeline = sorted((f for f in store.facts if f.t and f.kind in TIMELINE_KINDS and window[0] - 60 <= f.t <= window[1] + 5),
                       key=lambda f: f.t)
     return {
@@ -39,7 +39,7 @@ def build(incident: dict, store: EvidenceStore, dx: dict, window: tuple, ongoing
             "name": dx["affected_component"],
             "namespace": incident.get("namespace"),
             "status": status_fact.text if status_fact else ws.get("status"),
-            "pods": status_fact.data.get("pods", []) if status_fact else [],
+            "instances": status_fact.data.get("instances", []) if status_fact else [],
         },
         "failure_category": dx["category"],
         "failure_category_label": dx["category_label"],
@@ -54,7 +54,7 @@ def build(incident: dict, store: EvidenceStore, dx: dict, window: tuple, ongoing
         "confidence_label": dx["confidence_label"],
         "alternatives_considered": dx["alternatives"],
         "timeline": [{"t": f.t, "id": f.id, "text": f.text} for f in _dedupe(timeline)][:30],
-        "workloads": dx["workload_summary"],
+        "components": dx["component_summary"],
         "investigation_trace": _trace_summary(store),
         "window": {"start": window[0], "end": window[1]},
         "facts_collected": len(store.facts),

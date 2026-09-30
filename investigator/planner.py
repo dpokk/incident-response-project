@@ -109,7 +109,7 @@ class InvestigationPlanner:
             summary = check_dependency(caps, store, c, ref, tr.start, probe=False)
             errors = self.errors_about(c, ref.host, ref.port)
             unhealthy = summary["exists"] is False or summary["ready"] == 0 or any(
-                f.data["ready"] < f.data["desired"] for f in store.find(kind="backing_workload", subject=summary["subject"]))
+                f.data["ready"] < f.data["desired"] for f in store.find(kind="backing_component", subject=summary["subject"]))
             if ref.port and (errors or unhealthy):
                 why = (f"{c} logged {sum(f.data.get('count', 1) for f in errors)} error(s) about {ref.host}:{ref.port}"
                        if errors else f"{ref.host}:{ref.port} looks unhealthy")
@@ -124,8 +124,8 @@ class InvestigationPlanner:
                     self.enqueue(b, f"{c} shows no failure of its own; the cause may be downstream in {b}")
 
     def maybe_metrics(self) -> None:
-        exhaustion = [f for f in self.store.facts if (f.kind == "container_terminated" and
-                                                      (f.data.get("reason") == "OOMKilled" or f.data.get("exit_code") == 137))
+        exhaustion = [f for f in self.store.facts
+                      if (f.kind == "process_terminated" and f.data.get("cause") in ("memory_limit", "killed"))
                       or (f.kind == "log_signature" and f.data.get("signature") == "memory_pressure")]
         if not exhaustion:
             self.decide("skip", "metrics", "no sign of resource exhaustion")
@@ -145,13 +145,13 @@ class InvestigationPlanner:
     # -- evidence evaluation -------------------------------------------------------------
     def failing(self, c: str) -> bool:
         """Does component c show a failure of its own (not just a symptom seen elsewhere)?"""
-        subj = f"workload/{c}"
+        subj = f"component/{c}"
         for f in self.store.facts:
             if f.subject != subj:
                 continue
-            if f.kind == "container_terminated" or (f.kind == "container_waiting" and f.data.get("problematic")):
+            if f.kind == "process_terminated" or (f.kind == "process_waiting" and f.data.get("problematic")):
                 return True
-            if f.kind == "pod_status" and not f.data.get("ready"):
+            if f.kind == "instance_status" and not f.data.get("ready"):
                 return True
             if f.kind == "log_levels" and f.data.get("errors", 0) > 0:
                 return True
@@ -161,14 +161,14 @@ class InvestigationPlanner:
         """Log evidence in c that refers to the dependency host:port."""
         short = host.split(".")[0]
         out = []
-        for f in self.store.find(kind="log_signature", subject=f"workload/{c}"):
+        for f in self.store.find(kind="log_signature", subject=f"component/{c}"):
             if f.data["signature"] not in FOLLOW_SIGNATURES:
                 continue
             th = f.data.get("target_host")
             if (th and (th == host or th.split(".")[0] == short)) or (
                     not th and f.data.get("target_port") and str(f.data["target_port"]) == str(port)):
                 out.append(f)
-        for f in self.store.find(kind="log_exception", subject=f"workload/{c}"):
+        for f in self.store.find(kind="log_exception", subject=f"component/{c}"):
             msg = f.data.get("message", "")
             if f.data.get("dependency_signature") and (host in msg or f"port {port}" in msg):
                 out.append(f)

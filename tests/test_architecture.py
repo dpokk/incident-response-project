@@ -38,6 +38,31 @@ def test_engine_does_not_import_providers():
     assert not offenders, f"engine modules import provider code: {offenders}"
 
 
+REASONING_MODULES = ["collect.py", "dependencies.py", "diagnosis.py", "planner.py", "detector.py", "metrics.py",
+                     "context.py", "report.py"]
+PROVIDER_WORDS = ("OOMKilled", "CrashLoopBackOff", "BackOff", "ImagePull", "ErrImagePull", "CreateContainer",
+                  "FailedScheduling", "ScalingReplicaSet", "Unhealthy", "Killing", "kubelet", "ReplicaSet",
+                  "workload/", "k8s_event", "container_terminated")
+
+
+def _code_strings(path: Path) -> list[str]:
+    """String and number literals used by the code (docstrings and comments excluded)."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    docstrings = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)}
+    return [str(n.value) for n in ast.walk(tree) if isinstance(n, ast.Constant) and id(n) not in docstrings]
+
+
+def test_reasoning_uses_neutral_vocabulary():
+    """Diagnosis, planning and detection reason over neutral causes/categories, never Kubernetes reason strings."""
+    offenders = {}
+    for name in REASONING_MODULES:
+        found = sorted({w for s in _code_strings(PKG / name) for w in PROVIDER_WORDS if w in s}
+                       | {s for s in _code_strings(PKG / name) if s in ("137", "143")})
+        if found:
+            offenders[name] = found
+    assert not offenders, f"provider-specific vocabulary in reasoning code: {offenders}"
+
+
 def test_adapters_implement_the_whole_interface():
     from investigator.capabilities.base import MetricsProvider, ResourceProvider
     from investigator.capabilities.kubernetes import KubernetesAdapter

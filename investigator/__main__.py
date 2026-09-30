@@ -51,6 +51,10 @@ def main() -> None:
             saved = json.load(f)
         incident = {"id": saved["incident_id"], "detected_at": saved["detected_at"],
                     "signals": [{"text": t} for t in saved["signals"]], "namespace": settings.namespace}
+        from . import legacy
+        if legacy.is_legacy(saved["store"]):
+            print("(evidence saved before Iteration 3 step 4: upgrading its vocabulary for today's engine)")
+            saved["store"] = legacy.upgrade(saved["store"])
         diagnose_and_report(settings, incident, EvidenceStore.from_dict(saved["store"]),
                             (saved["window"]["start"], saved["window"]["end"]), post_to_slack=args.slack)
         return

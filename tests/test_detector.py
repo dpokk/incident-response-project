@@ -38,19 +38,19 @@ def test_restart_is_detected_between_samples():
     det.sample()
     crashed = copy.deepcopy(world_crash()["pods"][1])
     kube.w["pods"][1] = crashed
-    assert ("container_restart", "workload/backend") in kinds(det.sample())
+    assert ("process_restart", "component/backend") in kinds(det.sample())
 
 
 def test_crash_loop_waiting_is_reported_immediately():
     det, _ = detector(world_crash())
-    assert ("container_waiting", "workload/backend") in kinds(det.sample())
+    assert ("process_waiting", "component/backend") in kinds(det.sample())
 
 
 def test_failing_user_requests_need_two_polls():
     det, _ = detector(world_db_down())
     first, second = det.sample(), det.sample()
-    assert ("entry_probe_failure", "workload/frontend") not in kinds(first)
-    assert ("entry_probe_failure", "workload/frontend") in kinds(second)
+    assert ("entry_probe_failure", "component/frontend") not in kinds(first)
+    assert ("entry_probe_failure", "component/frontend") in kinds(second)
 
 
 def test_signals_describe_symptoms_not_causes():

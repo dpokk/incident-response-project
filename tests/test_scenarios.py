@@ -22,7 +22,7 @@ from investigator.context import IncidentContext  # noqa: E402
 from investigator.planner import plan_and_collect  # noqa: E402
 
 
-USER_SYMPTOM = [{"kind": "entry_probe_failure", "subject": "workload/frontend", "t": None,
+USER_SYMPTOM = [{"kind": "entry_probe_failure", "subject": "component/frontend", "t": None,
                  "text": "Synthetic requests to frontend failing"}]
 
 

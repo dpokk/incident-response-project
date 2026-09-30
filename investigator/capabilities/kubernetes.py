@@ -23,6 +23,35 @@ WAITING_CAUSES = {
 }
 
 
+EVENT_CATEGORIES = {
+    "BackOff": "restart_backoff", "Unhealthy": "health_check_failed", "FailedScheduling": "scheduling_failed",
+    "ScalingReplicaSet": "scaled", "SuccessfulDelete": "instance_deleted", "Evicted": "evicted",
+    "Preempted": "evicted", "OOMKilling": "memory_limit", "Failed": "failed",
+    "NodeNotReady": "node_problem", "SystemOOM": "node_problem", "EvictionThresholdMet": "node_problem",
+    "NodeHasInsufficientMemory": "node_problem", "Rebooted": "node_problem",
+}
+
+
+def termination_cause(reason: str | None, exit_code: int | None) -> str | None:
+    """Kubernetes termination -> neutral cause (capabilities/base.py Termination.cause)."""
+    if reason == "OOMKilled":
+        return "memory_limit"
+    if exit_code in (137, 143):          # SIGKILL / SIGTERM from outside the process
+        return "killed"
+    if exit_code == 0 or reason == "Completed":
+        return "completed"
+    if exit_code is not None or reason == "Error":
+        return "error_exit"
+    return None
+
+
+def event_category(reason: str | None, message: str) -> str | None:
+    """Kubernetes event reason -> neutral category (capabilities/base.py EventRecord.category)."""
+    if reason == "Killing":
+        return "killed_by_health_check" if "liveness" in (message or "").lower() else "stopped"
+    return EVENT_CATEGORIES.get(reason)
+
+
 class KubernetesAdapter(ResourceProvider):
     name = "kubernetes"
 
@@ -84,7 +113,8 @@ class KubernetesAdapter(ResourceProvider):
             if e["kind"] == "container_terminated" and e.get("app") and e["pod"] in names:
                 history.append(TerminationRecord(
                     instance=e["pod"], process=e.get("container"), restarts=e.get("restart_count"),
-                    termination=Termination(e.get("reason"), e.get("exit_code"), e.get("started_at"), e["t"]),
+                    termination=Termination(e.get("reason"), e.get("exit_code"), e.get("started_at"), e["t"],
+                                            termination_cause(e.get("reason"), e.get("exit_code"))),
                     source="kubernetes.pod_journal"))
         return ResourceState(
             component=w["name"], kind=w["kind"], scope=w["namespace"], desired=w["replicas_desired"],
@@ -95,7 +125,7 @@ class KubernetesAdapter(ResourceProvider):
     def get_events(self, time_range: TimeRange, infrastructure: bool = False) -> list[EventRecord]:
         if infrastructure:
             return [EventRecord(None, "Node", e["object_name"], e["type"], e["reason"], e["message"], e.get("count") or 1,
-                                e["first"], e["last"])
+                                e["first"], e["last"], event_category(e["reason"], e["message"]))
                     for e in self.kube.node_events() if (e["last"] or e["first"] or 0) >= time_range.start]
         rs_owner = {rs["name"]: rs["deployment"] for rs in self._replicasets()}
         pod_workload = {p["name"]: w["name"] for w in self._workloads() for p in self._pods_of(w)}
@@ -108,7 +138,7 @@ class KubernetesAdapter(ResourceProvider):
             if comp is None:  # pods that no longer exist: attribute by ReplicaSet/StatefulSet name prefix
                 comp = next((w for w in set(rs_owner.values()) | set(pod_workload.values()) if w and obj.startswith(w + "-")), obj)
             out.append(EventRecord(comp, e["object_kind"], obj, e["type"], e["reason"], e["message"], e["count"],
-                                   e["first"], e["last"]))
+                                   e["first"], e["last"], event_category(e["reason"], e["message"])))
         return out
 
     def get_logs(self, component: str, instance: str, process: str, time_range: TimeRange,
@@ -228,7 +258,8 @@ def _instance(p: dict) -> InstanceState:
         st, ls = c["state"] or {}, c["last_state"] or {}
         last = None
         if ls.get("state") == "terminated":
-            last = Termination(ls.get("reason"), ls.get("exit_code"), ls.get("started_at"), ls.get("finished_at"))
+            last = Termination(ls.get("reason"), ls.get("exit_code"), ls.get("started_at"), ls.get("finished_at"),
+                               termination_cause(ls.get("reason"), ls.get("exit_code")))
         procs.append(ProcessState(
             name=c["name"], state=st.get("state"), started_at=st.get("started_at"),
             waiting_reason=st.get("reason") if st.get("state") == "waiting" else None,
@@ -237,7 +268,8 @@ def _instance(p: dict) -> InstanceState:
             restarts=c["restart_count"], last_termination=last,
             memory_limit_bytes=c["memory_limit_bytes"], cpu_limit_cores=c["cpu_limit_cores"]))
     return InstanceState(name=p["name"], kind="Pod", phase=p["phase"], ready=p["ready"], ready_since=p["ready_since"],
-                         unschedulable=p["unschedulable"], created=p["created"], processes=procs)
+                         unschedulable=p["unschedulable"], created=p["created"], processes=procs,
+                         process_kind="container")
 
 
 def _split_host(host: str, default_ns: str) -> tuple[str, str | None, bool]:

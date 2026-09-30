@@ -94,28 +94,31 @@ def record_signals(store: EvidenceStore, incident: dict) -> None:
 
 def record_resource_state(store: EvidenceStore, caps: Capabilities, rs: ResourceState, start: float) -> None:
     src = caps.resources.name
-    subj = f"workload/{rs.component}"
-    store.add(f"{src}.workloads", subj, "workload_status",
+    subj = f"component/{rs.component}"
+    store.add(f"{src}.resource_state", subj, "component_status",
               f"{rs.kind} {rs.scope}/{rs.component}: {rs.ready}/{rs.desired} replicas ready",
-              workload=rs.component, desired=rs.desired, ready=rs.ready, available=rs.available,
-              pods=[i.name for i in rs.instances], limits=rs.limits)
+              component=rs.component, desired=rs.desired, ready=rs.ready, available=rs.available,
+              instances=[i.name for i in rs.instances], limits=rs.limits)
     seen_terms = set()
+    words = {}
     for inst in rs.instances:
-        store.add(f"{src}.pod_status", subj, "pod_status",
+        words[inst.name] = (inst.kind.lower(), inst.process_kind)
+        store.add(f"{src}.resource_state", subj, "instance_status",
                   f"{inst.kind} {inst.name}: phase={inst.phase}, ready={inst.ready}, restarts={inst.restarts}",
-                  pod=inst.name, phase=inst.phase, ready=inst.ready, restarts=inst.restarts,
+                  instance=inst.name, phase=inst.phase, ready=inst.ready, restarts=inst.restarts,
                   unschedulable=inst.unschedulable, ready_since=inst.ready_since)
         for p in inst.processes:
             if p.state == "waiting" and p.waiting_reason:
-                store.add(f"{src}.pod_status", subj, "container_waiting",
-                          f"Container {p.name} in {inst.kind.lower()} {inst.name} is waiting: {p.waiting_reason}"
-                          + (f" ({(p.waiting_message or '')[:160]})" if p.waiting_message else ""),
-                          pod=inst.name, container=p.name, reason=p.waiting_reason, message=p.waiting_message,
-                          problematic=p.waiting_cause is not None)
+                store.add(f"{src}.resource_state", subj, "process_waiting",
+                          f"{inst.process_kind.capitalize()} {p.name} in {inst.kind.lower()} {inst.name} is waiting: "
+                          f"{p.waiting_reason}" + (f" ({(p.waiting_message or '')[:160]})" if p.waiting_message else ""),
+                          instance=inst.name, process=p.name, reason=p.waiting_reason, cause=p.waiting_cause,
+                          message=p.waiting_message, problematic=p.waiting_cause is not None)
             t = p.last_termination
             if t and (t.finished_at or 0) >= start - 60:
                 seen_terms.add((inst.name, p.name, round(t.finished_at or 0)))
-                _termination(store, subj, inst.name, p.name, p.memory_limit_bytes, t, p.restarts, f"{src}.pod_status")
+                _termination(store, subj, inst.name, p.name, p.memory_limit_bytes, t, p.restarts,
+                             f"{src}.resource_state", words[inst.name])
     for h in rs.history:  # earlier terminations the provider remembers (current state only keeps the latest)
         key = (h.instance, h.process, round(h.termination.finished_at))
         if any(k[0] == key[0] and k[1] == key[1] and abs(k[2] - key[2]) <= 2 for k in seen_terms):
@@ -123,16 +126,17 @@ def record_resource_state(store: EvidenceStore, caps: Capabilities, rs: Resource
         seen_terms.add(key)
         proc = next((p for i in rs.instances if i.name == h.instance for p in i.processes if p.name == h.process), None)
         _termination(store, subj, h.instance, h.process, proc.memory_limit_bytes if proc else None, h.termination,
-                     h.restarts, h.source)
+                     h.restarts, h.source, words.get(h.instance, ("instance", "process")))
 
 
-def _termination(store, subj, instance, process, mem, t: Termination, restarts, source):
+def _termination(store, subj, instance, process, mem, t: Termination, restarts, source, words):
     ran = (t.finished_at - t.started_at) if t.finished_at and t.started_at else None
-    store.add(source, subj, "container_terminated",
-              f"Container {process} in pod {instance} terminated: reason={t.reason}, exit code "
-              f"{t.exit_code}" + (f", after running {ran:.0f}s" if ran is not None else "")
+    instance_word, process_word = words
+    store.add(source, subj, "process_terminated",
+              f"{process_word.capitalize()} {process} in {instance_word} {instance} terminated: reason={t.reason}, "
+              f"exit code {t.exit_code}" + (f", after running {ran:.0f}s" if ran is not None else "")
               + (f" (memory limit {mib(mem)})" if mem else ""),
-              t=t.finished_at, pod=instance, container=process, reason=t.reason,
+              t=t.finished_at, instance=instance, process=process, reason=t.reason, cause=t.cause,
               exit_code=t.exit_code, ran_s=ran, memory_limit=mem, restarts=restarts)
 
 
@@ -140,26 +144,28 @@ def record_events(store: EvidenceStore, caps: Capabilities, tr: TimeRange) -> No
     src = caps.resources.name
     groups: dict[tuple, dict] = {}
     for e in caps.get_events(tr) or []:
+        # Repeated health-check failures differ only in details after the first colon; group them together.
         key = (e.component, e.object_kind, e.reason,
-               logparse.normalize(e.message.split(":")[0] if e.reason == "Unhealthy" else e.message))
-        g = groups.setdefault(key, {"workload": e.component, "kind": e.object_kind, "reason": e.reason, "type": e.type,
-                                    "message": e.message[:300], "count": 0, "first": e.first, "last": e.last,
-                                    "objects": set()})
+               logparse.normalize(e.message.split(":")[0] if e.category == "health_check_failed" else e.message))
+        g = groups.setdefault(key, {"component": e.component, "kind": e.object_kind, "reason": e.reason,
+                                    "category": e.category, "type": e.type, "message": e.message[:300], "count": 0,
+                                    "first": e.first, "last": e.last, "objects": set()})
         g["count"] += e.count
         g["first"] = min(filter(None, [g["first"], e.first]), default=None)
         g["last"] = max(filter(None, [g["last"], e.last]), default=None)
         g["objects"].add(e.object_name)
     start = tr.start
     for g in sorted(groups.values(), key=lambda g: g["first"] or 0):
-        store.add(f"{src}.events", f"workload/{g['workload']}", "k8s_event",
+        store.add(f"{src}.events", f"component/{g['component']}", "event",
                   f"{g['type']} event {g['reason']} on {g['kind']} {', '.join(sorted(g['objects']))[:120]} "
                   f"(x{g['count']}, {hms(max(g['first'] or start, start))}-{hms(g['last'])}): {g['message'][:200]}",
-                  t=max(g["first"] or start, start), reason=g["reason"], type=g["type"], count=g["count"],
-                  object_kind=g["kind"], message=g["message"], last=g["last"])
+                  t=max(g["first"] or start, start), reason=g["reason"], category=g["category"], type=g["type"],
+                  count=g["count"], object_kind=g["kind"], message=g["message"], last=g["last"])
     for e in caps.get_events(tr, infrastructure=True) or []:
         if e.type == "Warning":
-            store.add(f"{src}.events", f"{e.object_kind.lower()}/{e.object_name}", "node_event",
-                      f"{e.object_kind} {e.object_name}: {e.reason}: {e.message[:200]}", t=e.first, reason=e.reason)
+            store.add(f"{src}.events", f"{e.object_kind.lower()}/{e.object_name}", "infrastructure_event",
+                      f"{e.object_kind} {e.object_name}: {e.reason}: {e.message[:200]}", t=e.first, reason=e.reason,
+                      category=e.category)
 
 
 def record_logs(store: EvidenceStore, caps: Capabilities, rs: ResourceState, tr: TimeRange,
@@ -167,7 +173,7 @@ def record_logs(store: EvidenceStore, caps: Capabilities, rs: ResourceState, tr:
     """Logs of every instance/process. include_previous: None = for processes that restarted (default),
     True/False = the caller (the planner) has decided."""
     start, end = tr.start, tr.end
-    subj = f"workload/{rs.component}"
+    subj = f"component/{rs.component}"
     sigs: dict[tuple, dict] = {}
     levels = defaultdict(int)
     errors: dict[str, dict] = {}
@@ -183,36 +189,36 @@ def record_logs(store: EvidenceStore, caps: Capabilities, rs: ResourceState, tr:
                     levels[lvl] += n
                 for s in a["signatures"]:
                     k = (s["signature"], s["target_host"], s["target_port"])
-                    g = sigs.setdefault(k, {**s, "count": 0, "pods": set(), "instances": set()})
+                    g = sigs.setdefault(k, {**s, "count": 0, "instances": set(), "generations": set()})
                     g["count"] += s["count"]
                     g["first"] = min(filter(None, [g["first"], s["first"]]), default=None)
                     g["last"] = max(filter(None, [g["last"], s["last"]]), default=None)
-                    g["pods"].add(inst.name)
-                    g["instances"].add(generation)
+                    g["instances"].add(inst.name)
+                    g["generations"].add(generation)
                 for e in a["error_groups"]:
                     g = errors.setdefault(logparse.normalize(e["message"]), {**e, "count": 0})
                     g["count"] += e["count"]
                 for tb in a["tracebacks"]:
                     site = tb["crash_site"] or {}
                     store.add("logs", subj, "log_exception",
-                              f"{generation.capitalize()} container instance of {p.name} in pod {inst.name} logged an "
-                              f"unhandled {tb['type']}: {tb['message'][:160]}"
+                              f"{generation.capitalize()} {inst.process_kind} instance of {p.name} in "
+                              f"{inst.kind.lower()} {inst.name} logged an unhandled {tb['type']}: {tb['message'][:160]}"
                               + (f" at {site.get('file')}:{site.get('line')} in {site.get('func')}()" if site else ""),
-                              t=tb["t"], pod=inst.name, container=p.name, instance=generation, exc_type=tb["type"],
-                              message=tb["message"], crash_site=site, frames=tb["frames"],
+                              t=tb["t"], instance=inst.name, process=p.name, generation=generation,
+                              exc_type=tb["type"], message=tb["message"], crash_site=site, frames=tb["frames"],
                               dependency_signature=logparse.classify(tb["type"] + ": " + tb["message"]))
                 if generation == "previous" and a["tail"]:
                     store.add("logs", subj, "log_tail_before_exit",
-                              f"Last log lines of the previous {p.name} instance in pod {inst.name}: "
+                              f"Last log lines of the previous {p.name} instance in {inst.kind.lower()} {inst.name}: "
                               + " | ".join(t[:120] for t in a["tail"][-3:]),
-                              t=a["last"], pod=inst.name, container=p.name, tail=a["tail"])
+                              t=a["last"], instance=inst.name, process=p.name, tail=a["tail"])
     for s in sorted(sigs.values(), key=lambda s: -s["count"]):
         target = f" referencing {s['target_host']}" + (f":{s['target_port']}" if s["target_port"] else "") if s["target_host"] else ""
         store.add("logs", subj, "log_signature",
                   f"{rs.component} logged {s['count']} {s['signature'].replace('_', ' ')} message(s){target} "
                   f"({hms(s['first'])}-{hms(s['last'])}), e.g. \"{s['sample'][:180]}\"",
                   t=s["first"], signature=s["signature"], target_host=s["target_host"], target_port=s["target_port"],
-                  count=s["count"], pods=sorted(s["pods"]), instances=sorted(s["instances"]), last=s["last"],
+                  count=s["count"], instances=sorted(s["instances"]), generations=sorted(s["generations"]), last=s["last"],
                   sample=s["sample"])
     if levels.get("error") or levels.get("critical") or levels.get("warning"):
         top = sorted(errors.values(), key=lambda e: -e["count"])[:4]
@@ -241,9 +247,9 @@ def record_dependencies(store: EvidenceStore, caps: Capabilities, component: str
 
 def record_changes(store: EvidenceStore, caps: Capabilities, tr: TimeRange) -> None:
     for c in caps.get_deployment_history(TimeRange(tr.start - CHANGE_LOOKBACK_S, tr.end)) or []:
-        store.add(f"{caps.resources.name}.replicasets", f"workload/{c.component}", "rollout",
+        store.add(f"{caps.resources.name}.deployment_history", f"component/{c.component}", "change",
                   f"{c.component_kind} {c.component} rolled out revision {c.revision} ({c.detail})",
-                  t=c.at, workload=c.component, revision=c.revision)
+                  t=c.at, component=c.component, change=c.kind, revision=c.revision)
 
 
 def record_entry_probe(store: EvidenceStore, caps: Capabilities, entry: tuple) -> None:

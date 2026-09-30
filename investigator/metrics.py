@@ -57,6 +57,6 @@ def metric_facts(store: EvidenceStore, caps: Capabilities, incident: dict, tr: T
         ratio = [(t, v / limits[inst]) for t, v in s.points]
         peak_t, peak = max(ratio, key=lambda p: p[1])
         if peak >= 0.8:
-            store.add(src, f"workload/{owner[inst]}", "metric_memory_high",
-                      f"Pod {inst} memory working set reached {peak:.0%} of its limit",
-                      t=_first(ratio, lambda v: v >= 0.8), pod=inst, peak_ratio=peak, query=s.labels.get("query"))
+            store.add(src, f"component/{owner[inst]}", "metric_memory_high",
+                      f"Instance {inst} memory working set reached {peak:.0%} of its limit",
+                      t=_first(ratio, lambda v: v >= 0.8), instance=inst, peak_ratio=peak, query=s.labels.get("query"))

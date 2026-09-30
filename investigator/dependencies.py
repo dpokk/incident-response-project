@@ -18,7 +18,7 @@ def check_dependency(caps: Capabilities, store: EvidenceStore, consumer: str, re
     src = caps.resources.name
     subject = f"dependency/{ref.host}:{ref.port}"
     shown_source = ref.source + (" (secret, value not shown)" if ref.sensitive_source else "")
-    store.add("configuration", f"workload/{consumer}", "config_reference",
+    store.add("configuration", f"component/{consumer}", "config_reference",
               f"{consumer} is configured (env {ref.variable} from {shown_source}) to use "
               f"{ref.type} at {ref.host}:{ref.port}",
               consumer=consumer, host=ref.host, port=ref.port, dep_type=ref.type,
@@ -63,9 +63,9 @@ def check_dependency(caps: Capabilities, store: EvidenceStore, consumer: str, re
                                             if h.endpoint_instances else ""),
                   ready=h.ready_endpoints, not_ready=h.not_ready_endpoints, service=h.name)
         for b in h.backing:
-            store.add(f"{src}.workloads", subject, "backing_workload",
+            store.add(f"{src}.workloads", subject, "backing_component",
                       f"{h.kind} {h.name} is backed by {b.kind} {b.component}: {b.ready}/{b.desired} replicas ready "
-                      f"(desired {b.desired})", workload=b.component, desired=b.desired, ready=b.ready)
+                      f"(desired {b.desired})", component=b.component, desired=b.desired, ready=b.ready)
 
     if probe and ref.port:
         probe_dependency(caps, store, consumer, ref)
@@ -96,12 +96,12 @@ def _probe_fact(store: EvidenceStore, subject: str, r: ConnectivityResult):
                          f"Connectivity probe to {host}:{port} not performed ({r.skipped})", host=host)
     if r.dns != "ok":
         return store.add("dependency_probe", subject, "connectivity_probe",
-                         f"From pod {pod}: DNS lookup of '{host}' failed ({r.error})",
-                         from_pod=pod, host=host, port=port, dns="error", tcp=None, error=r.error)
+                         f"From {pod}: DNS lookup of '{host}' failed ({r.error})",
+                         from_instance=pod, host=host, port=port, dns="error", tcp=None, error=r.error)
     detail = {"ok": f"TCP connection to {host}:{port} succeeded in {r.ms} ms",
               "refused": f"TCP connection to {host}:{port} was refused",
               "timeout": f"TCP connection to {host}:{port} timed out"}.get(
         r.tcp, f"TCP connection to {host}:{port} failed ({r.error})")
     return store.add("dependency_probe", subject, "connectivity_probe",
-                     f"From pod {pod}: '{host}' resolves to {', '.join(r.addresses or [])}; {detail}",
-                     from_pod=pod, host=host, port=port, dns="ok", tcp=r.tcp, addresses=r.addresses, error=r.error)
+                     f"From {pod}: '{host}' resolves to {', '.join(r.addresses or [])}; {detail}",
+                     from_instance=pod, host=host, port=port, dns="ok", tcp=r.tcp, addresses=r.addresses, error=r.error)
