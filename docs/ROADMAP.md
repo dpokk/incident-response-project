@@ -2,17 +2,17 @@
 
 ## Current Status
 
-### Iteration 1 â€” COMPLETED
+### Iteration 1 — COMPLETED
 **Goal:** Detect a Kubernetes OOMKilled incident.
 
 The original prototype did more than OOM detection (code archived in `archive/iteration1/`):
-- a Python investigator that detected a traffic-spike â†’ OOMKilled incident;
-- a Prometheus-based T1â€“T8 timeline (traffic onset â†’ CPU/memory saturation â†’ OOMKill â†’ 5xx â†’ recovery);
+- a Python investigator that detected a traffic-spike → OOMKilled incident;
+- a Prometheus-based T1–T8 timeline (traffic onset → CPU/memory saturation → OOMKill → 5xx → recovery);
 - quantified impact (failed requests, duration);
 - an LLM-written narrative (Claude; later NVIDIA-hosted models) with recommendations;
 - Slack posting.
 
-### Iteration 2 â€” COMPLETED
+### Iteration 2 — COMPLETED
 **Goal:** Generalize the investigator into an evidence-driven multi-scenario investigation system.
 
 Implemented:
@@ -48,7 +48,7 @@ Implemented:
 Iteration 1 capabilities intentionally not carried into Iteration 2 (not yet restored):
 - the LLM narrative and its recommendations;
 - quantified impact / blast radius (failed requests, impact duration);
-- Prometheus-based T1â€“T8 timeline reconstruction. Iteration 2's timeline lists timestamped facts; it
+- Prometheus-based T1–T8 timeline reconstruction. Iteration 2's timeline lists timestamped facts; it
   does not derive threshold crossings.
 
 ### Deliberately NOT Implemented in Iteration 2
@@ -68,7 +68,7 @@ The project is currently at:
 
 The project is NOT currently a production SaaS platform and does NOT currently execute remediation.
 
-## Immediate Next Milestone â€” Iteration 3
+## Immediate Next Milestone — Iteration 3
 
 ### Goal
 
@@ -78,23 +78,23 @@ Move from a deterministic multi-scenario investigator toward a capability-based 
 
 ```text
 Incident
-   â†“
+   ↓
 Incident Context
-   â†“
+   ↓
 Investigation Planner
-   â†“
+   ↓
 Select Required Capabilities
-   â†“
+   ↓
 Collect Evidence
-   â†“
+   ↓
 Evaluate Evidence
-   â†“
+   ↓
 Decide What to Investigate Next
-   â†“
+   ↓
 Timeline + Diagnosis
-   â†“
+   ↓
 Structured Report
-   â†“
+   ↓
 Slack
 ```
 
@@ -115,14 +115,14 @@ Kubernetes should implement these capabilities through an adapter.
 
 Do not immediately rewrite the working investigator. Refactor incrementally.
 
-### Status â€” IN PROGRESS (branch `iteration-3/capability-based-investigation`, not yet merged to `main`)
+### Status — IN PROGRESS (branch `iteration-3/capability-based-investigation`, not yet merged to `main`)
 
 | Step | State | What exists |
 |---|---|---|
 | 1. Capability interface + Kubernetes adapter | Done | `investigator/capabilities/` (`base.py` interface and records, `kubernetes.py`, `prometheus.py`). Investigation modules no longer import provider code. Facts were verified byte-identical to Iteration 2 on all fake clusters. |
 | 2. Incident context + investigation planner | Done | `investigator/context.py`, `investigator/planner.py`: deterministic and evidence-driven, every decision traced with its reason. The Iteration 2 procedure is kept as `INVESTIGATION_STRATEGY=exhaustive`. |
 | 3. Detection on capabilities | Done | `detector.py` uses only `ResourceProvider` / `MetricsProvider`. Optional `reset()` and `start_background_recording()` hooks; the Kubernetes pod journal now sits behind the adapter. `providers.py` is the composition root. |
-| 4. Provider-neutral fact vocabulary | Done | Neutral termination causes, event categories and waiting causes, mapped in the adapter. Neutral fact kinds (`component_status`, `process_terminated`, `event`, â€¦). `legacy.py` replays older evidence. A test forbids Kubernetes vocabulary in reasoning code. Diagnoses are identical before and after. |
+| 4. Provider-neutral fact vocabulary | Done | Neutral termination causes, event categories and waiting causes, mapped in the adapter. Neutral fact kinds (`component_status`, `process_terminated`, `event`, …). `legacy.py` replays older evidence. A test forbids Kubernetes vocabulary in reasoning code. Diagnoses are identical before and after. |
 
 Iteration 3 is architecturally complete once these steps are merged.
 
@@ -164,7 +164,7 @@ Iteration 3 should demonstrate that:
 5. The system can decide which evidence/capabilities are relevant to an incident.
 6. The final diagnosis remains evidence-driven.
 
-## Stabilization pass â€” DONE (branch `stabilization/post-iteration-2`, merged into Iteration 3)
+## Stabilization pass — DONE (branch `stabilization/post-iteration-2`, merged into Iteration 3)
 
 Corrections found when the project context documents were reconciled with the code:
 
@@ -176,7 +176,7 @@ Corrections found when the project context documents were reconciled with the co
 | Scenario C representation | Reports now give a **root-cause component** (postgres) separately from the **affected component** (backend) and the **impacted components** (frontend). |
 | Timestamp precision | Events that began before the window keep their real first timestamp and are marked `before_window`; they are never re-dated to the window start (`tests/test_timeline.py`). |
 | Similar-symptom tests | `tests/test_similar_symptoms.py`, 4 cases. These found and fixed a real gap: errors naming a dependency by IP address were not linked to it. |
-| Repository structure | Documented in `docs/ARCHITECTURE.md` Â§18 and `CLAUDE.md`. |
+| Repository structure | Documented in `docs/ARCHITECTURE.md` §18 and `CLAUDE.md`. |
 | Report contract: quantified impact and recommendations | **Open decision** (below). |
 
 ### Open decision: impact and recommendations in the report contract
@@ -185,12 +185,12 @@ Reports currently list impacted components but no **quantified impact** (failed 
 impact duration) and no **recommendations**.
 
 Recommendation, pending confirmation:
-- **Quantified impact â†’ Iteration 4.** It depends on the richer observability that iteration brings,
+- **Quantified impact → Iteration 4.** It depends on the richer observability that iteration brings,
   such as retained metrics and logs.
-- **Recommendations â†’ Iteration 5 (remediation planning).** Putting them into diagnosis reports now
-  would blur the diagnosis/remediation boundary in `docs/ARCHITECTURE.md` Â§9.
+- **Recommendations → Iteration 5 (remediation planning).** Putting them into diagnosis reports now
+  would blur the diagnosis/remediation boundary in `docs/ARCHITECTURE.md` §9.
 
-## Iteration 4 â€” Richer Observability + Slack Workflow
+## Iteration 4 — Richer Observability + Slack Workflow
 
 ### Goal
 
@@ -207,7 +207,7 @@ Desired Slack output:
 
 Do not introduce remediation execution yet.
 
-## Iteration 5 â€” Remediation Planning
+## Iteration 5 — Remediation Planning
 
 ### Goal
 
@@ -224,7 +224,7 @@ The plan must include:
 
 The system must NOT execute the plan automatically.
 
-## Iteration 6 â€” Human-Approved Remediation
+## Iteration 6 — Human-Approved Remediation
 
 ### Goal
 
@@ -234,15 +234,15 @@ Workflow:
 
 ```text
 Diagnosis
-   â†“
+   ↓
 Plan
-   â†“
+   ↓
 Engineer reviews
-   â†“
+   ↓
 Approve / reject
-   â†“
+   ↓
 Policy check
-   â†“
+   ↓
 Execute approved typed actions
 ```
 
@@ -255,7 +255,7 @@ Potential initial actions:
 
 Avoid arbitrary shell execution.
 
-## Iteration 7 â€” Remediation Verification
+## Iteration 7 — Remediation Verification
 
 ### Goal
 
@@ -265,17 +265,17 @@ Workflow:
 
 ```text
 Execute
-   â†“
+   ↓
 Observe
-   â†“
+   ↓
 Compare actual state vs expected state
-   â†“
+   ↓
 Resolved / Not resolved
 ```
 
 If verification fails, the system should not blindly continue executing changes. It should return to investigation or request human intervention.
 
-## Iteration 8 â€” Provider Abstraction + Second Provider
+## Iteration 8 — Provider Abstraction + Second Provider
 
 ### Goal
 
@@ -287,11 +287,11 @@ Architecture:
 
 ```text
 Investigation Engine
-        â†“
+        ↓
 Capability Interfaces
-        â†“
- â”Œâ”€â”€â”€â”€â”€â”€â”´â”€â”€â”€â”€â”€â”€â”€â”
- â†“              â†“
+        ↓
+ ┌──────┴───────┐
+ ↓              ↓
 Kubernetes     AWS
 Adapter        Adapter
 ```
@@ -299,7 +299,7 @@ Adapter        Adapter
 Success criterion:
 The same provider-independent investigation logic can diagnose representative incidents through both implementations.
 
-## Iteration 9 â€” SaaS Control Plane
+## Iteration 9 — SaaS Control Plane
 
 ### Goal
 
@@ -320,7 +320,7 @@ Introduce:
 
 Customer data and configuration must be isolated by tenant.
 
-## Iteration 10 â€” Customer Connector
+## Iteration 10 — Customer Connector
 
 ### Goal
 
@@ -335,11 +335,11 @@ Initial connector:
 Later:
 - Add narrowly scoped write capabilities for remediation.
 
-## Iteration 11 â€” External Pilot
+## Iteration 11 — External Pilot
 
 ### Goal
 
-Test the platform with 2â€“3 real engineering organizations/design partners.
+Test the platform with 2–3 real engineering organizations/design partners.
 
 Initial pilot should focus on:
 - Incident investigation
@@ -372,26 +372,26 @@ The intended end state is:
 
 ```text
 Customer Environment
-        â†“
+        ↓
 Incident
-        â†“
+        ↓
 Context
-        â†“
+        ↓
 Adaptive Investigation
-        â†“
+        ↓
 Evidence
-        â†“
+        ↓
 Timeline + Root Cause + Blast Radius
-        â†“
+        ↓
 Slack
-        â†“
+        ↓
 Remediation Plan
-        â†“
+        ↓
 Human Approval
-        â†“
+        ↓
 Controlled Execution
-        â†“
+        ↓
 Verification
-        â†“
+        ↓
 Resolved
 ```
