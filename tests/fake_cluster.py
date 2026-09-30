@@ -236,6 +236,22 @@ def world_healthy_after_rollout() -> dict:
     return w
 
 
+def world_oom_backend_dead() -> dict:
+    """OOM where the backend is completely down: the frontend's "backend unavailable" evidence is overwhelming,
+    but it is an effect - the root cause is the backend's own memory exhaustion (seen in the final live run)."""
+    w = world_oom()
+    w["workloads"][1].update(replicas_ready=0, replicas_available=0)
+    w["logs"][("frontend-aaaaa", False)] = [(NOW - 60 + i, _j(level="error", msg="upstream request to backend failed",
+                                                              upstream="http://backend.shop.svc.cluster.local:8080",
+                                                              reason="upstream_connect_error", count=2000,
+                                                              sample_error="Cannot connect to host backend.shop.svc."
+                                                                           "cluster.local:8080 Connection refused"))
+                                            for i in range(3)]
+    w["probes"]["backend.shop.svc.cluster.local"] = {"dns": "ok", "addresses": ["10.96.0.11"], "tcp": "refused"}
+    w["entry"] = (503, '{"error": "backend unavailable"}')
+    return w
+
+
 class FakeKube:
     """Implements the subset of investigator.kube.Kube used by the toolset, from a world dict."""
 

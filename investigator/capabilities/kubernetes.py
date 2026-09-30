@@ -108,14 +108,21 @@ class KubernetesAdapter(ResourceProvider):
             return None
         pods = self._pods_of(w)
         names = {p["name"] for p in pods}
+        app_label = (w.get("selector") or {}).get("app")
         history = []
         for e in read_journal(self.journal_path, time_range.start - 60, time_range.end + 60) if self.journal_path else []:
-            if e["kind"] == "container_terminated" and e.get("app") and e["pod"] in names:
-                history.append(TerminationRecord(
-                    instance=e["pod"], process=e.get("container"), restarts=e.get("restart_count"),
-                    termination=Termination(e.get("reason"), e.get("exit_code"), e.get("started_at"), e["t"],
-                                            termination_cause(e.get("reason"), e.get("exit_code"))),
-                    source="kubernetes.pod_journal"))
+            if e["kind"] != "container_terminated" or not e.get("app"):
+                continue
+            # Pods that still exist, and pods of this workload that have since been deleted (e.g. replaced by a
+            # rollout): their terminations are still evidence, even though their logs are gone.
+            gone = e["pod"] not in names
+            if gone and not (e["app"] == app_label or e["pod"].startswith(w["name"] + "-")):
+                continue
+            history.append(TerminationRecord(
+                instance=e["pod"], process=e.get("container"), restarts=e.get("restart_count"),
+                termination=Termination(e.get("reason"), e.get("exit_code"), e.get("started_at"), e["t"],
+                                        termination_cause(e.get("reason"), e.get("exit_code"))),
+                source="kubernetes.pod_journal", instance_gone=gone))
         return ResourceState(
             component=w["name"], kind=w["kind"], scope=w["namespace"], desired=w["replicas_desired"],
             ready=w["replicas_ready"], available=w["replicas_available"],

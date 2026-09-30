@@ -125,19 +125,21 @@ def record_resource_state(store: EvidenceStore, caps: Capabilities, rs: Resource
             continue
         seen_terms.add(key)
         proc = next((p for i in rs.instances if i.name == h.instance for p in i.processes if p.name == h.process), None)
+        default_words = next(iter(words.values()), ("instance", "process"))
         _termination(store, subj, h.instance, h.process, proc.memory_limit_bytes if proc else None, h.termination,
-                     h.restarts, h.source, words.get(h.instance, ("instance", "process")))
+                     h.restarts, h.source, words.get(h.instance, default_words), gone=h.instance_gone)
 
 
-def _termination(store, subj, instance, process, mem, t: Termination, restarts, source, words):
+def _termination(store, subj, instance, process, mem, t: Termination, restarts, source, words, gone=False):
     ran = (t.finished_at - t.started_at) if t.finished_at and t.started_at else None
     instance_word, process_word = words
     store.add(source, subj, "process_terminated",
               f"{process_word.capitalize()} {process} in {instance_word} {instance} terminated: reason={t.reason}, "
               f"exit code {t.exit_code}" + (f", after running {ran:.0f}s" if ran is not None else "")
-              + (f" (memory limit {mib(mem)})" if mem else ""),
+              + (f" (memory limit {mib(mem)})" if mem else "")
+              + (f"; that {instance_word} no longer exists, so its logs are unavailable" if gone else ""),
               t=t.finished_at, instance=instance, process=process, reason=t.reason, cause=t.cause,
-              exit_code=t.exit_code, ran_s=ran, memory_limit=mem, restarts=restarts)
+              exit_code=t.exit_code, ran_s=ran, memory_limit=mem, restarts=restarts, instance_gone=gone)
 
 
 def record_events(store: EvidenceStore, caps: Capabilities, tr: TimeRange) -> None:

@@ -86,6 +86,7 @@ class TerminationRecord:
     termination: Termination
     restarts: int | None
     source: str                        # where this memory comes from, e.g. "kubernetes.pod_journal"
+    instance_gone: bool = False        # the instance no longer exists (its logs can no longer be read)
 
 
 @dataclass

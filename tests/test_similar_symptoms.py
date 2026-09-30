@@ -6,7 +6,7 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 
 from fake_cluster import (world_crash_caused_by_db_down, world_db_down_after_config_edit,  # noqa: E402
-                          world_healthy_after_rollout, world_liveness_kill)
+                          world_healthy_after_rollout, world_liveness_kill, world_oom_backend_dead)
 from test_scenarios import run  # noqa: E402
 
 STRATEGIES = ("planned", "exhaustive")
@@ -40,6 +40,17 @@ def test_unrelated_config_edit_does_not_turn_an_outage_into_a_misconfiguration()
         assert dx["category"] == "dependency_unavailable", (s, dx["category"])
         mis = rejected(dx, "dependency_misconfiguration")
         assert mis and "existing Service" in mis["why_not"], (s, mis)
+
+
+def test_callers_outage_does_not_outrank_the_callees_own_failure():
+    """Found in the final live run: backend OOM-killed and fully down; the frontend's "backend unavailable" was
+    stronger evidence than the backend's own memory finding, and was wrongly chosen as the root cause."""
+    for s in STRATEGIES:
+        dx, _ = run(world_oom_backend_dead(), s)
+        assert dx["category"] == "memory_exhaustion" and dx["affected_component"] == "backend", (s, dx["category"])
+        assert "frontend" in dx["impacted_components"]
+        frontend = rejected(dx, "dependency_unavailable", "frontend")
+        assert frontend and "explained by backend" in frontend["why_not"], (s, frontend)
 
 
 def test_rollout_noise_on_a_healthy_system_is_not_an_incident():
