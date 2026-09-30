@@ -11,12 +11,14 @@ from datetime import datetime
 
 from . import report as rpt
 from . import slack
+from .capabilities import Capabilities
+from .capabilities.kubernetes import KubernetesAdapter
+from .capabilities.prometheus import PrometheusMetrics
 from .collect import collect
 from .detector import Detector, format_sample
 from .diagnosis import diagnose
 from .evidence import EvidenceStore
 from .kube import PodJournal
-from .tools import Toolset
 
 
 def log(msg: str) -> None:
@@ -44,12 +46,22 @@ def investigate(settings, kube, prom, incident: dict, start: float, end: float,
                 post_to_slack: bool = True, ongoing: bool | None = None) -> dict:
     log(f"Investigating {incident['id']} (window {rpt.hms(start)}-{rpt.hms(end)}); the investigator is not told what failed")
     store = EvidenceStore()
-    tools = Toolset(kube, settings.namespace, store, settings.active_probes)
-    log("Stage 1/3: evidence collection")
-    collect(tools, incident, start, end, journal_path=settings.state_dir / "pod_journal.jsonl", prom=prom,
-            entry=(settings.entry_service, settings.entry_port, settings.entry_path), prom_entry=settings.entry_app, log=log)
-    log(f"  {len(store.facts)} facts collected with {sum(1 for s in store.trace if s['step'] == 'tool')} tool calls")
+    caps = build_capabilities(settings, kube, prom, store)
+    log(f"Stage 1/3: evidence collection (providers: {caps.resources.name}"
+        + (f", {caps.metrics.name}" if caps.metrics else "") + ")")
+    collect(caps, incident, start, end, entry=(settings.entry_service, settings.entry_port, settings.entry_path),
+            metrics_target=settings.entry_app, log=log)
+    log(f"  {len(store.facts)} facts collected with {sum(1 for s in store.trace if s['step'] == 'capability')} "
+        f"capability calls")
     return diagnose_and_report(settings, incident, store, (start, end), post_to_slack, ongoing)
+
+
+def build_capabilities(settings, kube, prom, store: EvidenceStore) -> Capabilities:
+    """Assemble the capability layer: Kubernetes for resources, Prometheus (if reachable) for metrics."""
+    resources = KubernetesAdapter(kube, settings.namespace, journal_path=settings.state_dir / "pod_journal.jsonl",
+                                  active_probes=settings.active_probes)
+    metrics = PrometheusMetrics(prom, settings.namespace) if prom is not None else None
+    return Capabilities(resources, store, metrics)
 
 
 def diagnose_and_report(settings, incident: dict, store: EvidenceStore, window: tuple,

@@ -16,17 +16,17 @@ from investigator.collect import collect  # noqa: E402
 from investigator.diagnosis import diagnose  # noqa: E402
 from investigator.evidence import EvidenceStore  # noqa: E402
 from investigator.report import build, render_text  # noqa: E402
-from investigator.tools import Toolset  # noqa: E402
+from investigator.capabilities import Capabilities  # noqa: E402
+from investigator.capabilities.kubernetes import KubernetesAdapter  # noqa: E402
 
 
 def run(world: dict) -> tuple[dict, EvidenceStore]:
     store = EvidenceStore()
-    tools = Toolset(FakeKube(world), "shop", store, active_probes=True)
+    caps = Capabilities(KubernetesAdapter(FakeKube(world), "shop", journal_path=None, active_probes=True), store)
     incident = {"id": "INC-TEST", "detected_at": NOW - 30, "namespace": "shop",
                 "signals": [{"kind": "entry_probe_failure", "subject": "workload/frontend", "t": NOW - 30,
                              "text": "Synthetic requests to frontend failing"}]}
-    collect(tools, incident, NOW - 330, NOW, journal_path=None, prom=None, entry=("frontend", "8080", "/api/orders"),
-            log=lambda *_: None)
+    collect(caps, incident, NOW - 330, NOW, entry=("frontend", "8080", "/api/orders"), log=lambda *_: None)
     dx = diagnose(store)
     render_text(build(incident, store, dx, (NOW - 330, NOW), True))  # must render without errors
     return dx, store

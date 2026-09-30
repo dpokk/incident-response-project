@@ -452,7 +452,8 @@ def diagnose(store: EvidenceStore) -> dict:
     runner_up = next((f for f in ranked[1:] if (f.component, f.category) != (primary.component, primary.category)
                       and f.score >= 0.3 and not f.explained_by), None)  # weak/rejected findings don't compete
     confidence = max(0.05, min(0.97, primary.score * (1 - 0.5 * (runner_up.score if runner_up else 0))))
-    missing = [s for s in store.trace if s.get("step") == "tool" and str(s.get("status", "")).startswith("error")]
+    missing = [s for s in store.trace if s.get("step") in ("capability", "tool")  # "tool": pre-Iteration-3 evidence
+               and str(s.get("status", "")).startswith("error")]
     if missing:
         confidence *= 0.9
     dep = primary.dependency

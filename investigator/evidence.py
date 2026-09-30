@@ -24,7 +24,7 @@ class Fact:
 class EvidenceStore:
     def __init__(self):
         self.facts: list[Fact] = []
-        self.trace: list[dict] = []   # investigation steps / tool calls, in order
+        self.trace: list[dict] = []   # investigation steps / capability calls, in order
 
     def add(self, source: str, subject: str, kind: str, text: str, t: float | None = None, **data) -> Fact:
         fact = Fact(id=f"F{len(self.facts) + 1}", source=source, subject=subject, kind=kind, text=text, data=data, t=t)
