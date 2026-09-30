@@ -16,6 +16,11 @@ class Fact:
     text: str            # human-readable observation (no interpretation)
     data: dict = field(default_factory=dict)
     t: float | None = None  # when the observed thing happened, if known
+    # How to read `t`. Never manufacture precision:
+    #   "exact"         - t is when it happened
+    #   "before_window" - it began before the investigation window; t is when it was last observed
+    #                     (data["observed_at"]); data["first_seen"] keeps the source's own first timestamp
+    t_basis: str = "exact"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -24,10 +29,12 @@ class Fact:
 class EvidenceStore:
     def __init__(self):
         self.facts: list[Fact] = []
-        self.trace: list[dict] = []   # investigation steps / tool calls, in order
+        self.trace: list[dict] = []   # investigation steps / capability calls, in order
 
-    def add(self, source: str, subject: str, kind: str, text: str, t: float | None = None, **data) -> Fact:
-        fact = Fact(id=f"F{len(self.facts) + 1}", source=source, subject=subject, kind=kind, text=text, data=data, t=t)
+    def add(self, source: str, subject: str, kind: str, text: str, t: float | None = None,
+            t_basis: str = "exact", **data) -> Fact:
+        fact = Fact(id=f"F{len(self.facts) + 1}", source=source, subject=subject, kind=kind, text=text, data=data,
+                    t=t, t_basis=t_basis)
         self.facts.append(fact)
         return fact
 

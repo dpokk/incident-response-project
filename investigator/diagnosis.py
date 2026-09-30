@@ -1,14 +1,14 @@
 """Diagnosis: interpret collected facts into a failure category, affected component and root cause.
 
 How it works (and why it is not scenario-based):
-  * Every workload in the namespace is evaluated against a general failure taxonomy: memory
+  * Every investigated component is evaluated against a general failure taxonomy: memory
     exhaustion, application crash, dependency misconfiguration, dependency unavailable, image pull
     failure, container configuration error, unschedulable, health-check failure. Each check is a
     function of *observed facts* (termination reasons, exit codes, tracebacks, log signatures,
     service/endpoint state, connectivity probes, config changes) and returns a score, the facts
     that support it and the facts that argue against it.
   * Findings are followed along the dependency graph (built from configuration): if a consumer's
-    failures are explained by a dependency workload that has its own intrinsic failure, the root
+    failures are explained by a dependency component that has its own intrinsic failure, the root
     is the dependency and the consumer is recorded as impacted.
   * The best-supported finding becomes the diagnosis; the others are reported with why they were
     rejected. Every statement cites fact IDs.
@@ -20,17 +20,16 @@ from .evidence import EvidenceStore, Fact
 from .logparse import DEPENDENCY_SIGNATURES
 
 CATEGORY_LABELS = {
-    "memory_exhaustion": "Memory exhaustion (container OOMKilled)",
+    "memory_exhaustion": "Memory exhaustion (killed at its memory limit)",
     "application_crash": "Application crash (unhandled exception)",
     "dependency_misconfiguration": "Dependency configuration / connectivity error",
     "dependency_unavailable": "Dependency unavailable",
-    "image_pull_failure": "Image pull failure",
-    "container_config_error": "Container configuration error",
-    "unschedulable": "Pod cannot be scheduled",
-    "health_check_failure": "Health check failure (liveness/readiness)",
+    "image_pull_failure": "Image unavailable",
+    "container_config_error": "Invalid process configuration",
+    "unschedulable": "Instance cannot be scheduled",
+    "health_check_failure": "Health check failure",
     "undetermined": "Undetermined (insufficient evidence)",
 }
-EXIT_SIGNALS = {137: "SIGKILL", 143: "SIGTERM"}
 
 
 @dataclass
@@ -45,7 +44,7 @@ class Finding:
     dependency: dict | None = None
     contributing: list = field(default_factory=list)
     impacted: list = field(default_factory=list)
-    backing: list = field(default_factory=list)       # workloads behind a dependency Service
+    backing: list = field(default_factory=list)       # components behind a dependency service
     explained_by: str = ""                            # set when this is an effect of another finding
 
     def say(self, statement: str, facts: list[Fact] | list[str]) -> None:
@@ -62,27 +61,39 @@ class Finding:
         self.against.append((fact.id if fact else None, why))
 
 
+def _reasons(facts: list[Fact]) -> str:
+    """The provider's own words for these terminations, for display (e.g. "OOMKilled, exit code 137")."""
+    pairs = sorted({(f.data.get("reason"), f.data.get("exit_code")) for f in facts}, key=str)
+    return "; ".join(f"reason {r}, exit code {c}" for r, c in pairs)
+
+
 # --------------------------------------------------------------------------- component views
 
 class View:
-    """Facts about one workload, grouped for the checks."""
+    """Facts about one component, grouped for the checks."""
 
     def __init__(self, store: EvidenceStore, name: str):
         self.name = name
-        subj = f"workload/{name}"
+        subj = f"component/{name}"
         f = [x for x in store.facts if x.subject == subj]
-        self.status = next((x for x in f if x.kind == "workload_status"), None)
-        self.pods = [x for x in f if x.kind == "pod_status"]
-        self.terms = [x for x in f if x.kind == "container_terminated"]
-        self.waiting = [x for x in f if x.kind == "container_waiting"]
-        self.events = [x for x in f if x.kind == "k8s_event"]
+        self.status = next((x for x in f if x.kind == "component_status"), None)
+        self.instances = [x for x in f if x.kind == "instance_status"]
+        self.terms = [x for x in f if x.kind == "process_terminated"]
+        self.waiting = [x for x in f if x.kind == "process_waiting"]
+        self.events = [x for x in f if x.kind == "event"]
         self.sigs = [x for x in f if x.kind == "log_signature"]
         self.exceptions = [x for x in f if x.kind == "log_exception"]
         self.tails = [x for x in f if x.kind == "log_tail_before_exit"]
         self.levels = next((x for x in f if x.kind == "log_levels"), None)
         self.refs = [x for x in f if x.kind == "config_reference"]
-        self.rollouts = [x for x in f if x.kind == "rollout"]
+        self.changes = [x for x in f if x.kind == "change"]
         self.metrics_mem = [x for x in f if x.kind == "metric_memory_high"]
+
+    def terms_by(self, *causes: str) -> list[Fact]:
+        return [t for t in self.terms if t.data.get("cause") in causes]
+
+    def events_by(self, *categories: str) -> list[Fact]:
+        return [e for e in self.events if e.data.get("category") in categories]
 
     @property
     def error_lines(self) -> int:
@@ -90,12 +101,12 @@ class View:
 
     def symptomatic(self) -> bool:
         return bool(self.terms or [w for w in self.waiting if w.data["problematic"]]
-                    or [p for p in self.pods if not p.data["ready"]] or self.error_lines > 0
+                    or [p for p in self.instances if not p.data["ready"]] or self.error_lines > 0
                     or [e for e in self.events if e.data["type"] == "Warning"])
 
     def symptom_facts(self) -> list[Fact]:
         out = list(self.terms[:3]) + [w for w in self.waiting if w.data["problematic"]][:2]
-        out += [p for p in self.pods if not p.data["ready"]][:2]
+        out += [p for p in self.instances if not p.data["ready"]][:2]
         out += [e for e in self.events if e.data["type"] == "Warning"][:3]
         if self.levels and self.error_lines:
             out.append(self.levels)
@@ -106,18 +117,18 @@ class View:
 
 def check_memory(v: View, store: EvidenceStore) -> Finding:
     f = Finding("memory_exhaustion", v.name)
-    oom = [t for t in v.terms if t.data["reason"] == "OOMKilled"]
-    killed = [t for t in v.terms if t.data["exit_code"] == 137 and t.data["reason"] != "OOMKilled"]
+    oom = v.terms_by("memory_limit")
+    killed = v.terms_by("killed")
     mem_logs = [s for s in v.sigs if s.data["signature"] == "memory_pressure"]
     if oom:
-        pods = sorted({t.data["pod"] for t in oom})
-        f.add(0.6, oom, "container terminated with reason OOMKilled")
-        f.say(f"{len(oom)} container termination(s) in {len(pods)} {v.name} pod(s) have reason OOMKilled (exit code 137): "
-              f"the kernel killed the process because the container exceeded its memory limit", oom)
+        insts = sorted({t.data["instance"] for t in oom})
+        f.add(0.6, oom, "terminated for exceeding the memory limit")
+        f.say(f"{len(oom)} termination(s) in {len(insts)} {v.name} instance(s) were kills at the memory limit "
+              f"({_reasons(oom)}): the process exceeded the memory it is allowed to use", oom)
     elif killed:
-        f.add(0.2, killed, "exit code 137 (SIGKILL) without an OOMKilled reason")
+        f.add(0.2, killed, "killed from outside without a memory-limit reason")
     else:
-        f.reject("no container termination has reason OOMKilled or exit code 137")
+        f.reject("no termination was a kill at the memory limit or an external kill")
     if mem_logs:
         f.add(0.15 if (oom or killed) else 0.05, mem_logs, "application logged memory pressure")
         f.say(f"Before termination {v.name} logged that memory usage was approaching its limit", mem_logs)
@@ -126,7 +137,7 @@ def check_memory(v: View, store: EvidenceStore) -> Finding:
         f.say(f"Metrics show memory working set reaching {max(m.data['peak_ratio'] for m in v.metrics_mem):.0%} of the limit",
               v.metrics_mem)
     if len(oom) > 1:
-        f.add(0.1, oom[1:3], "repeated OOM kills")
+        f.add(0.1, oom[1:3], "repeated memory-limit kills")
     limit = next((t.data["memory_limit"] for t in oom if t.data.get("memory_limit")), None)
     traffic = store.find(kind="metric_traffic_change")
     if traffic and (oom or killed):
@@ -134,8 +145,9 @@ def check_memory(v: View, store: EvidenceStore) -> Finding:
         f.contributing.append({"statement": f"Incoming traffic rose from ~{tr.data['baseline']:.0f} to ~{tr.data['peak']:.0f} "
                                f"req/s ({tr.data['peak'] / tr.data['baseline']:.1f}x) shortly before the terminations",
                                "facts": [tr.id]})
-    f.root_cause = (f"{v.name} containers exceeded their memory limit"
-                    + (f" ({limit / 2**20:.0f}Mi)" if limit else "") + " and were OOMKilled by the kernel"
+    shown = next((t.data.get("reason") for t in oom if t.data.get("reason")), None)
+    f.root_cause = (f"{v.name} exceeded its memory limit" + (f" ({limit / 2**20:.0f}Mi)" if limit else "")
+                    + " and was killed" + (f" ({shown})" if shown else "")
                     + (f"; this followed a {traffic[0].data['peak'] / traffic[0].data['baseline']:.1f}x increase in "
                        f"incoming traffic" if traffic else ""))
     f.score = min(f.score, 1.0)
@@ -144,23 +156,22 @@ def check_memory(v: View, store: EvidenceStore) -> Finding:
 
 def check_crash(v: View, store: EvidenceStore, dep_health: dict) -> Finding:
     f = Finding("application_crash", v.name)
-    errored = [t for t in v.terms if t.data["reason"] != "OOMKilled" and t.data["exit_code"] not in (0, 137, 143, None)]
-    oom = [t for t in v.terms if t.data["reason"] == "OOMKilled"]
-    crashloop = [w for w in v.waiting if w.data["reason"] == "CrashLoopBackOff"]
-    backoff = [e for e in v.events if e.data["reason"] == "BackOff"]
+    errored = v.terms_by("error_exit")
+    oom = v.terms_by("memory_limit")
+    backoff = [w for w in v.waiting if w.data.get("cause") == "restart_backoff"] + v.events_by("restart_backoff")
     app_exc = [e for e in v.exceptions if not e.data.get("dependency_signature")]
     dep_exc = [e for e in v.exceptions if e.data.get("dependency_signature")]
     if not errored:
-        f.reject("no container exited with an application error code (non-zero, not 137/143)")
+        f.reject("no process exited on its own with an error")
         if oom:
-            f.reject("terminations were OOMKilled, i.e. killed for memory, not exited by the application", oom[0])
+            f.reject("terminations were kills at the memory limit, not exits by the application", oom[0])
         return f
-    codes = sorted({t.data["exit_code"] for t in errored})
-    f.add(0.35, errored, "process exited with a non-zero exit code")
-    f.say(f"{len(errored)} {v.name} container termination(s) have reason '{errored[0].data['reason']}' with exit code(s) "
-          f"{codes}: the process exited on its own (it was not OOMKilled or killed by a signal)", errored)
+    codes = sorted({t.data["exit_code"] for t in errored if t.data.get("exit_code") is not None}, key=str)
+    f.add(0.35, errored, "process exited on its own with an error")
+    f.say(f"{len(errored)} {v.name} termination(s) were exits by the process itself ({_reasons(errored)}): "
+          f"it was not killed for memory or by an outside signal", errored)
     if app_exc:
-        e = sorted(app_exc, key=lambda x: x.data["instance"] != "previous")[0]
+        e = sorted(app_exc, key=lambda x: x.data["generation"] != "previous")[0]
         site = e.data.get("crash_site") or {}
         f.add(0.3, app_exc[:3], "unhandled exception in the application's logs")
         f.say(f"The terminated instance's logs end with an unhandled {e.data['exc_type']}: {e.data['message'][:120]}"
@@ -171,10 +182,10 @@ def check_crash(v: View, store: EvidenceStore, dep_health: dict) -> Finding:
                  dep_exc[0])
     else:
         f.reject("no exception/traceback was found in the logs of the terminated instances")
-    if crashloop or backoff:
-        f.add(0.15, (crashloop + backoff)[:3], "Kubernetes is backing off restarts (CrashLoopBackOff)")
-        f.say(f"Kubernetes keeps restarting the container and is now backing off (CrashLoopBackOff): the failure recurs "
-              f"on every start", (crashloop + backoff)[:3])
+    if backoff:
+        f.add(0.15, backoff[:3], "restarts are being backed off (crash loop)")
+        f.say("The platform keeps restarting the process and is now backing off between attempts: the failure recurs "
+              "on every start", backoff[:3])
     elif len(errored) > 1:
         f.add(0.1, errored[1:3], "repeated crashes")
     runtimes = [t.data["ran_s"] for t in errored if t.data.get("ran_s") is not None]
@@ -186,15 +197,16 @@ def check_crash(v: View, store: EvidenceStore, dep_health: dict) -> Finding:
         f.say(f"{v.name}'s configured dependencies are reachable ({', '.join(d['endpoint'] for d in healthy_deps)}), so "
               f"the crash is not caused by a dependency being down", [d["fact"] for d in healthy_deps])
     if oom:
-        f.reject(f"{len(oom)} other termination(s) were OOMKilled", oom[0])
+        f.reject(f"{len(oom)} other termination(s) were kills at the memory limit", oom[0])
+    code = codes[0] if codes else "unknown"
     if app_exc:
-        e = sorted(app_exc, key=lambda x: x.data["instance"] != "previous")[0]
+        e = sorted(app_exc, key=lambda x: x.data["generation"] != "previous")[0]
         site = e.data.get("crash_site") or {}
         f.root_cause = (f"{v.name} crashes with an unhandled {e.data['exc_type']} ({e.data['message'][:100]})"
                         + (f" in {site.get('func')}() at {site.get('file')}:{site.get('line')}" if site else "")
-                        + f"; the process exits with code {codes[0]} and Kubernetes restarts it repeatedly")
+                        + f"; the process exits with code {code} and is restarted repeatedly")
     else:
-        f.root_cause = f"{v.name} process exits with code {codes[0]} on its own and is restarted repeatedly"
+        f.root_cause = f"{v.name} process exits with code {code} on its own and is restarted repeatedly"
     f.score = min(f.score, 1.0)
     return f
 
@@ -206,11 +218,13 @@ def check_dependencies(v: View, store: EvidenceStore) -> list[Finding]:
         subj = f"dependency/{host}:{port}"
         dep = {"host": host, "port": port, "type": ref.data["dep_type"], "variable": ref.data["variable"],
                "source": ref.data["config_source"], "endpoint": f"{host}:{port}"}
-        dep_logs = [s for s in v.sigs if s.data["signature"] in DEPENDENCY_SIGNATURES and _matches(s, host, port)]
-        dep_exc = [e for e in v.exceptions if e.data.get("dependency_signature") and host in e.data["message"]]
         lookup = next(iter(store.find(kind="service_lookup", subject=subj)), None)
+        address = lookup.data.get("address") if lookup else None
+        dep_logs = [s for s in v.sigs if s.data["signature"] in DEPENDENCY_SIGNATURES and _matches(s, host, port, address)]
+        dep_exc = [e for e in v.exceptions if e.data.get("dependency_signature")
+                   and _mentions(e.data["message"], host, port, address)]
         eps = next(iter(store.find(kind="service_endpoints", subject=subj)), None)
-        backing = store.find(kind="backing_workload", subject=subj)
+        backing = store.find(kind="backing_component", subject=subj)
         probe = next((p for p in store.find(kind="connectivity_probe", subject=subj) if not p.data.get("alternative_for")), None)
         mismatch = next(iter(store.find(kind="service_port_mismatch", subject=subj)), None)
         similar = [s for s in store.find(kind="similar_service", subject=subj) if s.data["ready"] > 0]
@@ -240,8 +254,8 @@ def check_dependencies(v: View, store: EvidenceStore) -> list[Finding]:
             mis.add(0.3, lookup, "configured host is not a Service in the cluster")
             mis.say(f"The configured host '{host}' does not exist: {lookup.text}", [lookup])
         if probe and probe.data["dns"] == "error":
-            mis.add(0.15, probe, "the name does not resolve from inside the application pod")
-            mis.say(f"From inside the application pod the name '{host}' does not resolve", [probe])
+            mis.add(0.15, probe, "the name does not resolve from inside the application instance")
+            mis.say(f"From inside the application instance the name '{host}' does not resolve", [probe])
         if mismatch:
             mis.add(0.3, mismatch, "Service does not expose the configured port")
             mis.say(mismatch.text, [mismatch])
@@ -253,13 +267,13 @@ def check_dependencies(v: View, store: EvidenceStore) -> list[Finding]:
             mis.add(0.1, similar[:1], "a matching healthy service exists under a different name")
             mis.say(f"A plausible intended target exists and is healthy: {similar[0].text}", similar[:1])
         if alt_ok:
-            mis.add(0.1, alt_ok[:1], "the alternative service is reachable from the same pod")
-            mis.say(f"From the same pod, {alt_ok[0].data['host']}:{alt_ok[0].data['port']} accepts TCP connections, so the "
+            mis.add(0.1, alt_ok[:1], "the alternative service is reachable from the same instance")
+            mis.say(f"From the same instance, {alt_ok[0].data['host']}:{alt_ok[0].data['port']} accepts TCP connections, so the "
                     f"network and the database are fine", alt_ok[:1])
         if changed:
-            mis.add(0.1, changed[:1] + v.rollouts[:1], "the configuration was changed shortly before")
+            mis.add(0.1, changed[:1] + v.changes[:1], "the configuration was changed shortly before")
             mis.say(f"{changed[0].data['config_source']} (which provides {ref.data['variable']}) was modified shortly before the "
-                    f"failures started" + (", followed by a rollout of " + v.name if v.rollouts else ""), changed[:1] + v.rollouts[:1])
+                    f"failures started" + (", followed by a rollout of " + v.name if v.changes else ""), changed[:1] + v.changes[:1])
         if lookup and lookup.data["found"] and not mismatch and not (kinds & {"auth_failure", "missing_resource"}):
             mis.reject(f"the configured endpoint names an existing Service ({lookup.data['service']}) on a port it exposes",
                        lookup)
@@ -287,85 +301,94 @@ def check_dependencies(v: View, store: EvidenceStore) -> list[Finding]:
             una.score *= 0.5
         down = [b for b in backing if b.data["ready"] == 0]
         if down:
-            una.add(0.15, down, "the workload behind the Service has no ready replicas")
+            una.add(0.15, down, "the component behind the service has no ready replicas")
             una.say(down[0].text + (" - it has been scaled to zero" if down[0].data["desired"] == 0 else ""), down)
-            wl_events = [e for e in store.find(kind="k8s_event", subject=f"workload/{down[0].data['workload']}")
-                         if e.data["reason"] in ("ScalingReplicaSet", "Killing", "SuccessfulDelete", "BackOff", "Unhealthy",
-                                                 "FailedScheduling", "Failed")]
-            if wl_events:
-                una.support.append((wl_events[0].id, "what happened to the dependency's workload"))
-                una.say(f"Kubernetes events for {down[0].data['workload']}: {wl_events[0].text}", wl_events[:2])
+            what = [e for e in store.find(kind="event", subject=f"component/{down[0].data['component']}")
+                    if e.data.get("category") in ("scaled", "stopped", "instance_deleted", "restart_backoff",
+                                                  "health_check_failed", "scheduling_failed", "failed", "evicted")]
+            if what:
+                una.support.append((what[0].id, "what happened to the dependency's component"))
+                una.say(f"Events for {down[0].data['component']}: {what[0].text}", what[:2])
         if probe and probe.data["dns"] == "ok" and probe.data["tcp"] in ("refused", "timeout", "error"):
             una.add(0.15, probe, "the name resolves but connections are refused/time out")
-            una.say(f"From inside the application pod '{host}' resolves, but the TCP connection is {probe.data['tcp']}",
-                    [probe])
+            una.say(f"From inside the application instance '{host}' resolves, but the TCP connection is "
+                    f"{probe.data['tcp']}", [probe])
         elif probe and probe.data["tcp"] == "ok":
-            una.reject(f"a TCP connection to {host}:{port} succeeds from the application pod", probe)
+            una.reject(f"a TCP connection to {host}:{port} succeeds from the application instance", probe)
             una.score *= 0.5
         why = ("it has been scaled to zero replicas" if down and down[0].data["desired"] == 0 else
-               "its workload has no ready replicas" if down else "the Service has no ready endpoints")
+               "its component has no ready replicas" if down else "the service has no ready endpoints")
         una.root_cause = (f"{v.name}'s configuration is valid ({ref.data['variable']} -> {host}:{port}), but its "
                           f"{dep['type']} dependency is unavailable: {why}")
-        una.backing = mis.backing = [b.data["workload"] for b in backing]
+        una.backing = mis.backing = [b.data["component"] for b in backing]
         for f in (mis, una):
             f.score = min(f.score, 1.0)
         out += [mis, una]
     return out
 
 
-def _matches(sig: Fact, host: str, port) -> bool:
+def _matches(sig: Fact, host: str, port, address: str | None = None) -> bool:
+    """Does a log signature refer to this dependency (by name, by its service address, or by port)?"""
     th = sig.data.get("target_host")
     if th:
-        return th == host or th.split(".")[0] == host.split(".")[0]
+        return th == host or th.split(".")[0] == host.split(".")[0] or (address is not None and th == address)
     return sig.data.get("target_port") is not None and str(sig.data["target_port"]) == str(port)
 
 
-def check_kubernetes(v: View, store: EvidenceStore) -> list[Finding]:
+def _mentions(message: str, host: str, port, address: str | None = None) -> bool:
+    """Does an error message refer to this dependency? Clients often report the resolved address, not the name."""
+    return (host in message or (address is not None and address in message)
+            or (port is not None and (f"port {port}" in message or f":{port}" in message)))
+
+
+def check_platform(v: View, store: EvidenceStore) -> list[Finding]:
+    """Failures where the platform cannot run the component at all, or kills it for failing health checks."""
     out = []
-    img = [w for w in v.waiting if w.data["reason"] in ("ErrImagePull", "ImagePullBackOff", "InvalidImageName")]
+    img = [w for w in v.waiting if w.data.get("cause") == "image_unavailable"]
     f = Finding("image_pull_failure", v.name)
     if img:
-        f.add(0.9, img[:2], "container image cannot be pulled")
-        f.say(f"Containers of {v.name} cannot start because the image cannot be pulled: {img[0].text}", img[:2])
-        f.root_cause = f"{v.name}'s container image cannot be pulled ({(img[0].data.get('message') or img[0].data['reason'])[:120]})"
+        f.add(0.9, img[:2], "the process image cannot be obtained")
+        f.say(f"{v.name} cannot start because its image cannot be obtained: {img[0].text}", img[:2])
+        f.root_cause = f"{v.name}'s image cannot be obtained ({(img[0].data.get('message') or img[0].data['reason'])[:120]})"
     else:
-        f.reject("no container is waiting on an image pull")
+        f.reject("no process is waiting for an image")
     out.append(f)
 
-    cfg = [w for w in v.waiting if w.data["reason"] in ("CreateContainerConfigError", "CreateContainerError", "RunContainerError")]
+    cfg = [w for w in v.waiting if w.data.get("cause") == "invalid_configuration"]
     f = Finding("container_config_error", v.name)
     if cfg:
-        f.add(0.85, cfg[:2], "Kubernetes cannot create the container from its spec")
-        f.say(f"Kubernetes cannot create {v.name}'s container: {cfg[0].text}", cfg[:2])
-        f.root_cause = f"{v.name}'s pod spec references configuration that cannot be resolved ({(cfg[0].data.get('message') or '')[:120]})"
+        f.add(0.85, cfg[:2], "the platform cannot create the process from its specification")
+        f.say(f"The platform cannot create {v.name}'s process: {cfg[0].text}", cfg[:2])
+        f.root_cause = (f"{v.name}'s specification references configuration that cannot be resolved "
+                        f"({(cfg[0].data.get('message') or '')[:120]})")
     else:
-        f.reject("no container is stuck in CreateContainerConfigError/CreateContainerError")
+        f.reject("no process is stuck because its specification cannot be resolved")
     out.append(f)
 
-    sched = [p for p in v.pods if p.data["unschedulable"]] + [e for e in v.events if e.data["reason"] == "FailedScheduling"]
+    sched = [p for p in v.instances if p.data["unschedulable"]] + v.events_by("scheduling_failed")
     f = Finding("unschedulable", v.name)
     if sched:
-        f.add(0.85, sched[:2], "pods cannot be scheduled")
-        f.say(f"{v.name} pods cannot be placed on a node", sched[:2])
-        ev = next((e for e in sched if e.kind == "k8s_event"), None)
-        f.root_cause = f"{v.name} pods cannot be scheduled" + (f": {ev.data['message'][:150]}" if ev else "")
+        f.add(0.85, sched[:2], "instances cannot be scheduled")
+        f.say(f"{v.name} instances cannot be placed on any machine", sched[:2])
+        ev = next((e for e in sched if e.kind == "event"), None)
+        f.root_cause = f"{v.name} instances cannot be scheduled" + (f": {ev.data['message'][:150]}" if ev else "")
     else:
-        f.reject("no pod is unschedulable")
+        f.reject("no instance is unschedulable")
     out.append(f)
 
-    liveness_kills = [e for e in v.events if e.data["reason"] == "Killing" and "liveness" in e.data["message"].lower()]
-    unhealthy = [e for e in v.events if e.data["reason"] == "Unhealthy"]
-    sig_kills = [t for t in v.terms if t.data["exit_code"] in (137, 143) and t.data["reason"] != "OOMKilled"]
+    health_kills = v.events_by("killed_by_health_check")
+    unhealthy = v.events_by("health_check_failed")
+    sig_kills = v.terms_by("killed")
     f = Finding("health_check_failure", v.name)
-    if liveness_kills and sig_kills:
-        f.add(0.55, liveness_kills[:1] + sig_kills[:2], "liveness probe failures caused the kubelet to restart the container")
-        f.say(f"The kubelet restarted {v.name} containers after liveness probe failures", liveness_kills[:1] + sig_kills[:2])
-        f.root_cause = f"{v.name} stops answering its liveness probe and is restarted by the kubelet"
+    if health_kills and sig_kills:
+        f.add(0.55, health_kills[:1] + sig_kills[:2], "failed health checks made the platform restart the process")
+        f.say(f"The platform restarted {v.name} after its health checks failed", health_kills[:1] + sig_kills[:2])
+        f.root_cause = f"{v.name} stops answering its health check and is restarted by the platform"
     elif unhealthy:
         f.add(0.2, unhealthy[:2], "probe failures observed")
-        f.reject("probe failures are present but no container was killed because of them")
+        f.reject("health-check failures are present but no process was killed because of them")
     else:
-        f.reject("no probe failures were recorded")
+        f.reject("no health-check failures were recorded")
     out.append(f)
     return out
 
@@ -373,17 +396,17 @@ def check_kubernetes(v: View, store: EvidenceStore) -> list[Finding]:
 # --------------------------------------------------------------------------- orchestration
 
 def diagnose(store: EvidenceStore) -> dict:
-    names = [f.data["workload"] for f in store.find(kind="workload_status")]
+    names = [f.data["component"] for f in store.find(kind="component_status")]
     views = {n: View(store, n) for n in names}
 
-    # Dependency graph from configuration: consumer -> backing workloads (or unresolved endpoints)
+    # Dependency graph from configuration: consumer -> backing components (or unresolved endpoints)
     edges: dict[str, set] = {n: set() for n in names}
     dep_health: dict[str, list] = {}
     for v in views.values():
         for ref in v.refs:
             subj = f"dependency/{ref.data['host']}:{ref.data['port']}"
-            for b in store.find(kind="backing_workload", subject=subj):
-                edges[v.name].add(b.data["workload"])
+            for b in store.find(kind="backing_component", subject=subj):
+                edges[v.name].add(b.data["component"])
             probe = next((p for p in store.find(kind="connectivity_probe", subject=subj) if not p.data.get("alternative_for")), None)
             eps = next(iter(store.find(kind="service_endpoints", subject=subj)), None)
             healthy = bool(probe and probe.data["tcp"] == "ok") or bool(not probe and eps and eps.data["ready"] > 0)
@@ -397,9 +420,9 @@ def diagnose(store: EvidenceStore) -> dict:
         findings.append(check_memory(v, store))
         findings.append(check_crash(v, store, dep_health))
         findings += check_dependencies(v, store)
-        findings += check_kubernetes(v, store)
+        findings += check_platform(v, store)
 
-    # Follow the chain: a consumer's dependency symptoms are explained when the workload it calls has its own,
+    # Follow the chain: a consumer's dependency symptoms are explained when the component it calls has its own,
     # better-supported failure (a crash, OOM, or a broken dependency of its own further down).
     best: dict[str, Finding] = {}
     for f in sorted(findings, key=lambda f: -f.score):
@@ -423,14 +446,14 @@ def diagnose(store: EvidenceStore) -> dict:
     if primary is None:
         affected = [n for n, v in views.items() if v.symptomatic()]
         return {
-            "category": "undetermined", "category_label": CATEGORY_LABELS["undetermined"],
+            "category": "undetermined", "category_label": CATEGORY_LABELS["undetermined"], "root_cause_component": None,
             "affected_component": affected[0] if affected else None, "dependencies": [], "impacted_components": [],
             "symptoms": [f.id for f in symptoms] + [x.id for n in affected for x in views[n].symptom_facts()],
             "reasoning": [{"statement": "The collected evidence does not support any known failure category strongly "
                                         "enough to name a root cause", "facts": []}],
             "root_cause": "Undetermined - see observed symptoms and evidence",
             "confidence": 0.0, "confidence_label": "Low", "evidence": [], "contributing_factors": [],
-            "alternatives": _alternatives(ranked, None), "workload_summary": _workload_summary(views),
+            "alternatives": _alternatives(ranked, None), "component_summary": _component_summary(views),
         }
 
     # Consumers (direct or transitive) of the affected component that show symptoms are impacted.
@@ -452,7 +475,8 @@ def diagnose(store: EvidenceStore) -> dict:
     runner_up = next((f for f in ranked[1:] if (f.component, f.category) != (primary.component, primary.category)
                       and f.score >= 0.3 and not f.explained_by), None)  # weak/rejected findings don't compete
     confidence = max(0.05, min(0.97, primary.score * (1 - 0.5 * (runner_up.score if runner_up else 0))))
-    missing = [s for s in store.trace if s.get("step") == "tool" and str(s.get("status", "")).startswith("error")]
+    missing = [s for s in store.trace if s.get("step") in ("capability", "tool")  # "tool": pre-Iteration-3 evidence
+               and str(s.get("status", "")).startswith("error")]
     if missing:
         confidence *= 0.9
     dep = primary.dependency
@@ -462,6 +486,7 @@ def diagnose(store: EvidenceStore) -> dict:
     evidence = list(dict.fromkeys([s[0] for s in primary.support] + [fid for r in primary.reasoning for fid in r["facts"]]))
     return {
         "category": primary.category,
+        "root_cause_component": root_cause_component(primary),
         "category_label": CATEGORY_LABELS[primary.category],
         "affected_component": primary.component,
         "dependencies": [dep] if dep else [],
@@ -476,8 +501,28 @@ def diagnose(store: EvidenceStore) -> dict:
         "score": round(primary.score, 2),
         "evidence": evidence,
         "alternatives": _alternatives(ranked, primary),
-        "workload_summary": _workload_summary(views),
+        "component_summary": _component_summary(views),
     }
+
+
+def root_cause_component(f: Finding) -> dict:
+    """Where the cause is, as distinct from where the failure surfaced (the affected component).
+
+    Intrinsic failures (crash, memory, platform) are rooted in the affected component itself. An unavailable
+    dependency is rooted in the component that serves it; a misconfigured dependency in the affected
+    component's configuration.
+    """
+    dep = f.dependency or {}
+    if f.category == "dependency_unavailable":
+        if f.backing:
+            return {"name": f.backing[0], "kind": "component",
+                    "relation": f"{dep.get('type', 'dependency')} dependency of {f.component}, unavailable"}
+        return {"name": dep.get("endpoint"), "kind": "endpoint",
+                "relation": f"{dep.get('type', 'dependency')} endpoint used by {f.component}, unavailable"}
+    if f.category == "dependency_misconfiguration":
+        return {"name": f"{dep.get('variable')} ({dep.get('source')})", "kind": "configuration",
+                "relation": f"{f.component}'s configuration points at {dep.get('endpoint')}"}
+    return {"name": f.component, "kind": "component", "relation": "the affected component itself"}
 
 
 def _alternatives(ranked: list[Finding], primary: Finding | None) -> list[dict]:
@@ -496,6 +541,6 @@ def _alternatives(ranked: list[Finding], primary: Finding | None) -> list[dict]:
     return out[:10]
 
 
-def _workload_summary(views: dict) -> list[dict]:
-    return [{"workload": n, "status": v.status.text if v.status else "", "symptomatic": v.symptomatic(),
+def _component_summary(views: dict) -> list[dict]:
+    return [{"component": n, "status": v.status.text if v.status else "", "symptomatic": v.symptomatic(),
              "terminations": len(v.terms), "error_lines": v.error_lines} for n, v in views.items()]

@@ -1,186 +1,107 @@
-"""Dependency discovery and checking.
+"""Dependency checking: records observations about one configured dependency. Provider-independent.
 
-Dependencies are discovered from each workload's *configuration* (URLs and HOST/PORT pairs in its
-environment), never from a hard-coded list. `check_dependency` then gathers observations about the
-configured endpoint: does a Service with that name exist, does it expose that port, does it have
-ready endpoints, what workload backs it and what happened to that workload recently, and can a
-consumer pod actually resolve and connect to it.
+Dependencies are discovered from each component's configuration (capability `get_dependencies`),
+never from a hard-coded list. For each one this records: the configuration reference, a recent change
+to the configuration that supplies it, what serves the endpoint (`get_service_health`), and whether a
+running instance of the consumer can actually reach it (`check_connectivity`).
 """
-import difflib
-import re
-
+from .capabilities import Capabilities
+from .capabilities.base import ConnectivityResult, DependencyRef
 from .evidence import EvidenceStore
-from .tools import Toolset
 
-_URL = re.compile(r"^(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]*)://(?:[^@/\s]+@)?(?P<host>[A-Za-z0-9.\-]+)(?::(?P<port>\d+))?")
-SCHEME_TYPES = {"postgres": "PostgreSQL", "postgresql": "PostgreSQL", "mysql": "MySQL", "redis": "Redis",
-                "mongodb": "MongoDB", "amqp": "RabbitMQ", "http": "HTTP service", "https": "HTTP service",
-                "kafka": "Kafka"}
-PORT_TYPES = {5432: "PostgreSQL", 3306: "MySQL", 6379: "Redis", 27017: "MongoDB", 5672: "RabbitMQ", 9092: "Kafka"}
-SCHEME_PORTS = {"postgres": 5432, "postgresql": 5432, "mysql": 3306, "redis": 6379, "mongodb": 27017,
-                "amqp": 5672, "http": 80, "https": 443}
-LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+CONFIG_CHANGE_LOOKBACK_S = 1800
 
 
-def extract_references(config: list[dict]) -> list[dict]:
-    """Find endpoints a workload is configured to talk to (URL values and *_HOST/*_PORT pairs)."""
-    refs, by_name = [], {}
-    for e in config:
-        by_name[(e["container"], e["name"])] = e
-    for e in config:
-        val = e.get("value")
-        if not isinstance(val, str):
-            continue
-        m = _URL.match(val.strip())
-        if m and m.group("host") not in LOCAL_HOSTS:
-            scheme = m.group("scheme").lower()
-            port = int(m.group("port") or SCHEME_PORTS.get(scheme, 0)) or None
-            refs.append(_ref(e, m.group("host"), port, SCHEME_TYPES.get(scheme) or PORT_TYPES.get(port or 0, "service")))
-        elif e["name"].upper().endswith("_HOST") and val and val not in LOCAL_HOSTS and re.match(r"^[A-Za-z0-9.\-]+$", val):
-            port_entry = by_name.get((e["container"], e["name"][:-5] + "_PORT"))
-            port = int(port_entry["value"]) if port_entry and str(port_entry.get("value", "")).isdigit() else None
-            refs.append(_ref(e, val, port, PORT_TYPES.get(port or 0, "service")))
-    uniq = {}
-    for r in refs:
-        uniq.setdefault((r["host"], r["port"]), r)
-    return list(uniq.values())
+def check_dependency(caps: Capabilities, store: EvidenceStore, consumer: str, ref: DependencyRef,
+                     window_start: float, probe: bool = True) -> dict:
+    """Collect facts about one configured dependency. Returns a small summary used for planning."""
+    src = caps.resources.name
+    subject = f"dependency/{ref.host}:{ref.port}"
+    shown_source = ref.source + (" (secret, value not shown)" if ref.sensitive_source else "")
+    store.add("configuration", f"component/{consumer}", "config_reference",
+              f"{consumer} is configured (env {ref.variable} from {shown_source}) to use "
+              f"{ref.type} at {ref.host}:{ref.port}",
+              consumer=consumer, host=ref.host, port=ref.port, dep_type=ref.type,
+              variable=ref.variable, config_source=ref.source)
+    if ref.source_modified and ref.source_modified >= window_start - CONFIG_CHANGE_LOOKBACK_S \
+            and ref.source.startswith("configmap/"):
+        store.add("configuration", ref.source, "config_changed",
+                  f"{ref.source} (which supplies {ref.variable} to {consumer}) was last modified at this time",
+                  t=ref.source_modified, consumer=consumer, variable=ref.variable, config_source=ref.source)
 
-
-def _ref(entry: dict, host: str, port: int | None, dep_type: str) -> dict:
-    return {"host": host, "port": port, "type": dep_type, "variable": entry["name"], "container": entry["container"],
-            "source": entry["source"], "sensitive_source": entry["sensitive"], "source_modified": entry.get("modified")}
-
-
-def split_host(host: str, default_ns: str) -> tuple[str, str | None, bool]:
-    """Map a hostname to (service name, namespace, looks_in_cluster)."""
-    parts = host.split(".")
-    if len(parts) == 1:
-        return parts[0], default_ns, True
-    if len(parts) >= 3 and parts[2] == "svc":
-        return parts[0], parts[1], True
-    if len(parts) == 2:
-        return parts[0], parts[1], True  # "name.namespace"
-    return host, None, False  # external FQDN
-
-
-def check_dependency(tools: Toolset, store: EvidenceStore, consumer: dict, ref: dict, consumer_pods: list[dict],
-                     window_start: float) -> dict:
-    """Collect facts about one configured dependency. Returns a small summary used for graph building."""
-    subject = f"dependency/{ref['host']}:{ref['port']}"
-    shown_source = ref["source"] + (" (secret, value not shown)" if ref["sensitive_source"] else "")
-    store.add("configuration", f"workload/{consumer['name']}", "config_reference",
-              f"{consumer['name']} is configured (env {ref['variable']} from {shown_source}) to use "
-              f"{ref['type']} at {ref['host']}:{ref['port']}",
-              consumer=consumer["name"], host=ref["host"], port=ref["port"], dep_type=ref["type"],
-              variable=ref["variable"], config_source=ref["source"])
-    if ref["source_modified"] and ref["source_modified"] >= window_start - 1800 and ref["source"].startswith("configmap/"):
-        store.add("configuration", ref["source"], "config_changed",
-                  f"{ref['source']} (which supplies {ref['variable']} to {consumer['name']}) was last modified at this time",
-                  t=ref["source_modified"], consumer=consumer["name"], variable=ref["variable"], config_source=ref["source"])
-
-    name, ns, in_cluster = split_host(ref["host"], tools.ns)
-    summary = {"ref": ref, "subject": subject, "service": None, "backing": [], "exists": None}
-    if not in_cluster:
+    h = caps.get_service_health(ref.host, ref.port, ref.type)
+    summary = {"ref": ref, "subject": subject, "exists": None, "backing": [], "ready": None}
+    if h is None:
+        pass
+    elif not h.internal:
         store.add("dependency_check", subject, "external_endpoint",
-                  f"{ref['host']} is outside the cluster; only connectivity can be checked", host=ref["host"])
+                  f"{ref.host} is outside the cluster; only connectivity can be checked", host=ref.host)
+    elif not h.exists:
+        summary["exists"] = False
+        store.add(f"{src}.services", subject, "service_lookup",
+                  f"No {h.kind} named '{h.name}' exists in {h.scope_kind} {h.scope}"
+                  + (f" (found in: {', '.join(h.other_scopes)})" if h.other_scopes else f" or in any other {h.scope_kind}"),
+                  host=ref.host, found=False, service=h.name, namespace=h.scope)
+        for s in h.similar:
+            store.add(f"{src}.services", subject, "similar_service",
+                      f"{h.kind} {h.scope}/{s.name} exists with port(s) {s.ports} and {s.ready} ready endpoint(s)"
+                      f" (name similarity {s.name_similarity:.0%} to '{h.name}')",
+                      service=s.name, ports=s.ports, ready=s.ready, name_similarity=s.name_similarity,
+                      port_match=s.port_match)
     else:
-        services = tools.get_services(all_namespaces=True) or []
-        svc = next((s for s in services if s["name"] == name and s["namespace"] == ns), None)
-        summary["exists"] = svc is not None
-        if svc is None:
-            others = [s for s in services if s["name"] == name]
-            store.add("kubernetes.services", subject, "service_lookup",
-                      f"No Service named '{name}' exists in namespace {ns}"
-                      + (f" (found in: {', '.join(s['namespace'] for s in others)})" if others else
-                         " or in any other namespace"),
-                      host=ref["host"], found=False, service=name, namespace=ns)
-            _similar_services(tools, store, subject, ref, services, name, ns)
-        else:
-            summary["service"] = svc
-            ports = [p["port"] for p in svc["ports"]]
-            store.add("kubernetes.services", subject, "service_lookup",
-                      f"Service {ns}/{name} exists (ClusterIP {svc['cluster_ip']}, ports {ports})",
-                      host=ref["host"], found=True, service=name, namespace=ns, ports=ports)
-            if ref["port"] and ref["port"] not in ports:
-                store.add("kubernetes.services", subject, "service_port_mismatch",
-                          f"Service {ns}/{name} does not expose port {ref['port']} (exposes {ports})",
-                          configured_port=ref["port"], service_ports=ports)
-            summary["backing"] = _endpoints_and_backing(tools, store, subject, svc)
+        summary.update(exists=True, ready=h.ready_endpoints, backing=[b.component for b in h.backing])
+        store.add(f"{src}.services", subject, "service_lookup",
+                  f"{h.kind} {h.scope}/{h.name} exists ({h.address_kind} {h.address}, ports {h.ports})",
+                  host=ref.host, found=True, service=h.name, namespace=h.scope, ports=h.ports, address=h.address)
+        if ref.port and ref.port not in h.ports:
+            store.add(f"{src}.services", subject, "service_port_mismatch",
+                      f"{h.kind} {h.scope}/{h.name} does not expose port {ref.port} (exposes {h.ports})",
+                      configured_port=ref.port, service_ports=h.ports)
+        store.add(f"{src}.endpoints", subject, "service_endpoints",
+                  f"{h.kind} {h.scope}/{h.name} has {h.ready_endpoints} ready and {h.not_ready_endpoints} "
+                  f"not-ready endpoints" + (f" ({h.instance_kind}s: {', '.join(h.endpoint_instances)})"
+                                            if h.endpoint_instances else ""),
+                  ready=h.ready_endpoints, not_ready=h.not_ready_endpoints, service=h.name)
+        for b in h.backing:
+            store.add(f"{src}.workloads", subject, "backing_component",
+                      f"{h.kind} {h.name} is backed by {b.kind} {b.component}: {b.ready}/{b.desired} replicas ready "
+                      f"(desired {b.desired})", component=b.component, desired=b.desired, ready=b.ready)
 
-    # Active check from inside a consumer pod: can it resolve the name and open a TCP connection?
-    runner = next((p for p in consumer_pods if p["phase"] == "Running"
-                   and any((c["state"] or {}).get("state") == "running" for c in p["containers"])), None)
-    if runner and ref["port"]:
-        ctr = next(c["name"] for c in runner["containers"] if (c["state"] or {}).get("state") == "running")
-        res = tools.probe_connectivity(runner["name"], ctr, ref["host"], int(ref["port"])) or {}
-        _probe_fact(store, subject, runner["name"], ref, res)
-        # If the configured name doesn't exist, check whether a plausible alternative is reachable instead.
-        for alt in store.find(kind="similar_service", subject=subject):
-            if alt.data["port_match"] and alt.data["ready"] > 0:
-                alt_ref = {**ref, "host": alt.data["service"]}
-                res = tools.probe_connectivity(runner["name"], ctr, alt_ref["host"], int(ref["port"])) or {}
-                f = _probe_fact(store, f"dependency/{alt_ref['host']}:{ref['port']}", runner["name"], alt_ref, res)
-                if f:
-                    f.data["alternative_for"] = ref["host"]
-    elif ref["port"]:
-        store.add("dependency_check", subject, "connectivity_probe_skipped",
-                  f"No running {consumer['name']} container to probe {ref['host']}:{ref['port']} from", host=ref["host"])
+    if probe and ref.port:
+        probe_dependency(caps, store, consumer, ref)
     return summary
 
 
-def _probe_fact(store, subject, pod, ref, res):
-    host, port = ref["host"], ref["port"]
-    if res.get("skipped") or res.get("error"):
+def probe_dependency(caps: Capabilities, store: EvidenceStore, consumer: str, ref: DependencyRef) -> None:
+    """Active check from a running consumer instance, plus any healthy alternative if the name doesn't exist."""
+    subject = f"dependency/{ref.host}:{ref.port}"
+    res = caps.check_connectivity(consumer, ref.host, int(ref.port))
+    if res is None or res.from_instance is None:
+        store.add("dependency_check", subject, "connectivity_probe_skipped",
+                  f"No running {consumer} container to probe {ref.host}:{ref.port} from", host=ref.host)
+        return
+    _probe_fact(store, subject, res)
+    for alt in store.find(kind="similar_service", subject=subject):
+        if alt.data["port_match"] and alt.data["ready"] > 0:
+            alt_res = caps.check_connectivity(consumer, alt.data["service"], int(ref.port))
+            if alt_res is not None and alt_res.from_instance is not None:
+                f = _probe_fact(store, f"dependency/{alt.data['service']}:{ref.port}", alt_res)
+                f.data["alternative_for"] = ref.host
+
+
+def _probe_fact(store: EvidenceStore, subject: str, r: ConnectivityResult):
+    host, port, pod = r.host, r.port, r.from_instance
+    if r.skipped:
         return store.add("dependency_probe", subject, "connectivity_probe_skipped",
-                         f"Connectivity probe to {host}:{port} not performed ({res.get('skipped') or res.get('error')})",
-                         host=host)
-    if res.get("dns") != "ok":
+                         f"Connectivity probe to {host}:{port} not performed ({r.skipped})", host=host)
+    if r.dns != "ok":
         return store.add("dependency_probe", subject, "connectivity_probe",
-                         f"From pod {pod}: DNS lookup of '{host}' failed ({res.get('dns_error')})",
-                         from_pod=pod, host=host, port=port, dns="error", tcp=None, error=res.get("dns_error"))
-    tcp = res.get("tcp")
-    detail = {"ok": f"TCP connection to {host}:{port} succeeded in {res.get('tcp_ms')} ms",
+                         f"From {pod}: DNS lookup of '{host}' failed ({r.error})",
+                         from_instance=pod, host=host, port=port, dns="error", tcp=None, error=r.error)
+    detail = {"ok": f"TCP connection to {host}:{port} succeeded in {r.ms} ms",
               "refused": f"TCP connection to {host}:{port} was refused",
               "timeout": f"TCP connection to {host}:{port} timed out"}.get(
-        tcp, f"TCP connection to {host}:{port} failed ({res.get('tcp_error')})")
+        r.tcp, f"TCP connection to {host}:{port} failed ({r.error})")
     return store.add("dependency_probe", subject, "connectivity_probe",
-                     f"From pod {pod}: '{host}' resolves to {', '.join(res.get('addresses', []))}; {detail}",
-                     from_pod=pod, host=host, port=port, dns="ok", tcp=tcp, addresses=res.get("addresses"),
-                     error=res.get("tcp_error"))
-
-
-def _endpoints_and_backing(tools, store, subject, svc) -> list[dict]:
-    ep = tools.get_endpoints(svc["name"], svc["namespace"]) or {"ready": [], "not_ready": []}
-    store.add("kubernetes.endpoints", subject, "service_endpoints",
-              f"Service {svc['namespace']}/{svc['name']} has {len(ep['ready'])} ready and {len(ep['not_ready'])} "
-              f"not-ready endpoints" + (f" (pods: {', '.join(a['pod'] or a['ip'] for a in ep['ready'])})" if ep["ready"] else ""),
-              ready=len(ep["ready"]), not_ready=len(ep["not_ready"]), service=svc["name"])
-    backing = []
-    if svc["namespace"] != tools.ns or not svc["selector"]:
-        return backing
-    for w in tools.get_workloads() or []:
-        tmpl_labels = w["selector"]
-        if tmpl_labels and all(tmpl_labels.get(k) == v for k, v in svc["selector"].items()):
-            backing.append(w)
-            store.add("kubernetes.workloads", subject, "backing_workload",
-                      f"Service {svc['name']} is backed by {w['kind']} {w['name']}: {w['replicas_ready']}/"
-                      f"{w['replicas_desired']} replicas ready (desired {w['replicas_desired']})",
-                      workload=w["name"], desired=w["replicas_desired"], ready=w["replicas_ready"])
-    return backing
-
-
-def _similar_services(tools, store, subject, ref, services, name, ns):
-    """Services that could be what the configuration meant: same port or dependency type, or a similar name."""
-    for s in services:
-        if s["namespace"] != ns:
-            continue
-        ports = [p["port"] for p in s["ports"]]
-        name_sim = difflib.SequenceMatcher(None, s["name"], name).ratio()
-        type_match = ref["port"] in ports or any(PORT_TYPES.get(p) == ref["type"] for p in ports)
-        if type_match or name_sim >= 0.6:
-            ep = tools.get_endpoints(s["name"], s["namespace"]) or {"ready": []}
-            store.add("kubernetes.services", subject, "similar_service",
-                      f"Service {ns}/{s['name']} exists with port(s) {ports} and {len(ep['ready'])} ready endpoint(s)"
-                      f" (name similarity {name_sim:.0%} to '{name}')",
-                      service=s["name"], ports=ports, ready=len(ep["ready"]), name_similarity=round(name_sim, 2),
-                      port_match=ref["port"] in ports)
+                     f"From {pod}: '{host}' resolves to {', '.join(r.addresses or [])}; {detail}",
+                     from_instance=pod, host=host, port=port, dns="ok", tcp=r.tcp, addresses=r.addresses, error=r.error)

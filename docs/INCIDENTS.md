@@ -84,6 +84,12 @@ Potential evidence:
 
 PostgreSQL unavailability should be identified as the likely root cause, with backend as an impacted component.
 
+**How reports represent this (as implemented):**
+- **Root-cause component:** `postgres` (the unavailable dependency).
+- **Affected component:** `backend` (where the failure surfaces).
+- **Failure category:** dependency unavailable.
+- **Also impacted:** `frontend` (the caller of backend).
+
 ### Important Contrast
 
 This scenario must remain distinguishable from Incident 2.
@@ -128,7 +134,17 @@ The next major demonstration may use a more causal chain involving traffic and r
 
 ## Incident 5 — Traffic Spike → Resource Exhaustion → Service Failure
 
-This is a planned future scenario and should not be treated as already implemented unless the code proves it.
+**Status: partially implemented.** Incident 1's live injection (`scripts/inject/oom.ps1`) is exactly this
+chain.
+
+What exists today:
+- The investigator diagnoses memory exhaustion.
+- When Prometheus is available, it reports the traffic increase (e.g. "~100 → ~870 req/s, 8.7x") as a
+  **contributing factor**.
+- Iteration 1 (archived) reconstructed the full T1–T8 timeline from metrics.
+
+What is not implemented in the current investigator: metric threshold-crossing timeline entries (CPU/memory
+saturation times, error-rate return to baseline) and the recovery time. Treat those parts as planned.
 
 ### Intended Chain
 
@@ -240,7 +256,18 @@ The investigator should be tested against:
 
 Scenario identifiers must not be passed to the investigator as hidden hints during the actual investigation path.
 
-The existing offline test suite has 7/7 passing tests and should remain a regression baseline.
+The 7 offline tests from the end of Iteration 2 remain the regression baseline inside the larger suite.
+
+Similar-symptom cases now covered (`tests/test_similar_symptoms.py`):
+
+| Case | Looks like | Correct diagnosis |
+|---|---|---|
+| Crash-loop whose traceback is a refused DB connection | Application crash | Dependency unavailable |
+| Exit code 137 from a liveness kill | OOM | Health-check failure |
+| DB down right after an unrelated ConfigMap edit | Misconfiguration | Dependency unavailable |
+| Readiness noise from a normal rollout | A failure | No incident |
+
+Timestamp integrity is covered in `tests/test_timeline.py`.
 
 # Future Remediation Test Cases
 

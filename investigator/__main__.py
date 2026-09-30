@@ -18,9 +18,9 @@ def _duration(s: str) -> float:
 def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    p = argparse.ArgumentParser(prog="investigator", description="Kubernetes incident investigation (Iteration 2)")
+    p = argparse.ArgumentParser(prog="investigator", description="Evidence-driven incident investigation (Iteration 3)")
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("check", help="verify connectivity to Kubernetes, the entry service, metrics and Slack")
+    sub.add_parser("check", help="verify the resource provider, entry service, metrics and Slack")
     st = sub.add_parser("status", help="print live health of the watched namespace")
     st.add_argument("--once", action="store_true")
     w = sub.add_parser("watch", help="detect incidents, investigate them and report")
@@ -51,53 +51,57 @@ def main() -> None:
             saved = json.load(f)
         incident = {"id": saved["incident_id"], "detected_at": saved["detected_at"],
                     "signals": [{"text": t} for t in saved["signals"]], "namespace": settings.namespace}
+        from . import legacy
+        if legacy.is_legacy(saved["store"]):
+            print("(evidence saved before Iteration 3 step 4: upgrading its vocabulary for today's engine)")
+            saved["store"] = legacy.upgrade(saved["store"])
         diagnose_and_report(settings, incident, EvidenceStore.from_dict(saved["store"]),
                             (saved["window"]["start"], saved["window"]["end"]), post_to_slack=args.slack)
         return
 
-    from .kube import Kube
-    from .pipeline import connect_metrics
-    kube = Kube(settings.kube_context)
+    from . import providers as providers_mod
+    from .pipeline import log
+    providers = providers_mod.connect(settings, log=log)
 
     if args.cmd == "check":
         from . import slack
-        pods = kube.pods(settings.namespace)
-        print(f"Kubernetes : OK - namespace {settings.namespace}: {len(pods)} pods "
-              f"({', '.join(sorted({p['app'] or p['name'] for p in pods}))})")
-        status, body = kube.service_proxy_get(settings.namespace, settings.entry_service, settings.entry_port,
-                                              settings.entry_path)
-        print(f"Entry probe: HTTP {status} from {settings.entry_service}{settings.entry_path.split('?')[0]} - {body.strip()[:80]}")
-        prom = connect_metrics(settings)
-        print(f"Metrics    : {'Prometheus OK (optional)' if prom else 'not used'}")
+        r = providers.new_resources()
+        comps = r.list_components()
+        print(f"Resources  : OK - {r.name} ({r.scope}): {len(comps)} components ({', '.join(sorted(comps))})")
+        res = r.probe_request(settings.entry_service, settings.entry_port, settings.entry_path)
+        print(f"Entry probe: HTTP {res.status} from {settings.entry_service}{settings.entry_path.split('?')[0]} - "
+              f"{res.body.strip()[:80]}")
+        print(f"Metrics    : {providers.metrics.name + ' OK (optional)' if providers.metrics else 'not used'}"
+              + (f", clock offset {providers.clock_offset:+.1f}s" if providers.metrics else ""))
         print(f"Slack      : {slack.check(settings)}")
         print(f"Probes     : active dependency probes {'enabled' if settings.active_probes else 'disabled'}")
+        print(f"Strategy   : {settings.investigation_strategy}")
         return
 
     if args.cmd == "status":
         from .detector import Detector, format_sample
-        det = Detector(settings, kube, None)
+        det = Detector(settings, providers.new_resources(), None, clock=providers.clock)
         while True:
             print(format_sample(det.sample()), flush=True)
             if args.once:
                 return
             time.sleep(settings.poll_interval_s)
 
-    prom = connect_metrics(settings)
     if args.cmd == "watch":
         from .pipeline import watch
         try:
-            watch(settings, kube, prom, post_to_slack=not args.no_slack, verbose=not args.quiet)
+            watch(settings, providers, post_to_slack=not args.no_slack, verbose=not args.quiet)
         except KeyboardInterrupt:
             print("\nstopped")
         return
 
     if args.cmd == "investigate":
         from .pipeline import investigate, new_incident
-        now = prom.now() if prom else time.time()
+        now = providers.clock()
         incident = new_incident([{"kind": "manual", "subject": "system", "t": now,
                                   "text": "manual investigation request (no failure information given)"}],
                                 now, settings.namespace)
-        investigate(settings, kube, prom, incident, now - args.since, now, post_to_slack=not args.no_slack)
+        investigate(settings, providers, incident, now - args.since, now, post_to_slack=not args.no_slack)
 
 
 if __name__ == "__main__":

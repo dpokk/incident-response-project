@@ -1,15 +1,27 @@
-# Kubernetes Incident Investigation: Iteration 2
+# Incident Investigation Prototype: Iteration 3 (capability-based investigation)
 
-A generalized, evidence-driven incident investigator. Failures are injected into a running Kubernetes
-application. The investigator is **not told what failed**. It collects facts from the live system, works
-out the affected component and failure category, and writes a structured incident report. It does no
+An evidence-driven incident investigator, proven first on a local Kubernetes application. Failures are
+injected into the running system. The investigator is **not told what failed**. It decides which
+evidence is relevant and gathers it through provider-independent **capabilities**, then works out the
+affected component and failure category and writes a structured incident report. It does no
 remediation.
 
 ```
-Detection  ->  Evidence collection  ->  Diagnosis  ->  Incident report      [future: Remediation -> Verification]
+Detection -> Incident context -> Investigation planner <-> Capabilities (Kubernetes / Prometheus adapters)
+          -> Diagnosis -> Incident report                     [future: Remediation -> Verification]
 ```
 
-Iteration 1 (single OOM scenario, LLM narrative) is archived in `archive/iteration1/`.
+Project direction, roadmap and architecture principles live in `CLAUDE.md` and `docs/`. Iteration 1 is
+archived in `archive/iteration1/`.
+
+**Status:**
+- **Iteration 3 is architecturally complete.** Done:
+  - step 1: capability interface + adapters;
+  - step 2: incident context + planner;
+  - step 3: detection on capabilities;
+  - step 4: provider-neutral fact vocabulary.
+- **Kubernetes is the only resource provider implemented so far.** Provider agnosticism is not claimed
+  until a second provider exercises the same interface (Iteration 8 in `docs/ROADMAP.md`).
 
 ## Architecture
 
@@ -18,11 +30,36 @@ Iteration 1 (single OOM scenario, LLM narrative) is archived in `archive/iterati
 ┌──────────┐  HTTP  ┌──────────┐  HTTP  ┌──────────────┐  SQL  ┌────────────┐    ┌──────────────────────┐
 │ loadgen  │ ─────► │ frontend │ ─────► │ backend (x2) │ ────► │ PostgreSQL │    │ python -m investigator│
 │ 100 rps  │        │ gateway  │        │ orders API + │       │ (Service   │    │  detector            │
-└──────────┘        └──────────┘        │ invoice job  │       │  postgres) │    │  toolset (read-only) │
-                                        └──────────────┘       └────────────┘    │  collect -> diagnose │
-                                                                                 │  -> report (+Slack)  │
+└──────────┘        └──────────┘        │ invoice job  │       │  postgres) │    │  context -> planner  │
+                                        └──────────────┘       └────────────┘    │  capabilities ──────►│ adapters
+                                                                                 │  diagnose -> report  │
                                                                                  └──────────────────────┘
 ```
+
+Investigator layout:
+
+| Layer | Files | Provider-specific? |
+|---|---|---|
+| Detection | `detector.py` | no |
+| Incident context, planner | `context.py`, `planner.py` | no |
+| Evidence recording | `collect.py`, `dependencies.py`, `metrics.py`, `logparse.py`, `evidence.py` | no |
+| Capability interface | `capabilities/base.py`, `capabilities/__init__.py`, `capabilities/references.py` | no |
+| Adapters | `capabilities/kubernetes.py` (+ `kube.py`), `capabilities/prometheus.py` (+ `prom.py`) | yes, by design |
+| Composition root | `providers.py` (chooses the adapters) | the one place that names them |
+| Diagnosis, report, CLI | `diagnosis.py`, `report.py`, `slack.py`, `pipeline.py`, `__main__.py` | no |
+| Compatibility | `legacy.py` (reads evidence saved in the old Kubernetes vocabulary) | yes, replay only |
+
+`tests/test_architecture.py` enforces two rules:
+- **No provider imports.** It fails if any provider-independent module imports provider code.
+- **No provider vocabulary.** It fails if reasoning code uses Kubernetes vocabulary (`OOMKilled`,
+  `CrashLoopBackOff`, exit code 137, …).
+
+Diagnosis reasons over neutral classifications that the adapter maps from provider values:
+- **termination cause:** `memory_limit`, `error_exit`, `killed`, `completed`;
+- **event category:** `restart_backoff`, `health_check_failed`, `scheduling_failed`, …;
+- **waiting cause.**
+
+Provider words such as "OOMKilled" still appear in reports, but only as values taken from facts.
 
 The backend stores every order in PostgreSQL. A background invoice job computes unit prices, and it
 fails fast by design: an unexpected exception terminates the process.
@@ -49,29 +86,43 @@ fails fast by design: an unexpected exception terminates the process.
 - a burst of error-level log lines
 - optionally, the Prometheus 5xx ratio
 
-**Evidence collection** (`collect.py`) runs the same process for every incident, over every workload in
-the namespace, using read-only tools from `tools.py` (`get_pods`, `get_pod_status`, `get_container_status`,
-`get_pod_events`, `get_logs`, `get_services`, `get_endpoints`, `get_configuration`, `check_dependency`, …):
+**Capabilities** (`capabilities/`) are the only way the investigation obtains evidence. The interface is
+provider-independent:
 
-1. Workloads, replica counts, pod phase/readiness, container state, and termination history (reason,
-   exit code, runtime). The pod journal keeps terminations that Kubernetes itself forgets.
-2. Kubernetes events (pods, ReplicaSets, Deployments, nodes).
-3. Logs from current and previous container instances. `logparse.py` extracts generic signatures:
-   DNS failure, connection refused/timeout/reset, auth failure, memory pressure, upstream errors,
-   Python tracebacks with the crash site.
-4. Services and ready endpoints.
-5. Configuration. Effective env from ConfigMaps and Secrets; secret values are never reported.
-6. Dependencies (`dependencies.py`), discovered from the configuration (URLs, `*_HOST`/`*_PORT`). For each
-   one it checks:
-   - whether the Service exists and exposes the port;
-   - its endpoints and the backing workload;
-   - similar services, if the name doesn't exist;
-   - DNS and TCP from inside the consumer pod, using a fixed read-only probe.
-7. Change history: rollouts and ConfigMap edits.
-8. Optional metrics: traffic change, error ratio, memory versus limit.
+| Capability | Kubernetes adapter implements it with |
+|---|---|
+| `list_components`, `get_resource_state` | Deployments/StatefulSets, Pods, container state, the pod journal (terminations Kubernetes forgets) |
+| `get_events` | Namespace events attributed to components; node events as infrastructure events |
+| `get_logs` | Current and previous container logs |
+| `get_configuration`, `get_dependencies` | Effective env from ConfigMaps and Secrets (values never reported); URLs and `*_HOST`/`*_PORT` pairs |
+| `list_services`, `get_service_health` | Services, endpoints, backing workloads, similar services when a name doesn't exist |
+| `check_connectivity` | A fixed, read-only DNS + TCP probe from inside a running consumer pod |
+| `probe_request` | A synthetic user request through the API server's service proxy |
+| `get_deployment_history` | ReplicaSet revisions |
+| `get_metrics` | Separate `PrometheusMetrics` adapter: request rate, error ratio, memory (optional) |
 
-Every observation is stored as a **fact** (`evidence.py`) with an ID, source, subject and timestamp.
-Facts carry no interpretation.
+Records use a neutral vocabulary: a *component* has *instances* that run *processes*. Every call is
+traced, including which provider served it, and cached for the investigation.
+
+**Incident context and planner** (`context.py`, `planner.py`). The context holds only the detection
+signals, the time window and the components those signals name. The planner starts there and follows
+the evidence:
+
+- a process restarted → read its previous instance's logs;
+- errors about a dependency, or an unhealthy dependency → test connectivity from inside the consumer, and
+  examine the component that serves it;
+- a suspect with no failure of its own → follow its dependencies downstream;
+- signs of resource exhaustion → query metrics;
+- nothing failing found → widen to every component.
+
+Every decision is recorded in the investigation trace with its reason. The fixed Iteration 2 procedure
+is kept as `INVESTIGATION_STRATEGY=exhaustive`, for comparison; the default is `planned`.
+
+**Evidence** (`collect.py`, `dependencies.py`, `metrics.py`, `logparse.py`). Capability results become
+**facts** (`evidence.py`) with an ID, source (including the provider), subject and timestamp. Facts carry
+no interpretation. `logparse.py` extracts generic log signatures: DNS failure, connection
+refused/timeout/reset, auth failure, memory pressure, upstream errors, and Python tracebacks with the
+crash site.
 
 **Diagnosis** (`diagnosis.py`) checks each workload against a general failure taxonomy:
 - memory exhaustion
@@ -112,7 +163,7 @@ Run everything from the project folder with Docker Desktop running.
 pip install -r requirements.txt
 powershell -ExecutionPolicy Bypass -File scripts\setup.ps1     # start cluster, build image, deploy (incl. PostgreSQL)
 python -m investigator check                                   # K8s, entry probe, metrics, Slack
-python -m pytest tests -q                                      # offline tests: 4 scenarios + healthy, no hints
+python -m pytest tests -q                                      # offline tests: scenarios, planner, architecture
 ```
 
 Demo (two terminals):
@@ -139,7 +190,11 @@ python -m investigator post reports\INC-....json              # post a saved rep
 minikube stop -p incident-demo                  # stop the cluster when done
 ```
 
-## Explicitly out of scope (Iteration 2)
+## Explicitly out of scope (Iteration 3)
 
-LLM/AI reasoning, automated remediation, new observability stacks (Prometheus from Iteration 1 is only
-optional enrichment), and handling every possible Kubernetes error.
+The following are later milestones in `docs/ROADMAP.md`:
+- an LLM-assisted planner;
+- a second provider;
+- automated remediation;
+- new observability stacks (Prometheus from Iteration 1 is only optional enrichment);
+- SaaS, multi-tenancy and the customer connector.
