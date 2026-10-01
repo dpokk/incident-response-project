@@ -24,7 +24,8 @@ def main() -> None:
     st = sub.add_parser("status", help="print live health of the watched namespace")
     st.add_argument("--once", action="store_true")
     sub.add_parser("record", help="only record evidence history (no detection), e.g. alongside manual investigations")
-    sub.add_parser("review", help="listen for Slack Approve/Reject interactions (Socket Mode) and record decisions")
+    sub.add_parser("review", help="listen for Slack Approve/Reject (recorded) and Execute (checked, then applied) "
+                                  "interactions over Socket Mode")
     w = sub.add_parser("watch", help="detect incidents, investigate them and report")
     w.add_argument("--no-slack", action="store_true")
     w.add_argument("--quiet", action="store_true", help="don't print every sample")
@@ -62,11 +63,19 @@ def main() -> None:
         return
 
     if args.cmd == "review":
-        # Needs Slack and the review store only - never the cluster: reviewing records decisions, it changes nothing.
+        # Review records decisions. Execute (a separate step, Iteration 7) needs the cluster: connect if possible;
+        # without a connection the listener still records decisions and offers no Execute.
         from . import slack_app
-        from .pipeline import log, review_service
+        from .pipeline import execution_service, log, review_service
+        review = review_service(settings)
+        execution = None
         try:
-            slack_app.start(settings, review_service(settings), log=log, block=True)
+            from . import providers as providers_mod
+            execution = execution_service(settings, providers_mod.connect(settings, log=log), review)
+        except Exception as exc:  # noqa: BLE001
+            log(f"cluster not reachable ({type(exc).__name__}): review only, Execute unavailable")
+        try:
+            slack_app.start(settings, review, log=log, block=True, execution=execution)
         except KeyboardInterrupt:
             print("\nstopped")
         return

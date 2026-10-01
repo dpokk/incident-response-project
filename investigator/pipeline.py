@@ -2,10 +2,12 @@
 
     Detection -> Evidence collection -> Diagnosis -> Incident report -> Remediation plan (proposal only)
     -> Slack incident thread + human review (decisions recorded by review.py)
-    [future: approved execution + verification (Iteration 7)]
+    -> [only on a separate, explicit Execute by an authorised person] executor.py: checks, one typed change,
+       verification (Iteration 7)
 
-Each stage only consumes the previous stage's output. The pipeline stops after the plan is presented for review:
-no restarts, scaling, config changes or any other corrective action. A human decision is recorded, never executed.
+Each stage only consumes the previous stage's output. The investigation pipeline itself never changes anything: it
+stops after the plan is presented for review. A change happens only through the execution service, which the
+Slack listener calls when an authorised person clicks Execute on an approved action.
 """
 import time
 from datetime import datetime
@@ -13,6 +15,7 @@ from datetime import datetime
 from . import report as rpt
 from . import slack
 from .review import ReviewService
+from .execution_policy import ExecutionPolicy
 from .collect import collect
 from .context import IncidentContext
 from .detector import Detector, format_sample
@@ -33,7 +36,7 @@ def new_incident(signals: list[dict], detected_at: float, namespace: str) -> dic
 
 
 def investigate(settings, providers: Providers, incident: dict, start: float, end: float,
-                post_to_slack: bool = True, ongoing: bool | None = None) -> dict:
+                post_to_slack: bool = True, ongoing: bool | None = None, execution=None) -> dict:
     log(f"Investigating {incident['id']} (window {rpt.hms(start)}-{rpt.hms(end)}); the investigator is not told what failed")
     store = EvidenceStore(clock=providers.clock)
     caps = providers.capabilities(store)
@@ -48,11 +51,11 @@ def investigate(settings, providers: Providers, incident: dict, start: float, en
         plan_and_collect(caps, ctx, log=log)
     log(f"  {len(store.facts)} facts collected with {sum(1 for s in store.trace if s['step'] == 'capability')} "
         f"capability calls")
-    return diagnose_and_report(settings, incident, store, (start, end), post_to_slack, ongoing)
+    return diagnose_and_report(settings, incident, store, (start, end), post_to_slack, ongoing, execution)
 
 
 def diagnose_and_report(settings, incident: dict, store: EvidenceStore, window: tuple,
-                        post_to_slack: bool = True, ongoing: bool | None = None) -> dict:
+                        post_to_slack: bool = True, ongoing: bool | None = None, execution=None) -> dict:
     log("Stage 2/3: diagnosis")
     dx = diagnose(store)
     log(f"  -> {dx['category_label']} in {dx['affected_component']} (confidence {dx['confidence']:.0%})")
@@ -74,7 +77,8 @@ def diagnose_and_report(settings, incident: dict, store: EvidenceStore, window: 
     if post_to_slack and settings.slack_configured:
         transport = slack.Transport(settings, log)
         if slack.publish_investigation(transport, slack.ThreadRegistry(settings.slack_threads_path), report, review,
-                                       digest, settings.namespace, time.time()):
+                                       digest, settings.namespace, time.time(), execution=execution,
+                                       stale_after_s=_policy_max_age(settings)):
             log("  investigation and plan posted to the incident's Slack thread")
     log("Done. No remediation performed: the plan awaits human review.")
     return {"report": report, "paths": paths, "digest": digest}
@@ -84,15 +88,61 @@ def review_service(settings) -> ReviewService:
     return ReviewService(settings.reviews_path, settings.slack_approvers)
 
 
+def _policy_max_age(settings) -> float | None:
+    try:
+        return ExecutionPolicy.load(settings.execution_policy_path).max_plan_age_s
+    except Exception:  # noqa: BLE001 - display only; the executor loads (and enforces) the policy itself
+        return None
+
+
+def execution_service(settings, providers: Providers, review: ReviewService):
+    """The execution service (Iteration 7): the only holder of the cluster writer. Built here, at the composition
+    root, and handed to the Slack listener; investigation code never receives it."""
+    from .execution_store import ExecutionStore
+    from .executor import ExecutionService
+    store = ExecutionStore(settings.reviews_path, clock=providers.clock)
+    for rec in store.recover_interrupted():
+        log(f"execution {rec['execution_id']} ({rec['incident_id']}) was interrupted earlier: {rec['message']}")
+    return ExecutionService(
+        review, store, ExecutionPolicy.load(settings.execution_policy_path),
+        providers.new_actuator() if providers.new_actuator else None,
+        capabilities=lambda: providers.capabilities(EvidenceStore(clock=providers.clock)), clock=providers.clock,
+        log=log, poll_s=settings.poll_interval_s,
+        entry=(settings.entry_service, settings.entry_port, settings.entry_path))
+
+
+def without_expected_effects(signals: list[dict], execution, t: float, logged: set) -> list[dict]:
+    """Drop signals that are the expected effects of a change being executed/verified (Iteration 7): a rollout's
+    restarts must not open a duplicate incident. Scoped by the execution service to that incident's components and
+    to the execution + verification period; everything else is detected as usual."""
+    if execution is None:
+        return signals
+    out = []
+    for x in signals:
+        inc = execution.expected_effect(x["subject"], t)
+        if inc is None:
+            out.append(x)
+        elif (inc, x["subject"]) not in logged:
+            logged.add((inc, x["subject"]))
+            log(f"{x['kind']} on {x['subject']}: expected effect of the change being executed for {inc}; not opened "
+                f"as a new incident (verification is observing it)")
+    return out
+
+
 def watch(settings, providers: Providers, post_to_slack: bool = True, verbose: bool = True) -> None:
     recorder = providers.new_resources()
     recorder.start_background_recording()   # evidence history recorder (or the older pod journal)
+    execution = None
     if post_to_slack and settings.slack_app_token:
-        try:                                 # human review of plans in the incident threads (records decisions only)
+        try:                                 # human review (and, separately, Execute) in the incident threads
             from . import slack_app
-            slack_app.start(settings, review_service(settings), log=log)
+            review = review_service(settings)
+            execution = execution_service(settings, providers, review)
+            slack_app.start(settings, review, log=log, execution=execution)
         except Exception as exc:  # noqa: BLE001 - review is optional; watching continues without it
             log(f"Slack review listener not started: {type(exc).__name__}: {exc}")
+            execution = None
+    suppressed_logged: set = set()
     det = Detector(settings, providers.new_resources(), providers.metrics, clock=providers.clock)
     det.sample()
     log(f"Watching {providers.describe()} every {settings.poll_interval_s:.0f}s "
@@ -111,30 +161,31 @@ def watch(settings, providers: Providers, post_to_slack: bool = True, verbose: b
                   flush=True)
         if s["unhealthy"]:
             last_unhealthy = s["t"]
+        signals = without_expected_effects(s["signals"], execution, s["t"], suppressed_logged)
         if incident is None:
-            if s["signals"]:
-                incident = new_incident(s["signals"], s["t"], settings.namespace)
+            if signals:
+                incident = new_incident(signals, s["t"], settings.namespace)
                 investigate_at = s["t"] + settings.investigate_delay_s
-                log(f"INCIDENT DETECTED {incident['id']}: " + "; ".join(x["text"] for x in s["signals"])[:300])
+                log(f"INCIDENT DETECTED {incident['id']}: " + "; ".join(x["text"] for x in signals)[:300])
                 log(f"Collecting symptoms for {settings.investigate_delay_s:.0f}s before investigating")
                 if post_to_slack and settings.slack_post_detection and settings.slack_configured:
                     slack.publish_detection(slack.Transport(settings, log), slack.ThreadRegistry(settings.slack_threads_path),
                                             incident, settings.namespace)
             continue
         seen = {(x["kind"], x["subject"]) for x in incident["signals"]}
-        new = [x for x in s["signals"] if (x["kind"], x["subject"]) not in seen]
+        new = [x for x in signals if (x["kind"], x["subject"]) not in seen]
         if incident.get("reported") and new:
             # Different symptoms after the report: treat as a new incident rather than folding it in.
             log(f"New symptoms after {incident['id']} was reported; opening a new incident")
-            incident = new_incident(s["signals"], s["t"], settings.namespace)
+            incident = new_incident(signals, s["t"], settings.namespace)
             investigate_at = s["t"] + settings.investigate_delay_s
-            log(f"INCIDENT DETECTED {incident['id']}: " + "; ".join(x["text"] for x in s["signals"])[:300])
+            log(f"INCIDENT DETECTED {incident['id']}: " + "; ".join(x["text"] for x in signals)[:300])
             continue
         incident["signals"] += new[:10 - len(incident["signals"])]
         if not incident.get("reported") and s["t"] >= investigate_at:
             try:
                 investigate(settings, providers, incident, incident["detected_at"] - settings.lookback_s, s["t"],
-                            post_to_slack, ongoing=s["unhealthy"])
+                            post_to_slack, ongoing=s["unhealthy"], execution=execution)
             except Exception as exc:  # noqa: BLE001
                 log(f"investigation failed: {exc!r}")
             incident["reported"] = True
@@ -147,5 +198,5 @@ def watch(settings, providers: Providers, post_to_slack: bool = True, verbose: b
             log(f"Incident {incident['id']} symptoms have cleared; back to watching")
             if post_to_slack and settings.slack_configured:
                 slack.publish_resolved(slack.Transport(settings, log), slack.ThreadRegistry(settings.slack_threads_path),
-                                       review_service(settings), incident, settings.namespace)
+                                       review_service(settings), incident, settings.namespace, execution)
             incident = None

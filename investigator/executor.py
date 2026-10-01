@@ -45,6 +45,10 @@ class ExecutionService:
         self.review, self.store, self.policy, self.actuator = review, store, policy, actuator
         self.capabilities, self.clock, self.log = capabilities, clock, log
         self.sleep, self.poll_s, self.entry = sleep, poll_s, entry
+        # Expected effects of a running change (rollout, restarts), so detection does not open duplicate incidents:
+        # execution id -> {"incident", "components", "until"} (until None = still executing/verifying).
+        self._scopes: dict[str, dict] = {}
+        self.effect_grace_s = 60.0
 
     # ----------------------------------------------------------------------------- the typed change
     @staticmethod
@@ -135,12 +139,18 @@ class ExecutionService:
             return self._refuse_attempt(req, self._existing(record))
         eid = record["execution_id"]
         self.store.attempt(req, "claimed", change.describe(), eid)
+        self._scopes[eid] = {"incident": req.incident_id.split(ROLLBACK_MARK)[0], "until": None,
+                             "components": _components(ctx["plan"]["plan"], change)}
         _notify(progress, "checks_passed", {"execution_id": eid, "change": change.describe(), "checks": ctx["checks"]})
         result = self._run(eid, req, ctx)
         _notify(progress, "applied" if result.ok else "stopped", {"execution_id": eid, "result": result})
         if not result.ok:
+            self._end_scope(eid, changed=result.code == Status.UNCERTAIN.value)
             return result
-        return self._verify(eid, req, ctx, result, progress)
+        try:
+            return self._verify(eid, req, ctx, result, progress)
+        finally:
+            self._end_scope(eid, changed=True)
 
     def _run(self, eid: str, req: ExecutionRequest, ctx: dict) -> ExecutionResult:
         """Steps 7-9 on a claimed execution. Before the real write nothing has changed, so a refusal is final but
@@ -256,6 +266,25 @@ class ExecutionService:
             d["before"], d["after"] = host_of(res.before), host_of(res.after)
         return d
 
+    # ----------------------------------------------------------------------------- expected effects (detection)
+    def expected_effect(self, component: str, now: float) -> str | None:
+        """The incident whose running (or just verified) change is expected to disturb component now, if any.
+        Scoped to the components of that incident's plan and to the execution + verification period plus a short
+        grace; any other component, or any time outside that period, is not covered."""
+        for eid, sc in list(self._scopes.items()):
+            if sc["until"] is not None and now > sc["until"]:
+                self._scopes.pop(eid, None)
+                continue
+            if component in sc["components"]:
+                return sc["incident"]
+        return None
+
+    def _end_scope(self, eid: str, changed: bool) -> None:
+        if not changed:                   # nothing was changed: nothing to expect
+            self._scopes.pop(eid, None)
+        elif eid in self._scopes:
+            self._scopes[eid]["until"] = self.clock() + self.effect_grace_s
+
     # ----------------------------------------------------------------------------- helpers
     @staticmethod
     def _existing(record: dict) -> ExecutionResult:
@@ -276,6 +305,16 @@ class ExecutionService:
         self.log(f"execution: {result.code} on {req.incident_id} action {req.action_index + 1} by {req.executor}: "
                  f"{result.message}")
         return result
+
+
+def _components(plan: dict, change: ChangeRequest) -> set[str]:
+    """The components an executed change can be expected to disturb: the changed one, and those of its incident."""
+    dx = plan.get("diagnosis") or {}
+    rcc = dx.get("root_cause_component") or {}
+    out = {change.component, dx.get("affected_component"), *(dx.get("impacted_components") or [])}
+    if rcc.get("kind") == "component":
+        out.add(rcc.get("name"))
+    return {c for c in out if c}
 
 
 def _notify(progress, stage: str, data: dict) -> None:

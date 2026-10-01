@@ -11,7 +11,7 @@
 | Iteration 4 — Historical evidence & incident reconstruction | Complete |
 | Iteration 5 — Remediation planning | Complete |
 | Iteration 6 — Slack incident experience + human review | Complete |
-| Iteration 7 — Approved remediation execution + verification | **In progress** — Milestones 1–3 done |
+| Iteration 7 — Approved remediation execution + verification | **In progress** — Milestones 1–4 done; live demos pending |
 | Iteration 8 — Second provider | Planned |
 | Iterations 9–11 — SaaS control plane, customer connector, external pilot | Planned |
 
@@ -648,7 +648,14 @@ Rules:
   - the outcome is RESOLVED / NOT_RESOLVED / INCONCLUSIVE: missing evidence is never success, and only kills in instances started after the change count;
   - when verification is not RESOLVED, the executor stops and registers a typed rollback plan (`remediation.plan_rollback`) under `<incident>#rollback-<execution>`. It needs its own approval and Execute, goes through the same controls (minus the relevance check), and never chains;
   - an interrupted verification is recorded as INCONCLUSIVE.
-- Next: Milestone 4 (Slack execution experience, duplicate-incident suppression).
+- Milestone 4 (Slack execution experience) is done:
+  - an Execute button appears only on approved change actions, only where an executor is available, and not on stale plans;
+  - one evolving execution message per execution shows safety checks, dry run, the applied change, verification evidence per criterion and the outcome;
+  - refusals are explained (unauthorized and duplicate clicks only to the clicker);
+  - the rollback plan is posted with its own review controls;
+  - the root shows the execution outcome, and the stale-plan display uses the policy's maximum plan age;
+  - detection drops only the expected effects of a running change (that incident's components, during execution and verification plus 60 s).
+- Next: Milestone 5 (calibration, then the four live demonstrations).
 
 ## Iteration 8 — Provider Abstraction + Second Provider
 
