@@ -32,7 +32,7 @@ def new_incident(signals: list[dict], detected_at: float, namespace: str) -> dic
 def investigate(settings, providers: Providers, incident: dict, start: float, end: float,
                 post_to_slack: bool = True, ongoing: bool | None = None) -> dict:
     log(f"Investigating {incident['id']} (window {rpt.hms(start)}-{rpt.hms(end)}); the investigator is not told what failed")
-    store = EvidenceStore()
+    store = EvidenceStore(clock=providers.clock)
     caps = providers.capabilities(store)
     entry = (settings.entry_service, settings.entry_port, settings.entry_path)
     log(f"Stage 1/3: evidence collection, strategy '{settings.investigation_strategy}' (providers: {caps.resources.name}"
@@ -67,7 +67,7 @@ def diagnose_and_report(settings, incident: dict, store: EvidenceStore, window: 
 
 def watch(settings, providers: Providers, post_to_slack: bool = True, verbose: bool = True) -> None:
     recorder = providers.new_resources()
-    recorder.start_background_recording()   # e.g. the Kubernetes pod journal
+    recorder.start_background_recording()   # evidence history recorder (or the older pod journal)
     det = Detector(settings, providers.new_resources(), providers.metrics, clock=providers.clock)
     det.sample()
     log(f"Watching {providers.describe()} every {settings.poll_interval_s:.0f}s "

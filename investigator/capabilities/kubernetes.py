@@ -3,15 +3,22 @@
 This is the only place in the investigation path that knows about Deployments, Pods, ReplicaSets,
 Services/Endpoints, ConfigMaps/Secrets, events, the pod journal and `kubectl exec`. The engine
 (collect.py, dependencies.py, diagnosis.py) sees only the records defined in base.py.
+
+Evidence history (Iteration 4): when a HistoryStore is attached, the adapter also answers from what the
+KubernetesRecorder retained (runs and pods that no longer exist, expired events, earlier configuration), and
+marks such evidence as retained. It never presents retained evidence as current state.
 """
 import difflib
+import json
 from pathlib import Path
 
 from ..kube import read_journal
-from .base import (BackingComponent, Change, ConfigEntry, ConnectivityResult, DependencyRef, EventRecord,
-                   InstanceState, ProcessState, RequestResult, ResourceProvider, ResourceState, ServiceHealth,
-                   SimilarService, Termination, TerminationRecord, TimeRange)
+from .base import (BackingComponent, Change, ConfigChange, ConfigEntry, ConnectivityResult, Coverage, DependencyRef,
+                   EventRecord, InstanceState, LogHistory, PastInstance, ProcessState, RequestResult, ResourceProvider,
+                   ResourceState, ServiceHealth, SimilarService, Termination, TerminationRecord, TimeRange)
 from .references import PORT_TYPES, extract_references
+
+HISTORY_SOURCE = "kubernetes.history"
 
 
 # Kubernetes waiting reasons -> neutral causes (capabilities/base.py ProcessState.waiting_cause)
@@ -56,25 +63,39 @@ class KubernetesAdapter(ResourceProvider):
     name = "kubernetes"
 
     def __init__(self, kube, namespace: str, journal_path: Path | None = None, active_probes: bool = True,
-                 clock=None):
+                 clock=None, history=None, recorder_options: dict | None = None):
         self.kube, self.ns, self.journal_path, self.active_probes = kube, namespace, journal_path, active_probes
         self.scope = namespace
         self.clock = clock
+        self.history = history                      # HistoryStore, or None (no evidence history)
+        self.recorder_options = recorder_options or {}
         self._cache: dict = {}
         self._journal = None
+        self._recorder = None
 
     def reset(self) -> None:
         self._cache.clear()
 
     def start_background_recording(self) -> None:
-        """Kubernetes keeps only a container's latest termination; the pod journal records every one."""
+        """Kubernetes forgets earlier runs, deleted pods, old events and earlier configuration. With a history
+        store the recorder retains them; without one, the older pod journal still records terminations."""
+        import time
+        if self.history is not None:
+            if self._recorder is None:
+                from .kubernetes_recorder import KubernetesRecorder
+                self._recorder = KubernetesRecorder(self.kube, self.ns, self.history, clock=self.clock or time.time,
+                                                    **self.recorder_options)
+                self._recorder.start()
+            return
         if self.journal_path is None or self._journal is not None:
             return
-        import time
-
         from ..kube import PodJournal
         self._journal = PodJournal(self.kube, self.ns, self.journal_path, clock=self.clock or time.time)
         self._journal.start()
+
+    def stop_background_recording(self) -> None:
+        if self._recorder is not None:
+            self._recorder.stop()
 
     # -- raw reads (cached per investigation) -----------------------------------------
     def _once(self, key, fn):
@@ -123,11 +144,34 @@ class KubernetesAdapter(ResourceProvider):
                 termination=Termination(e.get("reason"), e.get("exit_code"), e.get("started_at"), e["t"],
                                         termination_cause(e.get("reason"), e.get("exit_code"))),
                 source="kubernetes.pod_journal", instance_gone=gone))
+        past = []
+        if self.history is not None:
+            from ..kube import parse_mem
+            mem_limits = {c["name"]: parse_mem((c["limits"] or {}).get("memory")) for c in w["containers"]}
+            runs = self._retained_runs(w["name"], time_range)
+            for e in self.history.lifecycle(self.ns, w["name"], time_range.start - 60, time_range.end + 60, "terminated"):
+                d = e["data"]
+                gen = d.get("generation")
+                history.append(TerminationRecord(
+                    instance=e["instance"], process=e["process"], restarts=d.get("restart_count"),
+                    termination=Termination(d.get("reason"), d.get("exit_code"), d.get("started_at"), e["t"],
+                                            termination_cause(d.get("reason"), d.get("exit_code"))),
+                    source=HISTORY_SOURCE, instance_gone=e["instance"] not in names,
+                    logs_retained=(e["instance"], e["process"], gen) in runs, generation=gen,
+                    memory_limit_bytes=mem_limits.get(e["process"])))
+            for i in self.history.instances(self.ns, w["name"], time_range.start, time_range.end):
+                if i["instance"] not in names:
+                    past.append(PastInstance(i["instance"], i["kind"] or "Pod", i["created"], i["gone_at"],
+                                             sum(1 for r in runs if r[0] == i["instance"])))
         return ResourceState(
             component=w["name"], kind=w["kind"], scope=w["namespace"], desired=w["replicas_desired"],
             ready=w["replicas_ready"], available=w["replicas_available"],
             limits={c["name"]: c["limits"] for c in w["containers"]},
-            instances=[_instance(p) for p in pods], history=history)
+            instances=[_instance(p) for p in pods], history=history, past_instances=past)
+
+    def _retained_runs(self, component: str, time_range: TimeRange) -> set[tuple]:
+        return {(g["instance"], g["process"], g["generation"])
+                for g in self.history.log_generations(self.ns, component, time_range.start - 600, time_range.end + 60)}
 
     def get_events(self, time_range: TimeRange, infrastructure: bool = False) -> list[EventRecord]:
         if infrastructure:
@@ -146,6 +190,18 @@ class KubernetesAdapter(ResourceProvider):
                 comp = next((w for w in set(rs_owner.values()) | set(pod_workload.values()) if w and obj.startswith(w + "-")), obj)
             out.append(EventRecord(comp, e["object_kind"], obj, e["type"], e["reason"], e["message"], e["count"],
                                    e["first"], e["last"], event_category(e["reason"], e["message"])))
+        if self.history is not None:
+            # Events the platform has since expired, or that were recorded before the pod disappeared.
+            live = {(e.object_name, e.reason, round(e.first or 0)) for e in out}
+            for e in self.history.events(self.ns, time_range.start, time_range.end):
+                if (e["last"] or e["first"] or 0) < time_range.start or \
+                        (e["object_name"], e["reason"], round(e["first"] or 0)) in live:
+                    continue
+                comp = e["component"] or next((w for w in set(rs_owner.values()) | set(pod_workload.values())
+                                               if w and e["object_name"].startswith(w + "-")), e["object_name"])
+                out.append(EventRecord(comp, e["object_kind"], e["object_name"], e["type"], e["reason"], e["message"],
+                                       e["count"], e["first"], e["last"], event_category(e["reason"], e["message"]),
+                                       origin="retained"))
         return out
 
     def get_logs(self, component: str, instance: str, process: str, time_range: TimeRange,
@@ -258,6 +314,66 @@ class KubernetesAdapter(ResourceProvider):
                 for rs in self._replicasets()
                 if rs["created"] and time_range.start <= rs["created"] <= time_range.end and rs["revision"] not in (None, "1")]
 
+    # -- evidence history (Iteration 4) -------------------------------------------------
+    def get_log_history(self, component: str, time_range: TimeRange) -> list[LogHistory]:
+        """Retained runs the live API can no longer serve: every run of a pod that is gone, and runs older than
+        the previous one of a pod that still exists (Kubernetes keeps only the current and previous run)."""
+        if self.history is None:
+            return []
+        live = {p["name"]: {c["name"]: c["restart_count"] for c in p["containers"]} for p in self._pods()}
+        ends = {(e["instance"], e["process"], e["data"].get("generation")): e
+                for e in self.history.lifecycle(self.ns, component, time_range.start - 600, time_range.end + 60, "terminated")}
+        out = []
+        for g in self.history.log_generations(self.ns, component, time_range.start, time_range.end):
+            inst, proc, gen = g["instance"], g["process"], g["generation"]
+            if inst in live and proc in live[inst] and gen >= live[inst][proc] - 1:
+                continue    # still readable live (current or previous run): never double-count
+            end = ends.get((inst, proc, gen))
+            d = end["data"] if end else {}
+            out.append(LogHistory(
+                instance=inst, process=proc, generation=gen, instance_gone=inst not in live,
+                lines=self.history.log_lines(self.ns, inst, proc, gen, time_range.start, time_range.end),
+                dropped=sum(x["dropped"] for x in self.history.log_gaps(self.ns, inst, proc, gen, time_range.start,
+                                                                         time_range.end)),
+                termination=Termination(d.get("reason"), d.get("exit_code"), d.get("started_at"), end["t"],
+                                        termination_cause(d.get("reason"), d.get("exit_code"))) if end else None))
+        return out
+
+    def get_configuration_history(self, component: str, time_range: TimeRange) -> list[ConfigChange]:
+        """Changes the recorder observed in the ConfigMaps and Secrets a workload uses, and in its definition."""
+        if self.history is None:
+            return []
+        w = self._workload(component)
+        sources = [(w["kind"], w["name"])] if w else []
+        for c in (w or {}).get("containers", []):
+            sources += [("ConfigMap", ef["configmap"]) if "configmap" in ef else ("Secret", ef["secret"])
+                        for ef in c["env_from"]]
+            sources += [("ConfigMap", e["from"]["configmap"]) if "configmap" in e["from"] else ("Secret", e["from"]["secret"])
+                        for e in c["env"] if e["from"] and ("configmap" in e["from"] or "secret" in e["from"])]
+        out = []
+        for kind, name in dict.fromkeys(sources):
+            versions = self.history.versions(self.ns, kind, name, time_range.start, time_range.end)
+            for old, new in zip(versions, versions[1:]):
+                a, b = _flatten(old["content"]), _flatten(new["content"])
+                exact = kind == "ConfigMap" and new["modified_at"] is not None
+                for item in sorted(set(a) | set(b)):
+                    if a.get(item) == b.get(item):
+                        continue
+                    sensitive = kind == "Secret"
+                    out.append(ConfigChange(
+                        component=component, source=f"{kind.lower() if kind in ('ConfigMap', 'Secret') else kind}/{name}",
+                        item=item, before=None if sensitive else a.get(item), after=None if sensitive else b.get(item),
+                        sensitive=sensitive, t=new["modified_at"] if exact else None,
+                        t_earliest=None if exact else new["previous_checked_at"], t_latest=None if exact else new["observed_at"]))
+        return out
+
+    def get_evidence_coverage(self, time_range: TimeRange) -> list[Coverage]:
+        if self.history is None:
+            return []
+        return [Coverage(HISTORY_SOURCE, s["started_at"], s["last_seen_at"],
+                         "pod lifecycle, log lines of every run, events, configuration and workload definitions")
+                for s in self.history.sessions(self.ns, time_range.start, time_range.end)]
+
 
 def _instance(p: dict) -> InstanceState:
     procs = []
@@ -277,6 +393,21 @@ def _instance(p: dict) -> InstanceState:
     return InstanceState(name=p["name"], kind="Pod", phase=p["phase"], ready=p["ready"], ready_since=p["ready_since"],
                          unschedulable=p["unschedulable"], created=p["created"], processes=procs,
                          process_kind="container")
+
+
+def _flatten(content: dict, prefix: str = "") -> dict[str, str]:
+    """Nested definition -> {"containers[backend].image": "...", ...} so versions can be compared item by item."""
+    out = {}
+    for k, v in content.items():
+        key = f"{prefix}.{k}" if prefix else str(k)
+        if isinstance(v, dict):
+            out.update(_flatten(v, key))
+        elif isinstance(v, list) and all(isinstance(x, dict) and "name" in x for x in v):
+            for x in v:
+                out.update(_flatten({n: m for n, m in x.items() if n != "name"}, f"{key}[{x['name']}]"))
+        else:
+            out[key] = v if isinstance(v, str) or v is None else json.dumps(v, sort_keys=True)
+    return out
 
 
 def _split_host(host: str, default_ns: str) -> tuple[str, str | None, bool]:

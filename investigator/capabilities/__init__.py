@@ -15,7 +15,9 @@ __all__ = ["Capabilities", "TimeRange"]
 class Capabilities:
     RESOURCE_CAPABILITIES = ("list_components", "get_resource_state", "get_events", "get_logs", "get_configuration",
                              "get_dependencies", "list_services", "get_service_health", "check_connectivity",
-                             "probe_request", "get_deployment_history")
+                             "probe_request", "get_deployment_history",
+                             # evidence history (Iteration 4)
+                             "get_log_history", "get_configuration_history", "get_evidence_coverage")
 
     def __init__(self, resources: ResourceProvider, store: EvidenceStore, metrics: MetricsProvider | None = None):
         self.resources, self.metrics, self.store = resources, metrics, store

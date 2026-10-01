@@ -85,8 +85,21 @@ class TerminationRecord:
     process: str | None
     termination: Termination
     restarts: int | None
-    source: str                        # where this memory comes from, e.g. "kubernetes.pod_journal"
-    instance_gone: bool = False        # the instance no longer exists (its logs can no longer be read)
+    source: str                        # where this memory comes from, e.g. "kubernetes.history"
+    instance_gone: bool = False        # the instance no longer exists
+    logs_retained: bool = False        # the log lines of that run were retained (see get_log_history)
+    generation: int | None = None      # which run of the process ended (0 = first run)
+    memory_limit_bytes: float | None = None   # the process's memory limit per the component's definition
+
+
+@dataclass
+class PastInstance:
+    """An instance of the component that existed during the time range but no longer exists."""
+    name: str
+    kind: str                          # provider's own word, e.g. "Pod"
+    created: float | None
+    gone_at: float | None              # when it was observed to disappear (None = not observed)
+    retained_runs: int = 0             # runs (generations) whose log lines were retained
 
 
 @dataclass
@@ -100,6 +113,7 @@ class ResourceState:
     limits: dict                       # process name -> {"cpu": ..., "memory": ...}
     instances: list[InstanceState] = field(default_factory=list)
     history: list[TerminationRecord] = field(default_factory=list)
+    past_instances: list[PastInstance] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- events, logs, config, changes
@@ -119,6 +133,45 @@ class EventRecord:
     #   restart_backoff | health_check_failed | killed_by_health_check | stopped | scheduling_failed |
     #   scaled | instance_deleted | evicted | memory_limit | failed | node_problem
     category: str | None = None
+    origin: str = "live"               # live (read from the system now) | retained (from evidence history)
+
+
+# --------------------------------------------------------------------------- evidence history (Iteration 4)
+
+@dataclass
+class LogHistory:
+    """Retained log lines of one run of a process that the live system can no longer serve (an earlier run,
+    or a run of an instance that no longer exists)."""
+    instance: str
+    process: str
+    generation: int                    # 0 = first run of the process in that instance
+    lines: list                        # [(t, raw line)]
+    instance_gone: bool
+    dropped: int = 0                   # lines not retained (rate cap); their content is unknown
+    termination: Termination | None = None   # how this run ended, if recorded
+
+
+@dataclass
+class ConfigChange:
+    """A recorded change to configuration or to a component's definition."""
+    component: str | None
+    source: str                        # e.g. "configmap/backend-config", "Deployment/backend"
+    item: str                          # what changed, e.g. a key or "image"
+    before: str | None                 # None for sensitive items, which are never reported
+    after: str | None
+    sensitive: bool
+    t: float | None                    # when the change happened, if the source says so
+    t_earliest: float | None           # otherwise it happened after this observation ...
+    t_latest: float | None             # ... and no later than this one
+
+
+@dataclass
+class Coverage:
+    """A span of time for which a source retained evidence. Outside these spans nothing was recorded."""
+    source: str                        # e.g. "kubernetes.history"
+    start: float
+    end: float
+    detail: str = ""
 
 
 @dataclass
@@ -271,6 +324,19 @@ class ResourceProvider(ABC):
 
     @abstractmethod
     def get_deployment_history(self, time_range: TimeRange) -> list[Change]: ...
+
+    # -- evidence history (Iteration 4); optional: a provider without history returns nothing -----------
+    def get_log_history(self, component: str, time_range: TimeRange) -> list[LogHistory]:
+        """Retained logs of runs the live system can no longer serve."""
+        return []
+
+    def get_configuration_history(self, component: str, time_range: TimeRange) -> list[ConfigChange]:
+        """Recorded changes to the component's configuration and definition."""
+        return []
+
+    def get_evidence_coverage(self, time_range: TimeRange) -> list[Coverage]:
+        """When evidence history was being recorded. Empty = no history for this range."""
+        return []
 
 
 class MetricsProvider(ABC):

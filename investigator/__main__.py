@@ -23,6 +23,7 @@ def main() -> None:
     sub.add_parser("check", help="verify the resource provider, entry service, metrics and Slack")
     st = sub.add_parser("status", help="print live health of the watched namespace")
     st.add_argument("--once", action="store_true")
+    sub.add_parser("record", help="only record evidence history (no detection), e.g. alongside manual investigations")
     w = sub.add_parser("watch", help="detect incidents, investigate them and report")
     w.add_argument("--no-slack", action="store_true")
     w.add_argument("--quiet", action="store_true", help="don't print every sample")
@@ -76,6 +77,30 @@ def main() -> None:
         print(f"Slack      : {slack.check(settings)}")
         print(f"Probes     : active dependency probes {'enabled' if settings.active_probes else 'disabled'}")
         print(f"Strategy   : {settings.investigation_strategy}")
+        if providers.history is not None:
+            s = providers.history.stats()
+            print(f"History    : {settings.history_path} ({settings.history_retention_h:g}h retention) - "
+                  f"{s['sessions']} recording session(s), {s['log_lines']} log lines, {s['lifecycle']} lifecycle records, "
+                  f"{s['events']} events, {s['object_versions']} object versions")
+        else:
+            print("History    : disabled (HISTORY_ENABLED=false): evidence that the platform forgets is not retained")
+        return
+
+    if args.cmd == "record":
+        if providers.history is None:
+            print("Evidence history is disabled (HISTORY_ENABLED=false); nothing to record.")
+            return
+        r = providers.new_resources()
+        r.start_background_recording()
+        log(f"Recording evidence history for {providers.describe()} into {settings.history_path} (Ctrl+C to stop)")
+        try:
+            while True:
+                time.sleep(60)
+                s = providers.history.stats()
+                log(f"history: {s['log_lines']} log lines, {s['lifecycle']} lifecycle records, {s['events']} events, "
+                    f"{s['object_versions']} object versions, {s['log_gaps']} dropped-line markers")
+        except KeyboardInterrupt:
+            print("\nstopped")
         return
 
     if args.cmd == "status":

@@ -19,13 +19,15 @@ class Providers:
     metrics: MetricsProvider | None
     clock: Callable[[], float]                       # the observed system's clock (handles VM clock skew)
     clock_offset: float = 0.0
+    history: object | None = None                    # the evidence history store, if enabled
 
     def capabilities(self, store: EvidenceStore) -> Capabilities:
         return Capabilities(self.new_resources(), store, self.metrics)
 
     def describe(self) -> str:
         r = self.new_resources()
-        return f"{r.name} ({r.scope})" + (f" + {self.metrics.name}" if self.metrics else "")
+        return (f"{r.name} ({r.scope})" + (f" + {self.metrics.name}" if self.metrics else "")
+                + (" with evidence history" if self.history is not None else ""))
 
 
 def connect(settings, log=print) -> Providers:
@@ -43,7 +45,16 @@ def connect(settings, log=print) -> Providers:
         except Exception as exc:  # noqa: BLE001 - metrics are optional
             log(f"metrics source unavailable ({exc}); continuing without metrics")
 
+    history = None
+    if settings.history_enabled:
+        from .history_store import HistoryStore
+        history = HistoryStore(settings.history_path, clock=clock,
+                               max_lines_per_minute=settings.history_max_lines_per_min)
+    recorder_options = {"retention_s": settings.history_retention_h * 3600, "poll_s": settings.poll_interval_s,
+                        "log": log}
+
     def new_resources() -> ResourceProvider:
         return KubernetesAdapter(kube, settings.namespace, journal_path=settings.state_dir / "pod_journal.jsonl",
-                                 active_probes=settings.active_probes, clock=clock)
-    return Providers(new_resources, metrics, clock, offset)
+                                 active_probes=settings.active_probes, clock=clock, history=history,
+                                 recorder_options=recorder_options)
+    return Providers(new_resources, metrics, clock, offset, history)
