@@ -193,7 +193,7 @@ def watch(settings, providers: Providers, post_to_slack: bool = True, verbose: b
                 log(f"Incident {incident['id']} was transient and has already cleared; back to watching")
                 incident = None
                 continue
-            log("Waiting for the system to recover (recovery is manual in this iteration)")
+            log("Waiting for the system to recover (an approved plan can be executed from Slack; otherwise recover manually)")
         elif incident.get("reported") and s["t"] - last_unhealthy >= settings.resolve_stable_s:
             log(f"Incident {incident['id']} symptoms have cleared; back to watching")
             if post_to_slack and settings.slack_configured:
