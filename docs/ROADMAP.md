@@ -8,13 +8,15 @@
 | Iteration 2 — Generalized evidence-driven investigation | Complete |
 | Stabilization after Iteration 2 | Complete |
 | Iteration 3 — Capability-based investigation | Complete |
-| Iteration 4 — Historical evidence & incident reconstruction | **In progress** |
-| Iterations 5–11 | Planned |
+| Iteration 4 — Historical evidence & incident reconstruction | Complete |
+| Iteration 5 — Remediation planning | **Next — not started** |
+| Iterations 6–11 | Planned |
 
 The project is currently at:
 
-> Capability-based, evidence-driven incident investigation and reporting, proven on Kubernetes (Iteration 3
-> complete). In progress: Iteration 4, historical evidence and incident reconstruction.
+> Capability-based, evidence-driven incident investigation and reporting, proven on Kubernetes. The investigator
+> can reconstruct workload failures (OOM, crash) and a recovered dependency outage after the failure is no
+> longer visible in live state (Iteration 4 complete). Next: Iteration 5, remediation planning.
 
 The project is NOT currently a production SaaS platform and does NOT currently execute remediation.
 
@@ -247,7 +249,7 @@ Iteration 3 should demonstrate that:
 5. The system can decide which evidence/capabilities are relevant to an incident.
 6. The final diagnosis remains evidence-driven.
 
-## Iteration 4 — Historical Evidence & Incident Reconstruction — IN PROGRESS
+## Iteration 4 — Historical Evidence & Incident Reconstruction — COMPLETED
 
 Defined on 2026-10-01. This replaces the earlier draft, "Richer Observability + Slack Workflow". The Slack
 goals of that draft (Slack as a first-class incident interface) are deferred to a later stage and are not
@@ -305,12 +307,22 @@ Kubernetes-specific code stays in the adapter layer.
 | **Coverage reporting** | Nothing is retained while the recorder is not running. Each source reports the time span it can see, and the report states the gaps. |
 | **No persistent volume for Prometheus** | Its `emptyDir` already outlives application pods and survives minikube stop/start. Losing metrics when the Prometheus pod itself is recreated is a recorded limitation. |
 
-### Progress (2026-10-01)
+### Status — COMPLETED (2026-10-01)
 
-All five planned branches are merged into `main`. The completion audit found two gaps, and a finalization pass
-addresses them; it is pending approval:
+All five planned branches are merged into `main`. The completion audit found two gaps, and both were closed
+by a finalization pass, also merged:
 - `fix/iter-04-uncertain-timestamps` — bounded times were shown as exact.
 - `feature/iter-04-historical-dependency-state` — a recovered dependency outage could not be reconstructed.
+
+Completion gate, all met:
+1. Bounded times are never shown as exact.
+2. OOM and crash reconstruction work after the pods are gone.
+3. A recovered PostgreSQL outage is reconstructed after it is healthy again.
+4. The root cause comes from retained evidence.
+5. The capability/planner/provider boundary is intact.
+6. Missing and bounded evidence stays explicit.
+7. 110/110 tests pass.
+8. Nothing out of scope was added.
 
 Live validation (`docs/validation/iter-04-oom-postmortem.md`), each investigated after the original failure
 was no longer visible in live state:

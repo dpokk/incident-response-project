@@ -498,7 +498,7 @@ Do not add yet:
 
 These belong to later milestones in `ROADMAP.md`.
 
-## 18. Actual Implementation Map (as of Iteration 4, branch 1: evidence retention)
+## 18. Actual Implementation Map (as of Iteration 4, complete)
 
 The architecture above as it exists in the repository (there is no `src/`; the investigator is the
 `investigator/` package):
