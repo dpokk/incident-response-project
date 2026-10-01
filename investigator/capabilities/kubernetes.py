@@ -158,7 +158,7 @@ class KubernetesAdapter(ResourceProvider):
                                             termination_cause(d.get("reason"), d.get("exit_code"))),
                     source=HISTORY_SOURCE, instance_gone=e["instance"] not in names,
                     logs_retained=(e["instance"], e["process"], gen) in runs, generation=gen,
-                    memory_limit_bytes=mem_limits.get(e["process"])))
+                    memory_limit_bytes=mem_limits.get(e["process"]), observed_at=e["observed_at"]))
             for i in self.history.instances(self.ns, w["name"], time_range.start, time_range.end):
                 if i["instance"] not in names:
                     past.append(PastInstance(i["instance"], i["kind"] or "Pod", i["created"], i["gone_at"],
@@ -364,7 +364,8 @@ class KubernetesAdapter(ResourceProvider):
                         component=component, source=f"{kind.lower() if kind in ('ConfigMap', 'Secret') else kind}/{name}",
                         item=item, before=None if sensitive else a.get(item), after=None if sensitive else b.get(item),
                         sensitive=sensitive, t=new["modified_at"] if exact else None,
-                        t_earliest=None if exact else new["previous_checked_at"], t_latest=None if exact else new["observed_at"]))
+                        t_earliest=None if exact else new["previous_checked_at"], t_latest=None if exact else new["observed_at"],
+                        observed_at=new["observed_at"]))
         return out
 
     def get_evidence_coverage(self, time_range: TimeRange) -> list[Coverage]:

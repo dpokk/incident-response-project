@@ -90,6 +90,7 @@ class TerminationRecord:
     logs_retained: bool = False        # the log lines of that run were retained (see get_log_history)
     generation: int | None = None      # which run of the process ended (0 = first run)
     memory_limit_bytes: float | None = None   # the process's memory limit per the component's definition
+    observed_at: float | None = None   # when the recorder observed it (the termination time itself is in `termination`)
 
 
 @dataclass
@@ -163,6 +164,7 @@ class ConfigChange:
     t: float | None                    # when the change happened, if the source says so
     t_earliest: float | None           # otherwise it happened after this observation ...
     t_latest: float | None             # ... and no later than this one
+    observed_at: float | None = None   # when the recorder saw the new version
 
 
 @dataclass

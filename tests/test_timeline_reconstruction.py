@@ -46,10 +46,10 @@ def test_phases_follow_the_evidence_in_order():
     rc = reconstruct(s, DX, WINDOW)
     assert [p["phase"] for p in rc["phases"]] == ["baseline", "onset", "development", "failure", "recovery", "post_incident"]
     onset = next(p for p in rc["phases"] if p["phase"] == "onset")
-    assert onset["start"] == T0 + 100 and onset["facts"] == ["F1"]
+    assert onset["start"] == {"earliest": T0 + 100, "latest": T0 + 100, "basis": "exact"} and onset["facts"] == ["F1"]
     failure = next(p for p in rc["phases"] if p["phase"] == "failure")
-    assert (failure["start"], failure["end"]) == (T0 + 130, T0 + 160)
-    assert rc["window"]["incident_start"] == T0 + 100 and rc["window"]["incident_end"] == T0 + 300
+    assert (failure["start"]["earliest"], failure["end"]["latest"]) == (T0 + 130, T0 + 160)
+    assert rc["window"]["incident_start"]["earliest"] == T0 + 100 and rc["window"]["incident_end"]["latest"] == T0 + 300
     assert "F1" in rc["answers"]["immediately_before_failure"]["facts"]
     [r1, r2, r3] = rc["relations"]
     assert r1["order"] == "before" and "by 30s" in r1["statement"] and "not cause" in r1["statement"]
@@ -65,7 +65,7 @@ def test_overlapping_times_give_no_order():
     rc = reconstruct(s, DX, WINDOW)
     [rel] = [r for r in rc["relations"] if r["from"] == "F1"]
     assert rel["order"] == "undetermined" and "cannot be determined" in rel["statement"]
-    assert "by " in rc["answers"]["what_changed_first"]["statement"]      # "by HH:MM:SS", never "at"
+    assert "–" in rc["answers"]["what_changed_first"]["statement"]       # the range, never a single "at" time
 
 
 def test_times_known_only_as_upper_bounds_are_reported_that_way():
@@ -171,4 +171,4 @@ def test_crash_after_pod_replacement_separates_the_rollout_from_the_failure(tmp_
     assert rollout.id in [c["id"] for c in rc["changes_after_failure"]]
     assert rollout.id not in rc["answers"]["what_changed_first"]["facts"]
     rec = next(p for p in rc["phases"] if p["phase"] == "recovery")
-    assert rec["start"] == NOW - 55 and rc["window"]["incident_end"] == NOW - 55
+    assert rec["start"]["earliest"] == NOW - 55 and rc["window"]["incident_end"]["latest"] == NOW - 55

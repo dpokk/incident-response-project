@@ -239,7 +239,7 @@ def test_oom_after_the_pods_were_replaced_needs_retained_history(tmp_path):
         imp = report["impact"]
         assert (imp["instances"]["affected"], imp["instances"]["gone"]) == (2, 2)
         rec = next(p for p in report["reconstruction"]["phases"] if p["phase"] == "recovery")
-        assert rec["start"] == NOW - 125                     # both replacements ready, after the last kill
+        assert rec["start"]["earliest"] == NOW - 125                     # both replacements ready, after the last kill
 
 
 # --------------------------------------------------------------------------- D. time and configuration history

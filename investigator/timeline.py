@@ -85,6 +85,63 @@ def component_of(f: Fact) -> str | None:
     return f.data.get("consumer") or f.data.get("component")
 
 
+# --------------------------------------------------------------------------- moments (uncertain points in time)
+
+def moment(iv: tuple | None, basis: str = "exact") -> dict | None:
+    """A point in time as the evidence knows it: {earliest, latest, basis}. earliest == latest only if exact."""
+    if iv is None:
+        return None
+    lo, hi = iv
+    return {"earliest": lo, "latest": hi, "basis": "exact" if lo is not None and lo == hi else basis}
+
+
+def exact(t: float | None) -> dict | None:
+    return None if t is None else {"earliest": t, "latest": t, "basis": "exact"}
+
+
+def fmt_moment(m: dict | None) -> str:
+    """Never more precise than the evidence: one time only when exact, otherwise the range or the bound."""
+    if not m:
+        return "-"
+    lo, hi = m["earliest"], m["latest"]
+    if lo is not None and lo == hi:
+        return hms(lo)
+    if lo is not None and hi is not None:
+        return f"{hms(lo)}–{hms(hi)}"
+    if hi is not None:
+        return f"at or before {hms(hi)}"
+    return f"at or after {hms(lo)}" if lo is not None else "unknown"
+
+
+def _span(s: float) -> str:
+    s = max(0.0, s)
+    return f"{int(s // 60)}m {int(s % 60):02d}s" if s >= 60 else f"{s:.0f}s"
+
+
+def duration(start: dict | None, end: dict | None, ongoing_at: float | None = None,
+             may_start_earlier: bool = False) -> dict:
+    """Duration between two moments as bounds. Shortest = end.earliest - start.latest; longest = end.latest -
+    start.earliest (unknown if either is unknown, or if the start may be earlier than the evidence shows).
+    With no end (ongoing), only a lower bound: from the latest possible start to `ongoing_at`."""
+    if start is None or start["latest"] is None:
+        return {"min_s": None, "max_s": None, "statement": "unknown (the start was not identified)"}
+    if end is None:
+        if ongoing_at is None:
+            return {"min_s": None, "max_s": None, "statement": "unknown (the end was not observed)"}
+        lo = ongoing_at - start["latest"]
+        return {"min_s": lo, "max_s": None, "statement": f"at least {_span(lo)} (ongoing at collection)"}
+    lo = (end["earliest"] if end["earliest"] is not None else end["latest"]) - start["latest"]
+    hi = None if (end["latest"] is None or start["earliest"] is None or may_start_earlier) \
+        else end["latest"] - start["earliest"]
+    if hi is None:
+        stmt = f"at least {_span(lo)}"
+    elif abs(hi - lo) < 1:
+        stmt = _span(lo)
+    else:
+        stmt = f"between {_span(lo)} and {_span(hi)}"
+    return {"min_s": lo, "max_s": hi, "statement": stmt}
+
+
 def _key(e: dict) -> float:
     lo, hi = e["interval"]
     return hi if lo is None else lo
@@ -210,7 +267,6 @@ def reconstruct(store: EvidenceStore, dx: dict, window: tuple) -> dict:
                            "statement": (recovery["statement"] if recovery else
                                          "No recovery was observed in the evidence")},
     }
-    onset_t = None if onset is None else (onset["interval"][0] or onset["interval"][1])
     return {"entries": [{k: v for k, v in e.items() if k != "interval"} | {"earliest": e["interval"][0],
                          "latest": e["interval"][1]} for e in entries],
             "undated": [e["id"] for e in undated], "phases": phases, "relations": relations,
@@ -221,9 +277,19 @@ def reconstruct(store: EvidenceStore, dx: dict, window: tuple) -> dict:
             "window": {"start": start, "end": end,
                        "evidence_start": min((_key(e) for e in entries if e["t_basis"] != "before_window"), default=None),
                        "evidence_end": min(end, max((e["interval"][1] for e in entries if e["interval"][1]), default=end)),
-                       "incident_start": onset_t,
-                       "incident_end": recovery.get("t") if recovery and recovery.get("recovered") else None,
+                       # moments ({earliest, latest, basis}): the incident's start is only as precise as its onset
+                       "incident_start": _moment_of(onset),
+                       "incident_end": exact(recovery.get("t")) if recovery and recovery.get("recovered") else None,
                        "ongoing": bool(recovery) and recovery.get("recovered") is False}}
+
+
+def _moment_of(e: dict | None) -> dict | None:
+    return None if e is None else moment(e["interval"], e["t_basis"])
+
+
+def _point(e: dict | None) -> float | None:
+    """A single number for ordering/filtering only (never for display): the earliest known bound."""
+    return None if e is None else (e["interval"][0] if e["interval"][0] is not None else e["interval"][1])
 
 
 def _recovery(store: EvidenceStore, focus: set, last_failure: dict | None, end: float) -> dict | None:
@@ -295,13 +361,14 @@ def _unrecorded_failures(store: EvidenceStore, focus: set, entries: list, first_
 
 def _phases(entries, onset, first_failure, last_failure, recovery, prior_changes, store, focus, window,
             uncertain, separate=()) -> list[dict]:
+    """Phases with `start`/`end` as moments ({earliest, latest, basis}): a bounded boundary stays a range."""
     start, end = window
     out = []
-    onset_t = None if onset is None else (onset["interval"][0] or onset["interval"][1])
+    onset_m, onset_t = _moment_of(onset), _point(onset)
     gaps = [g for g in store.find(kind="evidence_gap") if g.data.get("gap") in ("not_recorded", "no_history")]
     baseline_note = " (part of this period was not recorded; see evidence coverage)" if gaps else ""
     if onset is None:
-        out.append({"phase": "baseline", "start": start, "end": end, "facts": [],
+        out.append({"phase": "baseline", "start": exact(start), "end": exact(end), "facts": [],
                     "statement": "No change, symptom or failure was found in the evidence window" + baseline_note})
         return out
     recurring = [e for e in entries if e["t_basis"] == "before_window" and e["role"] in ("symptom", "failure")]
@@ -309,42 +376,44 @@ def _phases(entries, onset, first_failure, last_failure, recovery, prior_changes
         out.append({"phase": "baseline", "start": None, "end": None, "facts": [],
                     "statement": "The incident began before the investigation window: no baseline was examined"})
     else:
-        out.append({"phase": "baseline", "start": start, "end": onset_t,
+        out.append({"phase": "baseline", "start": exact(start), "end": onset_m,
                     "facts": [c["id"] for c in prior_changes] + [e["id"] for e in recurring],
-                    "statement": f"No new symptom or failure was recorded before {hms(onset_t)}" + baseline_note
+                    "statement": f"No new symptom or failure was recorded before the onset ({fmt_moment(onset_m)})"
+                                 + baseline_note
                                  + (f"; {len(prior_changes)} change(s) were recorded" if prior_changes else "")
                                  + (f"; {len(recurring)} observation(s) recurring since before the window"
                                     if recurring else "")})
-    out.append({"phase": "onset", "start": onset_t, "end": onset_t, "facts": [onset["id"]],
+    out.append({"phase": "onset", "start": onset_m, "end": onset_m, "facts": [onset["id"]],
                 "statement": f"First sign of the incident ({onset['role']}): {onset['text'][:140]}"})
     if first_failure is not None:
-        ff_t = first_failure["interval"][0] or first_failure["interval"][1]
+        ff_m, ff_t = _moment_of(first_failure), _point(first_failure)
         dev = [e for e in entries if e["role"] in ("precursor", "symptom") and e is not onset and e not in separate
                and e["interval"][1] is not None and onset_t is not None and onset_t <= e["interval"][1] <= ff_t]
         if dev or (onset_t is not None and ff_t is not None and ff_t > onset_t):
-            out.append({"phase": "development", "start": onset_t, "end": ff_t, "facts": [e["id"] for e in dev],
+            out.append({"phase": "development", "start": onset_m, "end": ff_m, "facts": [e["id"] for e in dev],
                         "statement": (f"{len(dev)} warning sign(s) and symptom(s) between the onset and the failure"
                                       if dev else "No further signs were recorded between the onset and the failure")})
-        lf_t = last_failure["interval"][1] if last_failure else ff_t
+        lf_m = _moment_of(last_failure) if last_failure else ff_m
         n = sum(1 for e in entries if e["role"] == "failure" and e["component"] in focus)
-        out.append({"phase": "failure", "start": ff_t, "end": lf_t,
+        out.append({"phase": "failure", "start": ff_m, "end": lf_m,
                     "facts": [e["id"] for e in entries if e["role"] == "failure" and e["component"] in focus][:10]
                     or [first_failure["id"]],
-                    "statement": (f"{n} failure observation(s) in {', '.join(sorted(focus))} between {hms(ff_t)} "
-                                  f"and {hms(lf_t)}" if n else
+                    "statement": (f"{n} failure observation(s) in {', '.join(sorted(focus))}, the first "
+                                  f"{fmt_moment(ff_m)}, the last {fmt_moment(lf_m)}" if n else
                                   f"The failure showed first as {first_failure['text'][:120]}")})
     user_recovery = [e for e in entries if e["role"] == "recovery" and last_failure is not None
                      and precedes(last_failure, e) is True]
     if recovery is not None:
-        stmt = recovery["statement"] + "".join(f"; {e['text'][:110]} (by {hms(e['interval'][1])})" for e in user_recovery[:1])
-        out.append({"phase": "recovery", "start": recovery.get("t"), "end": recovery.get("t"),
+        stmt = recovery["statement"] + "".join(f"; {e['text'][:110]} ({fmt_moment(_moment_of(e))})"
+                                               for e in user_recovery[:1])
+        out.append({"phase": "recovery", "start": exact(recovery.get("t")), "end": exact(recovery.get("t")),
                     "facts": recovery["facts"] + [e["id"] for e in user_recovery[:1]], "statement": stmt})
     elif first_failure is not None:
         out.append({"phase": "recovery", "start": None, "end": None, "facts": [],
                     "statement": "No recovery was observed in the evidence"})
     status = [s for c in sorted(focus) for s in store.find(kind="component_status", subject=f"component/{c}")]
     if status:
-        out.append({"phase": "post_incident", "start": end, "end": end, "facts": [s.id for s in status],
+        out.append({"phase": "post_incident", "start": exact(end), "end": exact(end), "facts": [s.id for s in status],
                     "statement": "State when the evidence was collected: " + "; ".join(s.text for s in status)})
     return out
 
@@ -354,8 +423,10 @@ def _relation(a, b, label_a, label_b) -> dict | None:
         return None
     order = precedes(a, b)
     if order is True:
-        gap = (b["interval"][0] or b["interval"][1]) - (a["interval"][1] or a["interval"][0])
-        stmt = f"{label_a} ({a['id']}) preceded {label_b} ({b['id']}) by {gap:.0f}s"
+        # The gap is certain only when both ends are exact; otherwise only its minimum is known.
+        gap = b["interval"][0] - a["interval"][1]
+        both_exact = a["interval"][0] == a["interval"][1] and b["interval"][0] == b["interval"][1]
+        stmt = f"{label_a} ({a['id']}) preceded {label_b} ({b['id']}) by {'' if both_exact else 'at least '}{gap:.0f}s"
     elif order is False:
         stmt = f"{label_b} ({b['id']}) came before {label_a} ({a['id']})"
     else:
@@ -385,11 +456,12 @@ def _answer_change(prior_changes, onset, store, start) -> dict:
                 + (" (the evidence has gaps, so an unrecorded change cannot be ruled out)" if gaps else "")}
     lead_up = [c for c in prior_changes if c["interval"][1] is not None and c["interval"][1] >= start]
     c = lead_up[0] if lead_up else prior_changes[-1]
-    when = f"by {hms(c['interval'][1])}" if c["t_basis"] in ("bounded", "observed") else f"at {hms(c['interval'][0])}"
+    m = _moment_of(c)
+    when = f"at {fmt_moment(m)}" if m["basis"] == "exact" else fmt_moment(m)
     if lead_up:
         return {"facts": [c["id"]], "statement": f"The first recorded change in the lead-up ({when}): {c['text'][:160]}"}
-    onset_t = None if onset is None else (onset["interval"][0] or onset["interval"][1])
-    ago = f", {(onset_t - c['interval'][1]) / 60:.0f} min before the onset" if onset_t and c["interval"][1] else ""
+    onset_t = _point(onset)
+    ago = f", at least {(onset_t - c['interval'][1]) / 60:.0f} min before the onset" if onset_t and c["interval"][1] else ""
     return {"facts": [c["id"]], "statement": f"No change inside the investigated window; the most recent earlier change "
                                              f"({when}{ago}): {c['text'][:140]}"}
 

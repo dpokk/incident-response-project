@@ -13,14 +13,11 @@ Rules:
 from datetime import datetime
 
 from .evidence import EvidenceStore
+from .timeline import duration, exact, fmt_moment, moment
 
 
 def hms(t) -> str:
     return datetime.fromtimestamp(t).astimezone().strftime("%H:%M:%S") if t else "?"
-
-
-def _dur(s: float) -> str:
-    return f"{s / 60:.1f} min" if s >= 90 else f"{s:.0f}s"
 
 
 def assess(store: EvidenceStore, dx: dict, reconstruction: dict | None) -> dict:
@@ -201,28 +198,35 @@ def _users_assessed(store: EvidenceStore, limitations: list, err) -> dict:
 
 
 def _duration(store: EvidenceStore, rc: dict | None, users: dict, limitations: list, err=None) -> dict:
+    """Duration as bounds between two moments (start/end each {earliest, latest, basis}); never a single number
+    unless both ends are exact."""
     w = (rc or {}).get("window") or {}
     start, end, ongoing = w.get("incident_start"), w.get("incident_end"), w.get("ongoing")
     starts_early = any("may have begun earlier" in u or "began earlier" in u for u in (rc or {}).get("uncertainties", []))
-    out = {"start": start, "end": end, "ongoing": bool(ongoing), "seconds": None, "at_least": False}
+    out = {"start": start, "end": end, "ongoing": bool(ongoing), "min_s": None, "max_s": None}
     if start is None:
         out["statement"] = "Duration unknown: the start of the incident was not identified"
         limitations.append("Incident duration unknown")
         return out
+    span = f"{fmt_moment(start)} to {fmt_moment(end)}" if end else f"from {fmt_moment(start)}"
     if end:
-        out["seconds"] = end - start
-        out["at_least"] = starts_early
-        out["statement"] = (f"{'at least ' if starts_early else 'about '}{_dur(end - start)} "
-                            f"({hms(start)}-{hms(end)}, from the first sign to recovery)")
+        d = duration(start, end, may_start_earlier=starts_early)
+        out["statement"] = f"{d['statement']} ({span}, from the first sign to recovery)"
+    elif ongoing and w.get("end"):
+        d = duration(start, None, ongoing_at=w["end"])
+        out["statement"] = f"{d['statement']} ({span})"
     else:
-        collected = w.get("end")
-        out["seconds"] = (collected - start) if collected else None
-        out["at_least"] = True
-        out["statement"] = (f"at least {_dur(collected - start)} and ongoing at collection ({hms(start)}-)"
-                            if ongoing and collected else
-                            f"started {hms(start)}; when it ended is not known from the evidence")
+        d = {"min_s": None, "max_s": None}
+        out["statement"] = f"started {fmt_moment(start)}; when it ended is not known from the evidence"
+    out["min_s"], out["max_s"] = d["min_s"], d["max_s"]
     if err and err.data.get("episode_end"):
-        out["user_facing_errors"] = (f"user-facing errors lasted about {_dur(err.data['episode_end'] - err.t)} "
-                                     f"(error ratio above 5% from {hms(err.t)} to {hms(err.data['episode_end'])}; "
-                                     f"both times are sample-bounded)")
+        up = (moment((err.t_earliest, err.t_latest or err.t), "bounded") if err.t_basis == "bounded"
+              else moment((None, err.t), "observed") if err.t_basis == "observed" else exact(err.t))
+        rec = next((r for r in store.find(kind="metric_error_ratio_recovered")
+                    if r.data.get("episode") == err.data.get("episode")), None)
+        down = moment((rec.t_earliest, rec.t_latest), "bounded") if rec and rec.t_basis == "bounded" \
+            else exact(err.data["episode_end"])
+        e = duration(up, down)
+        out["user_facing_errors"] = (f"user-facing errors lasted {e['statement']} (error ratio above 5% from "
+                                     f"{fmt_moment(up)} to {fmt_moment(down)}; times are bounded by metric samples)")
     return out
