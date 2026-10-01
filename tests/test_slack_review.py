@@ -276,6 +276,37 @@ def test_the_incident_is_one_thread_and_the_review_updates_it(tmp_path):
     assert any(ts == root and "Remediation review" in text_of(p) for ts, p in tr.updates)  # root shows review status
 
 
+def test_cleared_symptoms_survive_later_review_clicks(tmp_path):
+    """Live-demo regression: the incident cleared, then a review click re-rendered the root without "cleared",
+    and the cleared reply said "Investigating…" although the diagnosis was known."""
+    plan, report = make_plan()
+    report["id"] = "INC-TEST"
+    svc, d = service(tmp_path, plan)
+    tr, reg = FakeTransport(), slack.ThreadRegistry(tmp_path / "threads.json")
+    slack.publish_detection(tr, reg, {"id": "INC-TEST", "signals": [{"text": "restarts"}]}, "shop")
+    slack.publish_investigation(tr, reg, report, svc, d, "shop", NOW)
+    root = reg.get("INC-TEST")["root_ts"]
+
+    slack.publish_resolved(tr, reg, svc, {"id": "INC-TEST"}, "shop")
+    cleared_reply = text_of(tr.posts[-1][1])
+    assert tr.posts[-1][0] == root and "symptoms have cleared" in cleared_reply
+    assert "Investigating" not in cleared_reply and "*Diagnosis:*" in cleared_reply
+
+    slack_app.handle_interaction(click("rejected", 0, d), svc, tr, reg, NOW, log=lambda *_: None)
+    last_root = [p for ts, p in tr.updates if ts == root][-1]
+    assert "symptoms have cleared" in text_of(last_root) and ":large_green_circle:" in text_of(last_root)
+    assert "1 rejected" in text_of(last_root)
+    assert "Investigating" not in text_of(slack_view.thread_root("INC-X", "shop", signals=["s"], resolved=True))
+    assert "Investigating" in text_of(slack_view.thread_root("INC-X", "shop", signals=["s"]))
+
+
+def test_plan_age_uses_a_slack_date_token_that_stays_current():
+    plan, _ = make_plan()
+    t = text_of(slack_view.plan_message(plan, plan_digest(plan), {}, NOW - 120, NOW))
+    assert f"<!date^{int(NOW - 120)}^{{time_secs}} ({{ago}})|" in t            # rendered live by Slack
+    assert "(2 min ago)>" in t                                                  # fallback text for other clients
+
+
 def test_a_refused_click_only_tells_the_clicker(tmp_path):
     plan, _ = make_plan()
     svc, d = service(tmp_path, plan)

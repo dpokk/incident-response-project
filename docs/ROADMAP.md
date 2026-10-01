@@ -10,8 +10,8 @@
 | Iteration 3 — Capability-based investigation | Complete |
 | Iteration 4 — Historical evidence & incident reconstruction | Complete |
 | Iteration 5 — Remediation planning | Complete |
-| Iteration 6 — Slack incident experience + human review | **In progress** — code and offline tests done; live demo pending |
-| Iteration 7 — Approved remediation execution + verification | Planned |
+| Iteration 6 — Slack incident experience + human review | Complete |
+| Iteration 7 — Approved remediation execution + verification | **Next — not started** |
 | Iteration 8 — Second provider | Planned |
 | Iterations 9–11 — SaaS control plane, customer connector, external pilot | Planned |
 
@@ -20,9 +20,10 @@ The project is currently at:
 > Capability-based, evidence-driven incident investigation and reporting, proven on Kubernetes. The investigator
 > can reconstruct workload failures (OOM, crash) and a recovered dependency outage after the failure is no
 > longer visible in live state (Iteration 4). For each incident it proposes a structured, evidence-backed
-> remediation plan for human review, and never executes it (Iteration 5 complete). Iteration 6 (in progress)
+> remediation plan for human review, and never executes it (Iteration 5 complete). Iteration 6 (complete)
 > presents the incident and plan as one Slack thread where authorised engineers record per-action decisions;
-> decisions are recorded, never executed.
+> decisions are recorded, never executed. Next: Iteration 7, approved
+> remediation execution + verification.
 
 The project is NOT currently a production SaaS platform and does NOT currently execute remediation.
 
@@ -549,18 +550,29 @@ The approval decision is recorded. It does not execute anything; that is Iterati
   used implicitly.
 - **Plan age** is shown; a plan older than 15 minutes carries a warning. No live-state recheck before approval.
 
-### Status — IN PROGRESS
+### Status — COMPLETED (2026-10-01)
 
 Done (branch `feature/iter-06-slack-human-review`):
 - `slack_view.py`, `review.py`, `slack_app.py`, rewritten `slack.py` (transport, thread registry);
 - `python -m investigator review` (listener only) and the listener inside `watch`;
-- 22 new tests (rendering, review model, interaction handler with a fake transport, architecture boundary);
-  150/150 pass.
+- 24 new tests (rendering, review model, interaction handler with a fake transport, architecture boundary,
+  live-demo regressions); 152/152 pass.
 
 Live demo run on 2026-10-01 (`docs/validation/iter-06-slack-review.md`). The flow was: OOM incident → one Slack
 thread → a missing and an invalid value refused → `256Mi` approval and an acknowledgement recorded against the
-plan digest → thread updated → nothing executed, no Kubernetes spec changed. The reviewer's visual confirmation
-of the thread is pending before Iteration 6 is marked complete.
+plan digest → thread updated → nothing executed, no Kubernetes spec changed. The reviewer confirmed the thread
+in Slack. Three defects found live were fixed and covered by tests: refused attempts now keep the typed value;
+the root keeps "symptoms have cleared" across later refreshes; the cleared notice shows the diagnosis; and
+the plan age is a Slack date token that stays current.
+
+Known limitations:
+- **Stale-plan warning.** It is evaluated when the plan message is rendered or re-rendered, not
+  continuously.
+- **Thread readback.** The bot cannot read the thread back without `channels:history`.
+- **Not exercised live.** Conflicting and non-approver clicks, and supersession, are covered by offline
+  tests only.
+- **Detection sensitivity.** After-effects of a spike can open a second, small incident (existing detection
+  behaviour).
 
 ### Not part of Iteration 6
 

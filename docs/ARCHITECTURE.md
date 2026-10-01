@@ -364,7 +364,7 @@ diagnosis + reconstruction + impact + facts  →  plan_remediation()  →  Remed
   embedded in the report JSON. The text and markdown reports render it from the dict. Slack, a UI or an API
   (Iteration 6) consume the same dict: **Slack consumes the contract; it does not define it.**
 
-**As implemented (Iteration 6 in progress, human review; nothing executes).**
+**As implemented (Iteration 6, human review; nothing executes).**
 
 ```text
 RemediationPlan dict ─→ review.register_plan() ─→ digest (sha256 of canonical JSON)
@@ -578,7 +578,7 @@ Do not add yet:
 
 These belong to later milestones in `ROADMAP.md`.
 
-## 18. Actual Implementation Map (as of Iteration 6, in progress)
+## 18. Actual Implementation Map (as of Iteration 6, complete)
 
 The architecture above as it exists in the repository (there is no `src/`; the investigator is the
 `investigator/` package):

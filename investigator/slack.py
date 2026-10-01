@@ -155,14 +155,16 @@ def refresh_plan(transport: Transport, registry: ThreadRegistry, review, inciden
     return False
 
 
-def refresh_root(transport: Transport, registry: ThreadRegistry, review, incident_id: str,
-                 resolved: bool = False) -> bool:
+def refresh_root(transport: Transport, registry: ThreadRegistry, review, incident_id: str) -> bool:
+    """Re-render the root from the registry, so every refresh (e.g. after a review click) keeps what is known:
+    the diagnosis, the review summary and whether the symptoms have cleared."""
     entry = registry.get(incident_id)
     if not entry.get("root_ts"):
         return False
     return transport.update(entry.get("channel"), entry["root_ts"], view.thread_root(
         incident_id, entry.get("namespace", ""), signals=entry.get("signals"), headline=entry.get("headline"),
-        review_summary=review.summary(incident_id) if entry.get("digest") else None, resolved=resolved))
+        review_summary=review.summary(incident_id) if entry.get("digest") else None,
+        resolved=bool(entry.get("resolved"))))
 
 
 def publish_decision(transport: Transport, registry: ThreadRegistry, record: dict, plan: dict,
@@ -178,10 +180,11 @@ def publish_decision(transport: Transport, registry: ThreadRegistry, record: dic
 
 def publish_resolved(transport: Transport, registry: ThreadRegistry, review, incident: dict, namespace: str) -> None:
     entry = registry.get(incident["id"])
-    payload = view.thread_root(incident["id"], namespace, resolved=True)
+    payload = view.thread_root(incident["id"], namespace, headline=entry.get("headline"), resolved=True)
     if entry.get("root_ts"):
+        registry.set(incident["id"], resolved=True)     # remembered, so later refreshes keep "symptoms have cleared"
         transport.post(payload, thread_ts=entry["root_ts"])
-        refresh_root(transport, registry, review, incident["id"], resolved=True)
+        refresh_root(transport, registry, review, incident["id"])
     else:
         transport.post(payload)
 

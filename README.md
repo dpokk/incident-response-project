@@ -1,4 +1,4 @@
-# Incident Investigation Prototype: Iterations 1–5 complete (investigation, history, remediation planning)
+# Incident Investigation Prototype: Iterations 1–6 complete (investigation, history, remediation planning, human review)
 
 An evidence-driven incident investigator, proven first on a local Kubernetes application. Failures are
 injected into the running system. The investigator is **not told what failed**. It decides which
@@ -36,8 +36,8 @@ archived in `archive/iteration1/`.
 - **Iteration 5 (remediation planning) is complete.** A deterministic planner produces a structured,
   evidence-backed `RemediationPlan` for human review. Nothing is executed.
 
-- **Iteration 6 (Slack incident experience + human review) is in progress.** Code and offline tests are done;
-  the live demo is pending. Each incident becomes one Slack thread, and authorised engineers record a decision
+- **Iteration 6 (Slack incident experience + human review) is complete** and validated live
+  (`docs/validation/iter-06-slack-review.md`). Each incident becomes one Slack thread, and authorised engineers record a decision
   per action (Approve / Reject / Investigate first, or Acknowledge). Decisions are recorded, never executed.
 - **Kubernetes is the only resource provider implemented so far.** Provider agnosticism is not claimed
   until a second provider exercises the same interface (Iteration 8 in `docs/ROADMAP.md`).
@@ -216,7 +216,7 @@ How actions are chosen:
 - Values the evidence cannot supply, such as a new memory limit, are left for an engineer.
 - The planner has no access to the system.
 
-### Human review in Slack (Iteration 6, in progress)
+### Human review in Slack (Iteration 6)
 
 - **One thread per incident.** The root message is the detection (later the review summary and "symptoms
   cleared"); the investigation and the plan are replies.

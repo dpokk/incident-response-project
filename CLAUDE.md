@@ -15,10 +15,11 @@ These documents are the source of truth for project direction. Before making sub
 
 ## Current Project State
 
-Iterations 1 to 5 have been completed; Iteration 5 is remediation planning (a typed, evidence-backed plan, no
-execution). The next milestone is Iteration 6 (Slack incident experience + human review, consuming the
-`RemediationPlan` contract), then Iteration 7 (approved remediation execution + verification). Iteration 6 is
-in progress: code and offline tests are done, the live demo is pending. See `docs/ROADMAP.md`.
+Iterations 1 to 6 have been completed:
+- **Iteration 5:** remediation planning. It produces a typed, evidence-backed plan and executes nothing.
+- **Iteration 6:** Slack incident thread + human review. Decisions are recorded, never executed.
+
+The next milestone is Iteration 7 (approved remediation execution + verification). See `docs/ROADMAP.md`.
 
 ### Iteration 1
 The original prototype detected a Kubernetes `OOMKilled` incident using a Python-based investigator.
@@ -125,7 +126,7 @@ How it works:
 
 Every plan has `requires_human_approval: true` and `execution.status: not_executed`.
 
-### Iteration 6 — in progress (Slack incident experience + human review)
+### Iteration 6 — completed (Slack incident experience + human review)
 
 Each incident is one Slack thread. The parts:
 - **Rendering:** `slack_view.py`, presentation only.
@@ -139,7 +140,7 @@ Reviews go through `review.py`, which is Slack-independent and stores to `state/
 - A newer plan supersedes the old one; duplicates and conflicts are refused; every attempt is audited.
 - Required parameters are typed by the engineer and validated, never inferred.
 
-Decisions are recorded, never executed. The live demo is pending.
+Decisions are recorded, never executed. Validated live: `docs/validation/iter-06-slack-review.md`.
 
 ### Important Current Boundary
 

@@ -51,7 +51,10 @@ def _age(collected_at: float | None, now: float) -> tuple[str, bool]:
         return "collection time unknown", True
     age = max(0.0, now - collected_at)
     span = f"{age / 3600:.1f} h" if age >= 3600 else f"{age / 60:.0f} min" if age >= 60 else f"{age:.0f} s"
-    return f"evidence collected at {hms(collected_at)} ({span} ago)", age > STALE_AFTER_S
+    # Slack renders the date token in the viewer's time zone and keeps "{ago}" current whenever the message is
+    # viewed; the text after "|" is the fallback for clients that cannot render it (fixed at render time).
+    token = f"<!date^{int(collected_at)}^{{time_secs}} ({{ago}})|{hms(collected_at)} ({span} ago)>"
+    return f"evidence collected at {token}", age > STALE_AFTER_S
 
 
 # --------------------------------------------------------------------------- thread messages
@@ -64,7 +67,7 @@ def thread_root(incident_id: str, namespace: str, signals: list[str] | None = No
     if headline:
         lines.append(f"*Diagnosis:* {headline}")
     else:
-        lines += [f"• {s[:200]}" for s in (signals or [])[:5]] + ["_Investigating…_"]
+        lines += [f"• {s[:200]}" for s in (signals or [])[:5]] + ([] if resolved else ["_Investigating…_"])
     if review_summary:
         lines.append(f"*Remediation review:* {review_summary}")
     text = "\n".join(lines)

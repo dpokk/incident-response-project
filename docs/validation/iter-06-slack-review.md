@@ -46,6 +46,18 @@ approver.
 - **Refused attempts did not keep the typed value.** The `128Mi` attempt was audited with empty parameters.
   Refused attempts now store `{"raw_input": …}`. The value is unvalidated, never used and never effective.
   A test was extended to cover this.
+- **The root lost "symptoms have cleared".** A review click after recovery re-rendered the root without it.
+  The cleared state is now kept in the thread registry, and every refresh keeps it.
+- **The cleared notice said "Investigating…"** although the diagnosis was known. It now shows the diagnosis.
+- **The plan age was frozen** ("3 min ago" for ever). It is now a Slack date token
+  (`<!date^…^{time_secs} ({ago})|…>`), so Slack shows the current age in the viewer's time zone.
+
+The last three were found when the reviewer checked the thread in Slack. A regression test reproduces the
+live sequence (cleared, then a click). The reviewer confirmed:
+- the root message: diagnosis and review summary;
+- the 5 replies: investigation, plan, cleared notice, two decisions;
+- the plan message: action 1 approved with `256Mi`, action 2 acknowledged, no controls left, footer with
+  plan `727589a971d1`.
 
 ## Not exercised live (covered by offline tests)
 
