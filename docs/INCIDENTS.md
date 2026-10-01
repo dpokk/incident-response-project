@@ -258,7 +258,7 @@ Scenario identifiers must not be passed to the investigator as hidden hints duri
 
 The 7 offline tests from the end of Iteration 2 remain the regression baseline inside the larger suite.
 
-Similar-symptom cases now covered (`tests/test_similar_symptoms.py`):
+Similar-symptom cases now covered (`tests/test_similar_symptoms.py`, 5 cases):
 
 | Case | Looks like | Correct diagnosis |
 |---|---|---|
@@ -266,8 +266,10 @@ Similar-symptom cases now covered (`tests/test_similar_symptoms.py`):
 | Exit code 137 from a liveness kill | OOM | Health-check failure |
 | DB down right after an unrelated ConfigMap edit | Misconfiguration | Dependency unavailable |
 | Readiness noise from a normal rollout | A failure | No incident |
+| Backend out of memory and fully down (found in the Iteration 3 final demo) | Dependency unavailable in frontend | Memory exhaustion in backend, with frontend impacted |
 
-Timestamp integrity is covered in `tests/test_timeline.py`.
+Timestamp integrity is covered in `tests/test_timeline.py`. Crash evidence from instances deleted before the
+investigation is covered in `tests/test_adapter.py`.
 
 # Future Remediation Test Cases
 

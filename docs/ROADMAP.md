@@ -1,5 +1,23 @@
 # ROADMAP.md
 
+## Current Position
+
+| Milestone | State |
+|---|---|
+| Iteration 1 — OOM detection + LLM report | Complete |
+| Iteration 2 — Generalized evidence-driven investigation | Complete |
+| Stabilization after Iteration 2 | Complete |
+| Iteration 3 — Capability-based investigation | Complete |
+| Iteration 4 — Richer observability + Slack workflow | **Next — not started** |
+| Iterations 5–11 | Planned |
+
+The project is currently at:
+
+> Capability-based, evidence-driven incident investigation and reporting, proven on Kubernetes (Iteration 3
+> complete). Next: Iteration 4, richer observability + Slack workflow.
+
+The project is NOT currently a production SaaS platform and does NOT currently execute remediation.
+
 ## Current Status
 
 ### Iteration 1 — COMPLETED
@@ -60,22 +78,42 @@ Iteration 1 capabilities intentionally not carried into Iteration 2 (not yet res
 - SaaS/multi-tenancy
 - Provider-agnostic multi-provider implementation
 
-## Current Position
+### Stabilization after Iteration 2 — COMPLETED
 
-The project is currently at:
+Done on branch `stabilization/post-iteration-2` and merged to `main` together with Iteration 3.
 
-> Capability-based, evidence-driven incident investigation and reporting, proven on Kubernetes (Iteration 3
-> complete). Next: Iteration 4, richer observability + Slack workflow.
+Corrections found when the project context documents were reconciled with the code:
 
-The project is NOT currently a production SaaS platform and does NOT currently execute remediation.
+| Item | Resolution |
+|---|---|
+| Iteration numbering drift | Docs, README and `.env.example` follow this roadmap: Iteration 3 is capabilities, Iteration 4 is observability + Slack. |
+| Iteration 1 under-described | Iteration 1 section above corrected. |
+| Traffic-spike scenario | Marked **partially implemented** in `docs/INCIDENTS.md` (Incident 5). |
+| Scenario C representation | Reports now give a **root-cause component** (postgres) separately from the **affected component** (backend) and the **impacted components** (frontend). |
+| Timestamp precision | Events that began before the window keep their real first timestamp and are marked `before_window`; they are never re-dated to the window start (`tests/test_timeline.py`). |
+| Similar-symptom tests | `tests/test_similar_symptoms.py`: 4 cases in this pass, now 5 (the fifth was added by the Iteration 3 final demo fixes, below). These found and fixed a real gap: errors naming a dependency by IP address were not linked to it. |
+| Repository structure | Documented in `docs/ARCHITECTURE.md` §18 and `CLAUDE.md`. |
+| Report contract: quantified impact and recommendations | **Decided** (below). |
 
-## Immediate Next Milestone — Iteration 3
+#### Decided: impact and recommendations in the report contract
 
-### Goal
+Reports list impacted components but no **quantified impact** (failed requests, error rate, impact
+duration) and no **recommendations**.
+
+Decision, confirmed on 2026-09-30:
+- **Quantified impact / blast radius → Iteration 4.** It depends on the richer observability that
+  iteration brings, such as retained metrics and logs.
+- **Recommendations → Iteration 5 (remediation planning).** Putting them into diagnosis reports would blur
+  the diagnosis/remediation boundary in `docs/ARCHITECTURE.md` §9.
+- Iteration 3 scope is not changed retroactively for this, only for a correctness issue.
+
+### Iteration 3 — COMPLETED
+
+#### Goal
 
 Move from a deterministic multi-scenario investigator toward a capability-based investigation architecture that can eventually support AI-assisted/adaptive investigation.
 
-### Desired flow
+#### Desired flow
 
 ```text
 Incident
@@ -99,7 +137,7 @@ Structured Report
 Slack
 ```
 
-### First architectural abstraction
+#### First architectural abstraction
 
 Introduce provider-independent capabilities such as:
 
@@ -116,7 +154,7 @@ Kubernetes should implement these capabilities through an adapter.
 
 Do not immediately rewrite the working investigator. Refactor incrementally.
 
-### Status — COMPLETED (merged to `main` together with the stabilization pass)
+#### Status — COMPLETED (merged to `main` together with the stabilization pass)
 
 | Step | State | What exists |
 |---|---|---|
@@ -130,7 +168,7 @@ Iteration 3 is complete.
 Not part of it, and still planned:
 - an LLM-assisted planner;
 - a second provider (Iteration 8);
-- quantified impact / recommendations (open decision above).
+- quantified impact (Iteration 4) and recommendations (Iteration 5), as decided above.
 
 Success criteria as currently evidenced:
 
@@ -138,7 +176,7 @@ Success criteria as currently evidenced:
 |---|---|
 | 1. Evidence via capabilities | `tests/test_architecture.py`, which also covers detection and the neutral vocabulary |
 | 2. Four scenarios still work | Fake-cluster tests, plus a live run on 2026-09-30 through the planner (below) |
-| 3. Tests green | 34/34 (after the stabilization pass) |
+| 3. Tests green | 37/37 (after the stabilization pass and the final demo fixes) |
 | 4. Evidence traceable | Every capability call is traced with its provider |
 | 5. Relevance decided | Planner decisions with reasons; `tests/test_planner.py` |
 | 6. Diagnosis evidence-driven | Unchanged diagnosis engine; planned and exhaustive strategies agree |
@@ -160,7 +198,46 @@ The OOM confidence difference is evidence availability, not the planner:
 
 Retaining logs across restarts is an Iteration 4 (observability) concern.
 
-### Success Criteria
+#### Final demo fixes
+
+Done on branch `fix/final-run-findings` and merged to `main`.
+
+The closing live demo on 2026-09-30 exposed two defects. Both were fixed and re-verified live, and the OOM
+scenario again gave memory exhaustion in backend.
+
+1. **Root cause attributed to the caller.**
+   - Problem: with the backend killed for exceeding its memory limit and fully down, the frontend's
+     "backend unavailable" finding outscored the backend's own memory finding, so the report blamed the
+     frontend.
+   - Fix: a caller's dependency finding now counts as an effect whenever the component it calls has a
+     well-supported failure of its own (score ≥ 0.4). The two scores are no longer compared.
+   - Test: `world_oom_backend_dead` in `tests/test_similar_symptoms.py`.
+2. **Crash evidence lost for deleted instances.**
+   - Problem: a pod that crashed and was replaced before the investigation ran disappeared from the
+     evidence.
+   - Fix: the adapter also returns recorded terminations of the component's deleted instances
+     (`instance_gone`). The report says their logs are unavailable and gives a low-confidence crash
+     diagnosis instead of "Undetermined".
+   - Test: `tests/test_adapter.py`.
+
+#### Known limitations at completion
+
+- **Historical Slack reports.**
+  - The Slack channel holds two reports from the final demo run, posted before these fixes:
+    - INC-20260930-231441 wrongly reports the OOM scenario as "dependency unavailable" in frontend.
+    - INC-20260930-230953 is "Undetermined" for the crash whose pod had already been deleted.
+  - They are kept as historical prototype output; no corrections were posted.
+- **Unexplained backend exit.**
+  - During PostgreSQL recovery in that run, one backend instance exited with code 1.
+  - A targeted retry did not reproduce it, and the cause is unknown.
+  - The investigator now reports it as an application crash whose cause could not be determined, with low
+    confidence.
+- **Log retention across restarts.** This causes the lower OOM confidence above; it is planned for
+  Iteration 4.
+- **Single provider.** Kubernetes is the only resource provider, so provider agnosticism is not claimed
+  (Iteration 8).
+
+#### Success Criteria
 
 Iteration 3 should demonstrate that:
 1. The investigator can request evidence through capabilities rather than directly depending on Kubernetes implementation details.
@@ -170,37 +247,16 @@ Iteration 3 should demonstrate that:
 5. The system can decide which evidence/capabilities are relevant to an incident.
 6. The final diagnosis remains evidence-driven.
 
-## Stabilization pass — DONE (branch `stabilization/post-iteration-2`, merged into Iteration 3)
+## Iteration 4 — Richer Observability + Slack Workflow — NEXT (not started)
 
-Corrections found when the project context documents were reconciled with the code:
-
-| Item | Resolution |
-|---|---|
-| Iteration numbering drift | Docs, README and `.env.example` follow this roadmap: Iteration 3 is capabilities, Iteration 4 is observability + Slack. |
-| Iteration 1 under-described | Iteration 1 section above corrected. |
-| Traffic-spike scenario | Marked **partially implemented** in `docs/INCIDENTS.md` (Incident 5). |
-| Scenario C representation | Reports now give a **root-cause component** (postgres) separately from the **affected component** (backend) and the **impacted components** (frontend). |
-| Timestamp precision | Events that began before the window keep their real first timestamp and are marked `before_window`; they are never re-dated to the window start (`tests/test_timeline.py`). |
-| Similar-symptom tests | `tests/test_similar_symptoms.py`, 4 cases. These found and fixed a real gap: errors naming a dependency by IP address were not linked to it. |
-| Repository structure | Documented in `docs/ARCHITECTURE.md` §18 and `CLAUDE.md`. |
-| Report contract: quantified impact and recommendations | **Open decision** (below). |
-
-### Open decision: impact and recommendations in the report contract
-
-Reports currently list impacted components but no **quantified impact** (failed requests, error rate,
-impact duration) and no **recommendations**.
-
-Recommendation, pending confirmation:
-- **Quantified impact → Iteration 4.** It depends on the richer observability that iteration brings,
-  such as retained metrics and logs.
-- **Recommendations → Iteration 5 (remediation planning).** Putting them into diagnosis reports now
-  would blur the diagnosis/remediation boundary in `docs/ARCHITECTURE.md` §9.
-
-## Iteration 4 — Richer Observability + Slack Workflow
+The objective and success criteria below are the original direction. They will be reviewed and defined
+explicitly before implementation starts.
 
 ### Goal
 
 Make logs, metrics, Kubernetes events, resource state, configuration, and dependencies usable as a coherent evidence system and make Slack a first-class incident interface.
+
+Per the report contract decision, quantified impact / blast radius is planned for this iteration.
 
 Desired Slack output:
 - Incident summary
@@ -217,7 +273,8 @@ Do not introduce remediation execution yet.
 
 ### Goal
 
-Given a diagnosed incident, generate a proposed remediation plan.
+Given a diagnosed incident, generate a proposed remediation plan. Recommendations are introduced here, not
+in diagnosis reports (report contract decision).
 
 The plan must include:
 - Current state
