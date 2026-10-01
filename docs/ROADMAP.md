@@ -8,13 +8,13 @@
 | Iteration 2 — Generalized evidence-driven investigation | Complete |
 | Stabilization after Iteration 2 | Complete |
 | Iteration 3 — Capability-based investigation | Complete |
-| Iteration 4 — Richer observability + Slack workflow | **Next — not started** |
+| Iteration 4 — Historical evidence & incident reconstruction | **In progress** |
 | Iterations 5–11 | Planned |
 
 The project is currently at:
 
 > Capability-based, evidence-driven incident investigation and reporting, proven on Kubernetes (Iteration 3
-> complete). Next: Iteration 4, richer observability + Slack workflow.
+> complete). In progress: Iteration 4, historical evidence and incident reconstruction.
 
 The project is NOT currently a production SaaS platform and does NOT currently execute remediation.
 
@@ -247,27 +247,101 @@ Iteration 3 should demonstrate that:
 5. The system can decide which evidence/capabilities are relevant to an incident.
 6. The final diagnosis remains evidence-driven.
 
-## Iteration 4 — Richer Observability + Slack Workflow — NEXT (not started)
+## Iteration 4 — Historical Evidence & Incident Reconstruction — IN PROGRESS
 
-The objective and success criteria below are the original direction. They will be reviewed and defined
-explicitly before implementation starts.
+Defined on 2026-10-01. This replaces the earlier draft, "Richer Observability + Slack Workflow". The Slack
+goals of that draft (Slack as a first-class incident interface) are deferred to a later stage and are not
+yet scheduled.
 
-### Goal
+### Why
 
-Make logs, metrics, Kubernetes events, resource state, configuration, and dependencies usable as a coherent evidence system and make Slack a first-class incident interface.
+Iteration 3 reasons well over evidence that exists at investigation time, but evidence disappears with the
+workload. In the live OOM run the instance that took the traffic spike was several restarts back.
+Kubernetes keeps only the current and previous container logs, so the investigator saw only a 5-second
+instance that never logged its memory warning. Confidence was 70%, and the missing evidence, not the
+reasoning, was the limit.
 
-Per the report contract decision, quantified impact / blast radius is planned for this iteration.
+### Objective
 
-Desired Slack output:
-- Incident summary
-- Root cause
-- Evidence
-- Timeline
-- Impact
-- Confidence
-- Link/view for detailed investigation
+Make incident evidence durable enough that the investigator can reconstruct an incident after the original
+failing workload no longer exists. This is an evidence and history iteration: no remediation, no LLM, no
+Slack workflow.
 
-Do not introduce remediation execution yet.
+### Scope
+
+1. **Historical evidence retention**, beyond the lifetime of Kubernetes objects:
+   - logs, including earlier restarts and deleted instances;
+   - terminations and restart history;
+   - lifecycle and Kubernetes events;
+   - deployment and configuration changes;
+   - metrics, which stay in Prometheus.
+2. **Incident evidence window.** Before incident → onset → development → failure → recovery → post-incident.
+   Facts distinguish event time, observation time, collection time and uncertainty. No invented
+   timestamps.
+3. **Historical timeline reconstruction** through the capability layer.
+   - It answers: what changed first, when symptoms began, when the failure occurred, what preceded it, and
+     what followed recovery.
+   - Observed facts stay separate from inferred relationships.
+4. **OOM after the failing instance is gone**, as the primary validation. Confidence may rise only because
+   more evidence genuinely exists. When evidence is missing, the report says so.
+5. **Metrics correlated with other evidence**, e.g. traffic → memory → kill. A connection is made only when
+   ordering and component support it; there is no "spike = OOM" rule.
+6. **Basic evidence-backed impact assessment.**
+   - It covers affected instances, dependency health, impacted callers, duration where known, request and
+     error impact where measurable, and whether the impact was isolated or propagated.
+   - Quantities are never invented.
+   - Root cause, affected, impacted and blast radius stay distinct.
+
+The Iteration 3 capability/planner architecture is preserved. The planner stays deterministic, and
+Kubernetes-specific code stays in the adapter layer.
+
+### Design decisions
+
+| Decision | Why |
+|---|---|
+| **A local SQLite history store** (`state/history.db`) | Evidence must be looked up by component and time while the recorder is writing, and pruned. SQLite does that with the standard library and a single file. It is also a fitting local buffer for the future customer connector (Iteration 10). |
+| **A recorder in the investigator process** (started by `watch`, or alone with `record`) | It extends the existing pod journal: no new image, permissions or deployment. It is a separate module behind the adapter, so it can later move into a connector. |
+| **Retention bounds:** 24 h by default, plus a per-container cap on log lines per minute | Without a bound, a spike writes about 85,000 frontend lines in 5 minutes. When lines are dropped, the store records a marker, so the loss is reported as uncertainty. |
+| **Coverage reporting** | Nothing is retained while the recorder is not running. Each source reports the time span it can see, and the report states the gaps. |
+| **No persistent volume for Prometheus** | Its `emptyDir` already outlives application pods and survives minikube stop/start. Losing metrics when the Prometheus pod itself is recreated is a recorded limitation. |
+
+### Planned branches
+
+| Branch | Purpose |
+|---|---|
+| `feature/iter-04-historical-evidence-retention` | History store, recorder, time/provenance fields, coverage; the adapter serves retained evidence |
+| `feature/iter-04-timeline-reconstruction` | Phased timeline, inferred relations, incident evidence window |
+| `feature/iter-04-metrics-correlation` | Metrics of instances that no longer exist, threshold crossings, correlation checked by ordering |
+| `feature/iter-04-impact-assessment` | Impact and blast radius in the report |
+| `feature/iter-04-oom-postmortem-validation` | Scenario script, offline world, live validation |
+
+### Not part of Iteration 4
+
+- A second provider, or true provider agnosticism.
+- LLM-based investigation.
+- Remediation, approval workflows, or any autonomous change.
+- Elaborate Slack workflows: Slack may only show the improved report.
+- SaaS, multi-tenancy, business-impact analytics.
+
+### Success criteria
+
+1. Historical evidence survives workload/container disappearance.
+2. A post-failure investigation can reconstruct an incident from retained evidence.
+3. The OOM scenario can be investigated after the failing instance is gone.
+4. The timeline combines multiple evidence sources without fabricating timestamps.
+5. Metrics support incident reconstruction when relevant.
+6. The report contains a basic evidence-backed impact assessment.
+7. The capability/planner architecture remains intact.
+8. Missing evidence produces explicit uncertainty, not fabricated conclusions.
+9. All existing tests remain green, and new tests cover these cases:
+   - pod gone;
+   - restarted container;
+   - OOM;
+   - timeline uncertainty;
+   - metrics correlation;
+   - impact;
+   - missing evidence.
+10. No remediation or production-changing behaviour is introduced.
 
 ## Iteration 5 — Remediation Planning
 
