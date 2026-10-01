@@ -56,6 +56,8 @@ def role(f: Fact) -> str | None:
         return "precursor"
     if k in ("metric_error_ratio", "detection_signal"):
         return "symptom"
+    if k == "metric_error_ratio_recovered":
+        return "recovery"
     if k in ("log_tail_before_exit", "past_instance"):
         return "context"
     return None
@@ -86,6 +88,14 @@ def component_of(f: Fact) -> str | None:
 def _key(e: dict) -> float:
     lo, hi = e["interval"]
     return hi if lo is None else lo
+
+
+def fact_order(a: Fact, b: Fact) -> bool | None:
+    """Did fact a certainly begin before fact b? True / False / None (cannot tell, or a time is unknown)."""
+    ia, ib = interval(a), interval(b)
+    if ia is None or ib is None:
+        return None
+    return precedes({"interval": ia}, {"interval": ib})
 
 
 def precedes(a: dict, b: dict) -> bool | None:
@@ -307,9 +317,12 @@ def _phases(entries, onset, first_failure, last_failure, recovery, prior_changes
                     "statement": (f"{n} failure observation(s) in {', '.join(sorted(focus))} between {hms(ff_t)} "
                                   f"and {hms(lf_t)}" if n else
                                   f"The failure showed first as {first_failure['text'][:120]}")})
+    user_recovery = [e for e in entries if e["role"] == "recovery" and last_failure is not None
+                     and precedes(last_failure, e) is True]
     if recovery is not None:
-        out.append({"phase": "recovery", "start": recovery.get("t"), "end": recovery.get("t"), "facts": recovery["facts"],
-                    "statement": recovery["statement"]})
+        stmt = recovery["statement"] + "".join(f"; {e['text'][:110]} (by {hms(e['interval'][1])})" for e in user_recovery[:1])
+        out.append({"phase": "recovery", "start": recovery.get("t"), "end": recovery.get("t"),
+                    "facts": recovery["facts"] + [e["id"] for e in user_recovery[:1]], "statement": stmt})
     elif first_failure is not None:
         out.append({"phase": "recovery", "start": None, "end": None, "facts": [],
                     "statement": "No recovery was observed in the evidence"})

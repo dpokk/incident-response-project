@@ -24,8 +24,10 @@ archived in `archive/iteration1/`.
   - **Evidence retention.** A recorder keeps what Kubernetes forgets, so a crash can be diagnosed after the
     crashed pods are gone.
   - **Timeline reconstruction.** Phases, ordering and uncertainty, inferred from the facts.
+  - **Metrics correlation.** Threshold crossings with bounded times; traffic is linked to an OOM only by
+    order, component and call path.
 
-  Metrics correlation and impact assessment are next (`docs/ROADMAP.md`).
+  Impact assessment is next (`docs/ROADMAP.md`).
 - **Kubernetes is the only resource provider implemented so far.** Provider agnosticism is not claimed
   until a second provider exercises the same interface (Iteration 8 in `docs/ROADMAP.md`).
 

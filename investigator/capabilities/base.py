@@ -345,5 +345,11 @@ class MetricsProvider(ABC):
     name: str = "metrics"
 
     @abstractmethod
-    def get_metrics(self, metric: str, time_range: TimeRange, target: str | None = None) -> list[MetricSeries]:
-        """`metric` is a provider-independent name: request_rate, error_ratio, memory_working_set."""
+    def get_metrics(self, metric: str, time_range: TimeRange, target: str | None = None,
+                    component: str | None = None) -> list[MetricSeries]:
+        """`metric` is a provider-independent name: request_rate, error_ratio, memory_working_set.
+        `target`: the component whose requests are measured (request_rate, error_ratio).
+        `component`: restrict per-instance series (memory_working_set) to one component's instances, including
+        instances that no longer exist; each series is labelled with "instance" and "component".
+        A series of rates/ratios carries label "window_s": each point averages over that many seconds before it,
+        so a change shows up to that much later than it happened."""

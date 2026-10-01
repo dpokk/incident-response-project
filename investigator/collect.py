@@ -43,7 +43,7 @@ def collect(caps: Capabilities, incident: dict, start: float, end: float, entry:
     store.step("resource_state", "desired/ready replicas, instance readiness, process state, termination history")
     for c in components:
         if states[c]:
-            record_resource_state(store, caps, states[c], start)
+            record_resource_state(store, caps, states[c], start, end)
 
     log("  [3/8] events")
     store.step("events", "events for the components in the window; infrastructure events")
@@ -96,7 +96,11 @@ def record_signals(store: EvidenceStore, incident: dict) -> None:
                   signal=sig.get("kind"))
 
 
-def record_resource_state(store: EvidenceStore, caps: Capabilities, rs: ResourceState, start: float) -> None:
+def record_resource_state(store: EvidenceStore, caps: Capabilities, rs: ResourceState, start: float,
+                          end: float | None = None) -> None:
+    """end: terminations after the window are not part of this incident (matters when a past window is
+    investigated: the live state then shows later events)."""
+    end = float("inf") if end is None else end
     src = caps.resources.name
     subj = f"component/{rs.component}"
     store.add(f"{src}.resource_state", subj, "component_status",
@@ -119,7 +123,7 @@ def record_resource_state(store: EvidenceStore, caps: Capabilities, rs: Resource
                           instance=inst.name, process=p.name, reason=p.waiting_reason, cause=p.waiting_cause,
                           message=p.waiting_message, problematic=p.waiting_cause is not None)
             t = p.last_termination
-            if t and (t.finished_at or 0) >= start - 60:
+            if t and start - 60 <= (t.finished_at or 0) <= end + 60:
                 seen_terms.add((inst.name, p.name, round(t.finished_at or 0)))
                 _termination(store, subj, inst.name, p.name, p.memory_limit_bytes, t, p.restarts,
                              f"{src}.resource_state", words[inst.name])
