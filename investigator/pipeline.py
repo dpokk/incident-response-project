@@ -1,10 +1,10 @@
 """Pipeline with clean stage boundaries:
 
-    Detection -> Evidence collection -> Diagnosis -> Incident report
-    [future: Remediation -> Verification]
+    Detection -> Evidence collection -> Diagnosis -> Incident report -> Remediation plan (proposal only)
+    [future: human review (Iteration 6) -> approved execution + verification (Iteration 7)]
 
-Each stage only consumes the previous stage's output. The pipeline stops after the report:
-no restarts, scaling, config changes or any other corrective action.
+Each stage only consumes the previous stage's output. The pipeline stops after the plan: no restarts,
+scaling, config changes or any other corrective action. The plan requires human approval and is never executed.
 """
 import time
 from datetime import datetime
@@ -17,6 +17,7 @@ from .detector import Detector, format_sample
 from .planner import plan_and_collect
 from .diagnosis import diagnose
 from .evidence import EvidenceStore
+from .remediation import plan_remediation
 from .providers import Providers
 
 
@@ -53,15 +54,21 @@ def diagnose_and_report(settings, incident: dict, store: EvidenceStore, window: 
     log("Stage 2/3: diagnosis")
     dx = diagnose(store)
     log(f"  -> {dx['category_label']} in {dx['affected_component']} (confidence {dx['confidence']:.0%})")
-    log("Stage 3/3: incident report")
+    log("Stage 3/4: incident report")
     report = rpt.build(incident, store, dx, window, ongoing)
+    # Plans only: the planner gets the finished investigation, no capabilities and no provider - it cannot act.
+    log("Stage 4/4: remediation plan (a proposal for human review; nothing is executed)")
+    plan = plan_remediation(dx, report["reconstruction"], report["impact"], store, incident["id"])
+    report["remediation_plan"] = plan.to_dict()
+    log(f"  -> {plan.assessment.value}: {len([a for a in plan.actions if a.type.value != 'investigate_further'])} "
+        f"proposed change(s), requires human approval; not executed")
     paths = rpt.save(report, store, dx, settings.reports_dir)
     print("\n" + rpt.render_text(report) + "\n", flush=True)
     log(f"  saved {paths['text']} (+ .md, .json, .evidence.json)")
     if post_to_slack and settings.slack_configured:
         if slack.post(settings, rpt.slack_payload(report, paths["markdown"]), log=log):
             log("  report posted to Slack")
-    log("Done. No remediation performed (out of scope).")
+    log("Done. No remediation performed: the plan awaits human review.")
     return {"report": report, "paths": paths}
 
 

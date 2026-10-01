@@ -443,6 +443,31 @@ The four existing incident classes:
 
 Plus insufficient evidence and unsupported categories.
 
+### Status (2026-10-01): implemented; pending review
+
+Done on branch `feature/iter-05-remediation-planning`. This is not marked complete until it has been reviewed.
+
+What exists:
+- `investigator/remediation_model.py`: the `RemediationPlan` contract.
+- `investigator/remediation.py`: the deterministic planner, which runs as pipeline stage 4. Its output is
+  saved as `INC-*.plan.json`, embedded in the report JSON and rendered in the text and markdown reports.
+- **Typed actions:** `adjust_resource_limit`, `scale_workload`, `restore_configuration`, `investigate_further`.
+  They are chosen by evidence predicates and the current state.
+- **Tests:** `tests/test_remediation.py` covers the 8 required cases plus the design properties: eligibility
+  independent of the category name, recovered-is-not-absolute, determinism and serialization, no
+  investigation change, no capability call, typed actions only. `test_architecture.py` guards that the
+  planner has no path to the system.
+
+Known limitations:
+- The planner never proposes numbers: new memory limits and replica counts are left to an engineer.
+- There is no `restart_workload` or `rollback_deployment` type yet; none of the current scenarios justifies
+  them.
+- The plan inherits the diagnosis: a wrong diagnosis yields a plan for the wrong cause. Seen live: without
+  history, the recovered PostgreSQL outage was diagnosed as an application crash, and the plan proposed only
+  investigation.
+- Risks about cluster capacity are stated as "not examined": no capacity evidence is collected.
+- Verification criteria are defined here but evaluated only in Iteration 7.
+
 ### Not part of Iteration 5
 
 - Slack, of any kind.

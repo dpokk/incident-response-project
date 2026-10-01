@@ -109,11 +109,28 @@ crash, and a recovered PostgreSQL outage. See `docs/validation/iter-04-oom-postm
 
 Known limitations and backlog are listed in `docs/ROADMAP.md` (Iteration 4 status).
 
+### Iteration 5 (in progress) — remediation planning
+
+`investigator/remediation.py` turns a finished investigation into a `RemediationPlan`
+(`investigator/remediation_model.py`, the contract that Slack, a UI or an API consume in Iteration 6).
+
+How it works:
+- **Diagnosis-driven:** it never re-derives the root cause.
+- **Generic eligibility:** action eligibility comes from evidence predicates and the current state, not
+  incident names.
+- **Typed actions:** `adjust_resource_limit`, `scale_workload`, `restore_configuration`,
+  `investigate_further`. There are no commands.
+- **No execution path:** the planner gets no capabilities object.
+
+Every plan has `requires_human_approval: true` and `execution.status: not_executed`.
+
 ### Important Current Boundary
 
-The investigator deliberately stops at diagnosis (unchanged in Iterations 3 and 4).
+The investigator deliberately stops at a **proposed plan**: diagnosis, then a plan for human review. Nothing is
+approved or executed.
 
 There is currently:
+- No approval workflow and no remediation execution (Iterations 6 and 7)
 - No automated remediation
 - No autonomous production actions
 - No LLM/AI investigator
@@ -190,9 +207,11 @@ incident occurs
 → likely root cause identified
 → impact/blast radius determined
 → structured report generated
+→ remediation plan proposed (structured; requires human approval; not executed)
 → report posted to Slack
 
-The initial remediation workflow is a later milestone and should not be silently introduced into the current diagnosis implementation.
+Approval (Iteration 6) and execution (Iteration 7) are later milestones and must not be silently introduced
+into the planner or the diagnosis implementation.
 
 ## Source of Truth Rule
 

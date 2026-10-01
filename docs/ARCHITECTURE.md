@@ -315,6 +315,56 @@ over:
 execute_arbitrary_shell(command)
 ```
 
+**As implemented (Iteration 5, the planner only).**
+
+```text
+diagnosis + reconstruction + impact + facts  →  plan_remediation()  →  RemediationPlan  →  STOP
+                                                 (investigator/remediation.py)       (remediation_model.py)
+```
+
+- **Placement.** The planner is a pipeline stage after the report, in its own module; it is not inside
+  `report.build()`. It receives the finished investigation and **no capabilities object or provider**. It
+  cannot read or change the system, and an architecture test forbids imports of providers, `subprocess`, `os`,
+  the network or Slack.
+- **Diagnosis-driven.** It copies the diagnosis (category, root cause, affected and impacted components,
+  confidence) and never re-derives the cause.
+- **Generic eligibility.** Each action type has an eligibility rule over neutral evidence predicates, not over
+  the incident category:
+  - `adjust_resource_limit`: the root-cause component was terminated at a resource limit.
+  - `scale_workload`: the component behind a failing dependency has zero desired replicas *now*, or a load
+    increase is *linked* to the failure.
+  - `restore_configuration`: the root cause is a configuration item and the endpoint it names still does not
+    resolve now.
+  - `investigate_further`: never executable; it states what to examine and the evidence that raises it.
+- **Urgency from the current state.**
+  - `immediate` means the condition holds now;
+  - `preventive` means it held only during the incident;
+  - moot conditions produce no action.
+
+  A recovered incident therefore gets no immediate change unless a current condition still requires one.
+- **Corrective actions require a diagnosis that is not Low confidence.** Otherwise, and when no typed action
+  fits, the plan says so (`investigate_further`, `no_safe_action`) instead of manufacturing an action. Values
+  the evidence cannot supply (a new memory limit, a replica count) stay empty with
+  `parameters_complete: false`.
+- **Contract.** `RemediationPlan` (`schema_version` "1") contains:
+  - the diagnosis summary;
+  - `incident_state` and the current state, each with fact IDs;
+  - the assessment and its reason;
+  - typed actions, each with rationale, preconditions, expected final state, risks, rollback and
+    verification;
+  - uncertainty: the diagnosis' confidence, competing causes and evidence gaps;
+  - an evidence snapshot;
+  - `requires_human_approval: true`;
+  - `approval.status: awaiting_review`;
+  - `execution.status: not_executed`.
+- **Verification criteria use the capability vocabulary,** so Iteration 7 can evaluate them:
+  `component_ready`, `no_new_terminations`, `dependency_available`, `no_dependency_errors`,
+  `entry_requests_succeed`, `error_ratio_below`.
+- **Presentation.** `plan.to_dict()` is plain, deterministic JSON. It is saved as `INC-*.plan.json` and
+  embedded in the report JSON. The text and markdown reports render it from the dict. Slack, a UI or an API
+  (Iteration 6) consume the same dict: **Slack consumes the contract; it does not define it.** The current
+  Slack message is unchanged.
+
 ## 10. Authorization Boundary
 
 The eventual system should distinguish:
@@ -518,6 +568,8 @@ Diagnosis            investigator/diagnosis.py            neutral causes/categor
 Timeline             investigator/timeline.py            phases, ordering, answers, uncertainty (inferred)
 Impact               investigator/impact.py              affected instances, dependencies, impacted, users,
                                                          duration, propagation, blast radius (evidence-backed)
+Remediation plan     investigator/remediation.py         deterministic planner; no capabilities, no execution
+                     investigator/remediation_model.py   RemediationPlan contract (imports nothing else)
 Report               investigator/report.py, slack.py    text / markdown / json / Slack
 ```
 

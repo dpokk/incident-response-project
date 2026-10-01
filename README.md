@@ -1,4 +1,4 @@
-# Incident Investigation Prototype: Iterations 1–4 complete (historical evidence and reconstruction)
+# Incident Investigation Prototype: Iterations 1–4 complete; Iteration 5 (remediation planning) in progress
 
 An evidence-driven incident investigator, proven first on a local Kubernetes application. Failures are
 injected into the running system. The investigator is **not told what failed**. It decides which
@@ -32,7 +32,8 @@ archived in `archive/iteration1/`.
   - **Validated live** after the failure was gone: OOM, crash, and a PostgreSQL outage that had recovered
     (`docs/validation/iter-04-oom-postmortem.md`).
 
-  Next: Iteration 5, remediation planning (not started).
+- **Iteration 5 (remediation planning) is in progress.** A deterministic planner produces a structured,
+  evidence-backed `RemediationPlan` for human review. Nothing is executed.
 - **Kubernetes is the only resource provider implemented so far.** Provider agnosticism is not claimed
   until a second provider exercises the same interface (Iteration 8 in `docs/ROADMAP.md`).
 
@@ -189,6 +190,25 @@ marked as *impacted*. There is no scenario flag anywhere. `tests/test_scenarios.
 
 It's saved as `.txt`, `.md`, `.json` and `.evidence.json`, and optionally posted to Slack.
 
+**Remediation plan** (`remediation.py`, Iteration 5) is a proposal for a human; nothing is executed. From the
+diagnosis, the reconstruction, the impact and the evidence, it produces a structured `RemediationPlan`
+(`remediation_model.py`, saved as `INC-*.plan.json` and rendered in the report).
+
+What the plan contains:
+- the incident state (active, recovered or unknown) and the current state;
+- an assessment: `action_proposed`, `no_immediate_action`, `investigate_further` or `no_safe_action`;
+- typed actions: `adjust_resource_limit`, `scale_workload`, `restore_configuration` or `investigate_further`;
+- for each action: rationale with fact IDs, preconditions, expected final state, risks, rollback, and
+  verification criteria in the capability vocabulary;
+- uncertainty;
+- `requires_human_approval: true` and `execution.status: not_executed`.
+
+How actions are chosen:
+- Eligibility comes from evidence and the current state, never from the incident's name.
+- A recovered incident gets no immediate change unless a condition still holds now.
+- Values the evidence cannot supply, such as a new memory limit, are left for an engineer.
+- The planner has no access to the system.
+
 ## Running it
 
 Run everything from the project folder with Docker Desktop running.
@@ -225,11 +245,13 @@ python -m investigator post reports\INC-....json              # post a saved rep
 minikube stop -p incident-demo                  # stop the cluster when done
 ```
 
-## Explicitly out of scope (Iterations 3–4)
+## Explicitly out of scope (Iterations 3–5)
 
 The following are later milestones in `docs/ROADMAP.md`:
+- Slack incident experience and human review/approval of plans (Iteration 6);
+- executing approved actions and verifying them (Iteration 7);
 - an LLM-assisted planner;
-- a second provider;
+- a second provider (Iteration 8);
 - automated remediation;
 - new observability stacks (Prometheus from Iteration 1 is only optional enrichment);
 - SaaS, multi-tenancy and the customer connector.
