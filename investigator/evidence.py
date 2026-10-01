@@ -33,11 +33,14 @@ class Fact:
     data: dict = field(default_factory=dict)
     t: float | None = None  # when the observed thing happened, if known
     # How to read `t` (see T_BASES). For "before_window" events, data["first_seen"] keeps the source's own
-    # first timestamp and data["observed_at"] the last observation.
+    # first timestamp and `observed_at` the last observation.
     t_basis: str = "exact"
     t_earliest: float | None = None   # bounds, when t_basis is "bounded"
     t_latest: float | None = None
     origin: str = "live"              # live | retained | mixed (live and retained evidence combined)
+    # When the source observed it: the evidence recorder for retained evidence, the platform's own last sighting
+    # for aggregated events. None = observed at collection (a live read).
+    observed_at: float | None = None
     collected_at: float | None = None
 
     def to_dict(self) -> dict:
@@ -52,14 +55,14 @@ class EvidenceStore:
 
     def add(self, source: str, subject: str, kind: str, text: str, t: float | None = None,
             t_basis: str = "exact", t_earliest: float | None = None, t_latest: float | None = None,
-            origin: str = "live", **data) -> Fact:
+            origin: str = "live", observed_at: float | None = None, **data) -> Fact:
         if t_basis not in T_BASES:
             raise ValueError(f"unknown t_basis {t_basis!r}")
         if t is None and t_basis == "exact":
             t_basis = "unknown"
         fact = Fact(id=f"F{len(self.facts) + 1}", source=source, subject=subject, kind=kind, text=text, data=data,
                     t=t, t_basis=t_basis, t_earliest=t_earliest, t_latest=t_latest, origin=origin,
-                    collected_at=self.clock())
+                    observed_at=observed_at, collected_at=self.clock())
         self.facts.append(fact)
         return fact
 
@@ -90,6 +93,11 @@ class EvidenceStore:
     @classmethod
     def from_dict(cls, d: dict) -> "EvidenceStore":
         store = cls()
-        store.facts = [Fact(**f) for f in d["facts"]]   # facts saved before Iteration 4 take the field defaults
+        store.facts = []
+        for f in d["facts"]:                             # facts saved before Iteration 4 take the field defaults
+            f = dict(f)
+            if "observed_at" not in f and "observed_at" in (f.get("data") or {}):
+                f["observed_at"] = f["data"]["observed_at"]   # saved while it still lived in data
+            store.facts.append(Fact(**f))
         store.trace = d.get("trace", [])
         return store

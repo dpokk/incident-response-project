@@ -200,7 +200,21 @@ If timestamps are uncertain, represent uncertainty rather than inventing precisi
   - `observed`: only when it was seen.
   - `before_window`.
   - `unknown`.
-- **Report wording.** Reports print bounded times as "by HH:MM:SS" and observed ones as "seen HH:MM:SS".
+- **Report wording.** A time is never printed more precisely than it is known:
+  - an exact time prints as one time;
+  - a bounded time prints as its range, `HH:MM:SS–HH:MM:SS`;
+  - an observed-only time prints as "at or before HH:MM:SS";
+  - a pre-window event prints as "before window".
+- **Moments.** Phase boundaries and the incident start and end are moments `{earliest, latest, basis}`, not
+  single numbers.
+- **Durations are bounds.** The shortest is end.earliest − start.latest and the longest is
+  end.latest − start.earliest. So durations read "between A and B", "at least A" (ongoing, or the start may be
+  earlier) or a single value only when both ends are exact. An ordering gap is "at least N s" unless both ends
+  are exact.
+- **`observed_at` on facts.** It records when the source saw the evidence: the recorder for retained
+  evidence, the platform's last sighting for aggregated events. For a live read, `observed_at` is empty and
+  `collected_at` is the observation. Event time, observation time and collection time therefore stay distinct
+  in facts and in the report JSON.
 - **Reconstruction** (`investigator/timeline.py`, Iteration 4) builds three layers:
   - **Observed entries.** Facts with a role (change, precursor, symptom, failure, context) and a time
     interval taken from their time basis.

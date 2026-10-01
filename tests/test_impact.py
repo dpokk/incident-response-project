@@ -49,7 +49,7 @@ def test_oom_affected_instances_dependency_and_propagation():
     assert dep["component"] == "postgres" and dep["state"] == "healthy" and dep["facts"]
     assert [i["component"] for i in imp["impacted"]] == ["frontend"]
     assert imp["propagation"] == "propagated"
-    assert imp["duration"]["ongoing"] and imp["duration"]["at_least"]
+    assert imp["duration"]["ongoing"] and imp["duration"]["max_s"] is None and "at least" in imp["duration"]["statement"]
     roles = {b["component"]: b["role"] for b in imp["blast_radius"]}
     assert roles["backend"] == "affected" and roles["frontend"] == "impacted"
 
@@ -98,7 +98,7 @@ def test_recovered_incident_has_a_bounded_duration(tmp_path):
     w["pods"][2] = {**_pod("backend-88888", "backend"), "created": NOW - 70, "ready_since": NOW - 55}
     _, _, report = investigate(w, store, signals=BACKEND_SIGNAL)
     d = report["impact"]["duration"]
-    assert not d["ongoing"] and d["end"] == NOW - 55 and d["seconds"] == d["end"] - d["start"]
+    assert not d["ongoing"] and d["end"]["latest"] == NOW - 55 and d["min_s"] is not None
 
 
 def test_an_earlier_error_episode_from_another_incident_is_not_counted():

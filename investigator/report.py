@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .evidence import EvidenceStore
 from .impact import assess
-from .timeline import reconstruct
+from .timeline import fmt_moment, reconstruct
 
 TIMELINE_KINDS = {"detection_signal", "process_terminated", "event", "log_signature", "log_exception",
                   "change", "config_changed", "metric_traffic_change", "metric_error_ratio", "metric_memory_high",
@@ -28,15 +28,16 @@ def _rcc(r: dict) -> str:
 
 
 def when(entry: dict) -> str:
-    """Timeline time column. Never shows more precision than the evidence has: entries that began before the
-    window get no start time, bounded ones show their latest possible time, observed ones "by" that time."""
+    """Timeline time column. Never more precise than the evidence: a bounded time is shown as its range, an
+    observed-only time as an upper bound, and something that began before the window gets no start time."""
     basis = entry.get("t_basis")
     if basis == "before_window":
         return "before window"
     if basis == "bounded":
-        return f"by {hms(entry['t'])}"
+        return fmt_moment({"earliest": entry.get("t_earliest"), "latest": entry.get("t_latest") or entry["t"],
+                           "basis": "bounded"})
     if basis == "observed":
-        return f"seen {hms(entry['t'])}"
+        return f"at or before {hms(entry['t'])}"
     return hms(entry["t"])
 
 
@@ -79,8 +80,10 @@ def build(incident: dict, store: EvidenceStore, dx: dict, window: tuple, ongoing
         "confidence": dx["confidence"],
         "confidence_label": dx["confidence_label"],
         "alternatives_considered": dx["alternatives"],
-        "timeline": [{"t": f.t, "t_basis": f.t_basis, "id": f.id, "text": f.text, "origin": f.origin}
-                     for f in _dedupe(timeline)][:30],
+        # Event time (t, t_basis, bounds) kept apart from when the source observed it and when it was collected.
+        "timeline": [{"t": f.t, "t_basis": f.t_basis, "t_earliest": f.t_earliest, "t_latest": f.t_latest,
+                      "observed_at": f.observed_at, "collected_at": f.collected_at, "id": f.id, "text": f.text,
+                      "origin": f.origin} for f in _dedupe(timeline)][:30],
         "reconstruction": reconstruction,
         "impact": assess(store, dx, reconstruction),
         "evidence_coverage": [{"id": f.id, "kind": f.kind, "text": f.text} for f in store.facts if f.kind in COVERAGE_KINDS],
@@ -150,7 +153,7 @@ def render_text(r: dict) -> str:
           "ALTERNATIVES CONSIDERED"]
     L += [f"  - {a['label']} in {a['component']} (score {a['score']:.2f}): {a['why_not']}" for a in r["alternatives_considered"]]
     L += reconstruction_lines(r.get("reconstruction"))
-    L += ["", "TIMELINE (observed entries)"] + [f"  {when(t):>13}  {t['text'][:150]}" for t in r["timeline"]]
+    L += ["", "TIMELINE (observed entries)"] + [f"  {when(t):>22}  {t['text'][:150]}" for t in r["timeline"]]
     if r.get("evidence_coverage"):
         L += ["", "EVIDENCE COVERAGE AND LIMITATIONS"] + [f"  - [{c['id']}] {c['text']}" for c in r["evidence_coverage"]]
     L += ["", f"Investigation: {r['facts_collected']} facts collected ({r.get('retained_facts', 0)} from retained "
@@ -240,17 +243,21 @@ def reconstruction_lines(rc: dict | None) -> list[str]:
     L = ["", "RECONSTRUCTED TIMELINE (inferred from the facts; order only, not cause)"]
     w = rc["window"]
     span = ("not identified" if w["incident_start"] is None else
-            f"{hms(w['incident_start'])} - " + (hms(w["incident_end"]) if w["incident_end"] else
-                                                "ongoing at collection" if w["ongoing"] else "end not observed"))
+            f"from {fmt_moment(w['incident_start'])} to " + (fmt_moment(w["incident_end"]) if w["incident_end"] else
+                                                             "ongoing at collection" if w["ongoing"] else "end not observed"))
     L.append(f"  Window: investigated {hms(w['start'])}-{hms(w['end'])}; dated evidence "
              f"{hms(w['evidence_start'])}-{hms(w['evidence_end'])}; incident {span}")
     for p in rc["phases"]:
-        span = ("-" if p["start"] is None else hms(p["start"]) if p["start"] == p["end"] or p["end"] is None
-                else f"{hms(p['start'])}-{hms(p['end'])}")
-        L.append(f"  {PHASE_LABELS.get(p['phase'], p['phase']):<12} {span:>17}  {p['statement'][:150]}"
+        if p["start"] is None:
+            span = "-"
+        elif p["end"] is None or p["start"] == p["end"]:
+            span = fmt_moment(p["start"])                       # a single moment (exact, or its range if bounded)
+        else:
+            span = f"{fmt_moment(p['start'])} to {fmt_moment(p['end'])}"
+        L.append(f"  {PHASE_LABELS.get(p['phase'], p['phase']):<12} {span:>19}  {p['statement'][:150]}"
                  + (f"  [{', '.join(p['facts'][:6])}]" if p["facts"] else ""))
     if rc.get("changes_after_failure"):
-        L.append(f"  {'Afterwards':<12} {'':>17}  {len(rc['changes_after_failure'])} change(s) recorded after the last "
+        L.append(f"  {'Afterwards':<12} {'':>19}  {len(rc['changes_after_failure'])} change(s) recorded after the last "
                  f"failure (they came after it, so did not start it)  [{', '.join(c['id'] for c in rc['changes_after_failure'][:6])}]")
     a = rc["answers"]
     L += ["  Questions:"]

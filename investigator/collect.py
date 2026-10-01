@@ -136,7 +136,7 @@ def record_resource_state(store: EvidenceStore, caps: Capabilities, rs: Resource
         default_words = next(iter(words.values()), ("instance", "process"))
         _termination(store, subj, h.instance, h.process, proc.memory_limit_bytes if proc else h.memory_limit_bytes,
                      h.termination, h.restarts, h.source, words.get(h.instance, default_words),
-                     gone=h.instance_gone, logs_retained=h.logs_retained, generation=h.generation,
+                     gone=h.instance_gone, logs_retained=h.logs_retained, generation=h.generation, observed_at=h.observed_at,
                      origin="retained" if h.source.endswith(".history") else "live")
     for p in rs.past_instances:   # instances that existed in the window but are gone now
         iw = p.kind.lower()
@@ -145,12 +145,12 @@ def record_resource_state(store: EvidenceStore, caps: Capabilities, rs: Resource
                   + (f" (gone since {hms(p.gone_at)})" if p.gone_at else " (its disappearance was not observed)")
                   + (f"; logs of {p.retained_runs} of its run(s) were retained" if p.retained_runs
                      else f"; no logs of this {iw} were retained"),
-                  t=p.gone_at, t_basis="observed" if p.gone_at else "unknown", origin="retained",
+                  t=p.gone_at, t_basis="observed" if p.gone_at else "unknown", origin="retained", observed_at=p.gone_at,
                   instance=p.name, created=p.created, gone_at=p.gone_at, retained_runs=p.retained_runs)
 
 
 def _termination(store, subj, instance, process, mem, t: Termination, restarts, source, words, gone=False,
-                 logs_retained=False, generation=None, origin="live"):
+                 logs_retained=False, generation=None, origin="live", observed_at=None):
     ran = (t.finished_at - t.started_at) if t.finished_at and t.started_at else None
     instance_word, process_word = words
     run = f" (run #{generation + 1})" if generation is not None else ""
@@ -164,7 +164,8 @@ def _termination(store, subj, instance, process, mem, t: Termination, restarts, 
               f"{process_word.capitalize()} {process} in {instance_word} {instance}{run} terminated: reason={t.reason}, "
               f"exit code {t.exit_code}" + (f", after running {ran:.0f}s" if ran is not None else "")
               + (f" (memory limit {mib(mem)})" if mem else "") + note,
-              t=t.finished_at, origin=origin, instance=instance, process=process, reason=t.reason, cause=t.cause,
+              t=t.finished_at, origin=origin, observed_at=observed_at, instance=instance, process=process,
+              reason=t.reason, cause=t.cause,
               exit_code=t.exit_code, ran_s=ran, memory_limit=mem, restarts=restarts, instance_gone=gone,
               logs_retained=logs_retained, generation=generation)
 
@@ -360,7 +361,7 @@ def record_configuration_history(store: EvidenceStore, caps: Capabilities, compo
             when, kw = (f"before {hms(c.t_latest)} (not observed earlier)",
                         {"t": c.t_latest, "t_basis": "observed", "t_latest": c.t_latest})
         store.add(f"{caps.resources.name}.history", f"component/{component}", "configuration_change",
-                  f"{c.source}: {what}, {when}", origin="retained", component=component, source_object=c.source,
+                  f"{c.source}: {what}, {when}", origin="retained", observed_at=c.observed_at, component=component, source_object=c.source,
                   item=c.item, before=None if c.sensitive else c.before, after=None if c.sensitive else c.after,
                   sensitive=c.sensitive, **kw)
 
