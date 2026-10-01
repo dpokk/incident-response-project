@@ -126,10 +126,13 @@ def reconstruct(store: EvidenceStore, dx: dict, window: tuple) -> dict:
         iv = interval(f)
         e = {"id": f.id, "role": r, "component": component_of(f), "text": f.text, "t": f.t, "t_basis": f.t_basis,
              "origin": f.origin, "interval": iv, "kind": f.kind, "category": f.data.get("category")}
+        e["ended"] = f.data.get("episode_end") or f.data.get("last")       # when a recurring observation stopped
         if iv is None:
             undated.append(e)
         elif r != "change" and (iv[1] is not None and iv[1] < start - 600):
             continue                     # long before the window and not a change: not part of this incident
+        elif iv[0] is not None and iv[0] > end + 60:
+            continue                     # after the investigated window (a past window seen from today's state)
         else:
             entries.append(e)
     entries.sort(key=_key)
@@ -149,7 +152,12 @@ def reconstruct(store: EvidenceStore, dx: dict, window: tuple) -> dict:
         first_failure = first(lambda e: e["role"] == "symptom" and e["component"] == affected)
         last_failure = first_failure
         failure_shown_by_symptom = first_failure is not None
-    onset = first(lambda e: e["role"] in ("precursor", "symptom", "failure"))
+    # Signs that had already stopped well before the failure began belong to a separate, earlier episode (e.g. an
+    # earlier outage that recovered): they are not this incident's onset.
+    ff_start = None if first_failure is None else (first_failure["interval"][0] or first_failure["interval"][1])
+    separate = [e for e in entries if e["role"] in ("precursor", "symptom") and e["ended"] and ff_start
+                and e["ended"] < ff_start - 60 and e is not first_failure]
+    onset = first(lambda e: e["role"] in ("precursor", "symptom", "failure") and e not in separate)
     first_symptom = first(lambda e: e["role"] == "symptom")
     changes = [e for e in entries if e["role"] == "change" and e["t_basis"] != "before_window"]
     prior_changes = [c for c in changes if onset is None or precedes(c, onset) is not False]
@@ -159,7 +167,7 @@ def reconstruct(store: EvidenceStore, dx: dict, window: tuple) -> dict:
     recovery = _recovery(store, focus, last_failure, end)
     uncertain: list[str] = _unrecorded_failures(store, focus, entries, first_failure)
     phases = _phases(entries, onset, first_failure, last_failure, recovery, prior_changes, store, focus,
-                     (start, end), uncertain)
+                     (start, end), uncertain, separate)
     relations = _relations(prior_changes[-1] if prior_changes else None, onset, first_failure, first_impact,
                            last_failure, recovery)
 
@@ -177,6 +185,10 @@ def reconstruct(store: EvidenceStore, dx: dict, window: tuple) -> dict:
     if onset is not None and (onset["interval"][0] is None or onset["interval"][0] - start <= EDGE_S):
         uncertain.append(f"The earliest sign of the incident ({onset['id']}) is at or before the start of the "
                          f"investigation window ({hms(start)}): the incident may have begun earlier than the evidence shows")
+    if separate:
+        uncertain.append(f"{len(separate)} observation(s) stopped more than a minute before the failure began ("
+                         + ", ".join(e["id"] for e in separate[:6]) + "): treated as a separate, earlier episode, "
+                         "not as this incident's start")
     if recurring:
         uncertain.append(f"{len(recurring)} observation(s) were already recurring before the window ("
                          + ", ".join(e["id"] for e in recurring[:6]) + "): the source aggregates repeats, so which "
@@ -208,7 +220,7 @@ def reconstruct(store: EvidenceStore, dx: dict, window: tuple) -> dict:
             "changes_after_failure": [{"id": c["id"], "text": c["text"]} for c in later_changes],
             "window": {"start": start, "end": end,
                        "evidence_start": min((_key(e) for e in entries if e["t_basis"] != "before_window"), default=None),
-                       "evidence_end": max((e["interval"][1] for e in entries if e["interval"][1]), default=None),
+                       "evidence_end": min(end, max((e["interval"][1] for e in entries if e["interval"][1]), default=end)),
                        "incident_start": onset_t,
                        "incident_end": recovery.get("t") if recovery and recovery.get("recovered") else None,
                        "ongoing": bool(recovery) and recovery.get("recovered") is False}}
@@ -242,6 +254,10 @@ def _recovery(store: EvidenceStore, focus: set, last_failure: dict | None, end: 
                     "statement": f"{comp} instances are ready but it was still logging errors at "
                                  f"{hms(ongoing[0].data['last'])}: not recovered"}
         since = [i.data.get("ready_since") for i in insts]
+        if any(s is not None and s > end + 60 for s in since):
+            return {"t": None, "facts": facts, "recovered": None,
+                    "statement": f"{comp} became ready again only after the investigated window ended: recovery "
+                                 f"within the window was not observed"}
         if any(s is None or s <= after_t for s in since):
             unknown.append(comp)
         else:
@@ -278,7 +294,7 @@ def _unrecorded_failures(store: EvidenceStore, focus: set, entries: list, first_
 
 
 def _phases(entries, onset, first_failure, last_failure, recovery, prior_changes, store, focus, window,
-            uncertain) -> list[dict]:
+            uncertain, separate=()) -> list[dict]:
     start, end = window
     out = []
     onset_t = None if onset is None else (onset["interval"][0] or onset["interval"][1])
@@ -303,7 +319,7 @@ def _phases(entries, onset, first_failure, last_failure, recovery, prior_changes
                 "statement": f"First sign of the incident ({onset['role']}): {onset['text'][:140]}"})
     if first_failure is not None:
         ff_t = first_failure["interval"][0] or first_failure["interval"][1]
-        dev = [e for e in entries if e["role"] in ("precursor", "symptom") and e is not onset
+        dev = [e for e in entries if e["role"] in ("precursor", "symptom") and e is not onset and e not in separate
                and e["interval"][1] is not None and onset_t is not None and onset_t <= e["interval"][1] <= ff_t]
         if dev or (onset_t is not None and ff_t is not None and ff_t > onset_t):
             out.append({"phase": "development", "start": onset_t, "end": ff_t, "facts": [e["id"] for e in dev],

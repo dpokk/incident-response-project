@@ -221,6 +221,21 @@ If timestamps are uncertain, represent uncertainty rather than inventing precisi
     stated as unrecorded earlier failures.
   - An observation aggregated since before the window is never used as the onset, because its first
     sighting may belong to an earlier episode.
+- **Impact** (`investigator/impact.py`) reports, separately from the root cause:
+  - affected instances, counting those that no longer exist and ignoring instances created after the
+    window;
+  - dependency state ("healthy" only with evidence);
+  - impacted callers;
+  - users, with failed requests *estimated* from sampled rate × error ratio when metrics allow, otherwise
+    stated as not quantified;
+  - duration, propagation (isolated, propagated or unknown) and blast radius.
+- **Overlapping incidents.** One window can hold two incidents:
+  - each error episode is its own fact, and episodes that ended before the failure began are not counted
+    as its impact;
+  - log signatures split into bursts at silences longer than 120 s;
+  - observations that stopped before the failure are not its onset.
+- **Past windows.** Evidence, recovery and instances after the investigated window are not borrowed from
+  today's state.
 - **Metric threshold crossings.** These are timeline entries with bounded times (`investigator/metrics.py`).
   A crossing lies between two samples, widened by the averaging window of rates. A user-facing error ratio
   falling back below 5% supports the recovery phase.
@@ -487,6 +502,8 @@ Composition root     investigator/providers.py           the one place that choo
 Evidence             collect.py, dependencies.py, metrics.py, logparse.py -> evidence.py (facts)
 Diagnosis            investigator/diagnosis.py            neutral causes/categories -> findings -> root cause
 Timeline             investigator/timeline.py            phases, ordering, answers, uncertainty (inferred)
+Impact               investigator/impact.py              affected instances, dependencies, impacted, users,
+                                                         duration, propagation, blast radius (evidence-backed)
 Report               investigator/report.py, slack.py    text / markdown / json / Slack
 ```
 

@@ -47,11 +47,11 @@ class FakeMetrics(MetricsProvider):
         return []
 
 
-def run(world, metrics):
+def run(world, metrics, signals=None):
     store = EvidenceStore(clock=lambda: NOW)
     caps = Capabilities(KubernetesAdapter(FakeKube(world), "shop"), store, metrics)
     incident = {"id": "INC-TEST", "detected_at": NOW - 30, "namespace": "shop",
-                "signals": [{**s, "t": NOW - 30} for s in USER_SYMPTOM]}
+                "signals": [{**s, "t": NOW - 30} for s in (signals or USER_SYMPTOM)]}
     plan_and_collect(caps, IncidentContext.from_incident(incident, *WINDOW, entry=("frontend", "8080", "/api/orders"),
                                                          metrics_target="frontend"), log=lambda *_: None)
     dx = diagnose(store)

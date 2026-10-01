@@ -27,7 +27,10 @@ archived in `archive/iteration1/`.
   - **Metrics correlation.** Threshold crossings with bounded times; traffic is linked to an OOM only by
     order, component and call path.
 
-  Impact assessment is next (`docs/ROADMAP.md`).
+  - **Impact assessment.** Affected and gone instances, dependency state, impacted callers, users (failed
+    requests estimated only when metrics allow), duration, propagation and blast radius.
+
+  Next: the live OOM post-mortem validation (`docs/ROADMAP.md`).
 - **Kubernetes is the only resource provider implemented so far.** Provider agnosticism is not claimed
   until a second provider exercises the same interface (Iteration 8 in `docs/ROADMAP.md`).
 
@@ -165,6 +168,7 @@ marked as *impacted*. There is no scenario flag anywhere. `tests/test_scenarios.
 - evidence (facts with sources)
 - diagnosis (interpretation, each statement citing fact IDs)
 - likely root cause
+- impact (evidence-backed, separate from the root cause), with what could not be quantified
 - confidence
 - alternatives considered, with why they were rejected
 - reconstructed timeline (inferred): phases from onset to recovery, what changed first, when symptoms began,
