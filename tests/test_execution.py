@@ -83,7 +83,7 @@ def test_the_policy_file_loads_with_the_agreed_defaults():
     assert p.allowed_action_types == {"adjust_resource_limit", "scale_workload", "restore_configuration"}
     assert p.allowed_namespaces == {"shop"} and p.max_memory_bytes == 2**30 and p.max_replicas == 3
     assert p.max_plan_age_s == 900 and p.executors({APPROVER}) == {APPROVER}
-    assert (p.verification.settle_max_s, p.verification.window_s) == (60, 120)
+    assert (p.verification.settle_max_s, p.verification.window_s, p.verification.settle_stable_samples) == (120, 120, 3)
     assert p.verification.bounded(30) == 60 and p.verification.bounded(999) == 300
 
 

@@ -4,7 +4,8 @@ treated as "the incident is resolved".
 The criteria are the plan's own (`action.verification`, checks named in the capability vocabulary by Iteration 5);
 nothing here invents a success definition or a threshold. They are evaluated through the capability layer:
 
-  settle       from the change until every component_ready subject is ready, at most `settle_max_s`
+  settle       from the change until every component_ready subject is ready on `stable_samples` consecutive samples
+               (a rollout under load can flap readiness), at most `settle_max_s`
   observation  a bounded window (`window_s`), sampled every `poll_s`
 
   component_ready         every sample: desired > 0, ready == desired, every instance ready
@@ -81,20 +82,23 @@ class Verifier:
             capabilities, clock, sleep, poll_s, entry, log
 
     def run(self, criteria: list[dict], applied_at: float, settle_max_s: float, window_s: float,
-            progress=None) -> VerificationResult:
+            progress=None, stable_samples: int = 1) -> VerificationResult:
         results = [CriterionResult(c["check"], c["subject"], c["statement"], c.get("expectation") or {})
                    for c in criteria]
         ready_subjects = [r.subject for r in results if r.check == "component_ready"]
 
         # settle: let the change take effect (rollout, start-up) before judging it
+        # settled = ready on stable_samples consecutive samples: a rollout under load can flap readiness
         settle_end = applied_at + settle_max_s
-        settled = not ready_subjects
+        settled, streak = not ready_subjects, 0
         while not settled and self.clock() < settle_end:
             caps = self.caps()
-            settled = all(self._ready(caps, s)[0] is True for s in ready_subjects)
+            streak = streak + 1 if all(self._ready(caps, s)[0] is True for s in ready_subjects) else 0
+            settled = streak >= stable_samples
             if not settled:
                 self.sleep(self.poll_s)
-        settle = {"started_at": applied_at, "ended_at": self.clock(), "max_s": settle_max_s, "ready": settled}
+        settle = {"started_at": applied_at, "ended_at": self.clock(), "max_s": settle_max_s, "ready": settled,
+                  "stable_samples": stable_samples}
         if progress:
             progress("observing", {"settle": settle, "window_s": window_s})
 

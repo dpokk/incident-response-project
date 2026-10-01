@@ -93,6 +93,39 @@ def test_all_criteria_holding_over_the_window_is_resolved():
     assert nt.samples > 20 and "0 termination(s)" in nt.evidence[0]         # the old pod's kill is not counted
 
 
+class Flapping(Caps):
+    """Readiness flaps after the change (a rollout under load) until stable_from, then holds."""
+
+    def __init__(self, clock, stable_from, **kw):
+        super().__init__(clock, **kw)
+        self.stable_from = stable_from
+
+    def get_resource_state(self, comp, tr):
+        st = super().get_resource_state(comp, tr)
+        dt = self.clock() - APPLIED
+        if dt < self.stable_from and int(dt / 5) % 2 == 1:      # ready, not ready, ready, ... every other sample
+            for i in st.instances:
+                i.ready = False
+            st.ready = 0
+        return st
+
+
+def test_settling_waits_for_stable_readiness_not_a_single_ready_sample():
+    clock = Clock(APPLIED)
+    v = Verifier(Flapping(clock, stable_from=80), clock, clock.sleep, 5, ("frontend", "8080", "/")).run(
+        OOM_CRITERIA, APPLIED, 120, 120, stable_samples=3)
+    assert v.settle["ready"] and v.settle["ended_at"] - APPLIED >= 80 + 10        # three ready samples in a row
+    assert v.outcome == Outcome.RESOLVED
+    clock = Clock(APPLIED)                                                      # judged on the first ready sample,
+    early = Verifier(Flapping(clock, stable_from=80), clock, clock.sleep, 5, ("frontend", "8080", "/")).run(
+        OOM_CRITERIA, APPLIED, 120, 120, stable_samples=1)                     # the flapping counts against it
+    assert early.outcome == Outcome.NOT_RESOLVED
+    clock = Clock(APPLIED)                                                      # never stable: bounded, then judged
+    never = Verifier(Flapping(clock, stable_from=10_000), clock, clock.sleep, 5, ("frontend", "8080", "/")).run(
+        OOM_CRITERIA, APPLIED, 120, 120, stable_samples=3)
+    assert not never.settle["ready"] and never.outcome == Outcome.NOT_RESOLVED
+
+
 def test_a_new_kill_after_the_change_is_not_resolved():
     clock = Clock(APPLIED)
     v = verify(Caps(clock, ready_from=10, oom_at=90))

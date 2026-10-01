@@ -221,7 +221,8 @@ class ExecutionService:
         try:
             v = Verifier(self.capabilities, self.clock, self.sleep, self.poll_s, self.entry, self.log).run(
                 action.get("verification") or [], rec["applied"]["at"], w.settle_max_s, w.bounded(),
-                progress=lambda stage, data: _notify(progress, stage, {"execution_id": eid, **data}))
+                progress=lambda stage, data: _notify(progress, stage, {"execution_id": eid, **data}),
+                stable_samples=w.settle_stable_samples)
             outcome, reason, vd = v.outcome, v.reason, v.to_dict()
         except Exception as exc:  # noqa: BLE001 - the change WAS applied; only its effect is unknown
             outcome = Outcome.INCONCLUSIVE

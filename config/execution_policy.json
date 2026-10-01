@@ -7,7 +7,9 @@
   "max_plan_age_seconds": 900,
   "allowed_executors": "approvers",
   "verification": {
-    "settle_max_seconds": 60,
+    "_settle": "Settled = the changed component ready on settle_stable_samples consecutive samples (poll interval apart), at most settle_max_seconds. 120 s from the Demo A calibration: under near-capacity load recovery took ~80 s (docs/validation/iter-07-demo-a-calibration.md).",
+    "settle_max_seconds": 120,
+    "settle_stable_samples": 3,
     "window_seconds": 120,
     "window_min_seconds": 60,
     "window_max_seconds": 300

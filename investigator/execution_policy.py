@@ -22,10 +22,11 @@ def _snake(name: str) -> str:
 
 @dataclass(frozen=True)
 class VerificationWindow:
-    settle_max_s: float = 60
+    settle_max_s: float = 120
     window_s: float = 120
     window_min_s: float = 60
     window_max_s: float = 300
+    settle_stable_samples: int = 3      # settled = the changed component ready on this many consecutive samples
 
     def bounded(self, requested: float | None = None) -> float:
         return min(max(requested or self.window_s, self.window_min_s), self.window_max_s)
@@ -49,8 +50,9 @@ class ExecutionPolicy:
         mem = memory_bytes(d.get("max_memory_limit", "1Gi"))
         if mem is None:
             raise ValueError(f"execution policy: invalid max_memory_limit {d.get('max_memory_limit')!r}")
-        window = VerificationWindow(float(v.get("settle_max_seconds", 60)), float(v.get("window_seconds", 120)),
-                                    float(v.get("window_min_seconds", 60)), float(v.get("window_max_seconds", 300)))
+        window = VerificationWindow(float(v.get("settle_max_seconds", 120)), float(v.get("window_seconds", 120)),
+                                    float(v.get("window_min_seconds", 60)), float(v.get("window_max_seconds", 300)),
+                                    int(v.get("settle_stable_samples", 3)))
         if not window.window_min_s <= window.window_s <= window.window_max_s:
             raise ValueError("execution policy: verification window_seconds must lie within its min/max")
         return cls(allowed_action_types=frozenset(_snake(a) for a in d.get("allowed_action_types", [])),
