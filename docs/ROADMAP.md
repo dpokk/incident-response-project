@@ -11,7 +11,7 @@
 | Iteration 4 — Historical evidence & incident reconstruction | Complete |
 | Iteration 5 — Remediation planning | Complete |
 | Iteration 6 — Slack incident experience + human review | Complete |
-| Iteration 7 — Approved remediation execution + verification | **In progress** — Milestone 1 done |
+| Iteration 7 — Approved remediation execution + verification | **In progress** — Milestones 1–2 done |
 | Iteration 8 — Second provider | Planned |
 | Iterations 9–11 — SaaS control plane, customer connector, external pilot | Planned |
 
@@ -638,7 +638,12 @@ Rules:
     `state/reviews.db`);
   - `actuators/base.py` (three typed compare-and-set operations);
   - `executor.py` (authorization, approval validity, typed change, plan age, policy, claim).
-- No cluster writer yet. Next: Milestone 2 (live recheck, dry run, typed mutation).
+- Milestone 2 (safe Kubernetes execution) is done:
+  - `recheck.py`: per-action live recheck through capabilities; expected value, else already applied (not needed), else state changed;
+  - `actuators/kubernetes.py`: the only cluster writer; strategic-merge patches with a resourceVersion precondition;
+  - the executor's dry run, then one compare-and-set write; partial or unknown results become `uncertain`.
+  Server-side dry runs of all three operations against the live cluster were accepted, and no object changed.
+- Next: Milestone 3 (verification).
 
 ## Iteration 8 — Provider Abstraction + Second Provider
 

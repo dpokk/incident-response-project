@@ -22,6 +22,7 @@ class ChangeResult:
     after: str | None = None            # the value the provider reports after the (dry-run) write
     detail: list[str] = field(default_factory=list)   # e.g. the individual provider operations performed
     error: str | None = None
+    changed: bool = False               # something was persisted (True on success; on failure: a partial change)
 
     def to_dict(self) -> dict:
         return asdict(self)
