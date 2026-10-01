@@ -305,6 +305,22 @@ Kubernetes-specific code stays in the adapter layer.
 | **Coverage reporting** | Nothing is retained while the recorder is not running. Each source reports the time span it can see, and the report states the gaps. |
 | **No persistent volume for Prometheus** | Its `emptyDir` already outlives application pods and survives minikube stop/start. Losing metrics when the Prometheus pod itself is recreated is a recorded limitation. |
 
+### Progress (2026-10-01)
+
+All five branches are implemented. The first four are merged into `main`; the validation branch is pending
+review. The iteration is not marked complete until it has been reviewed.
+
+Live validation (`docs/validation/iter-04-oom-postmortem.md`): the OOM was investigated after both
+OOM-killed pods had been replaced.
+- Without evidence history: **Undetermined (0%)**.
+- With evidence history: **memory exhaustion (85%)**, with impact, timeline and recovery.
+
+Known limits at this point:
+- Memory metrics are too sparse to show the memory climb.
+- The traffic → memory → kill link was not established on live data; the ordering stayed undetermined.
+- Overlapping incidents are only partly separated (they need a quiet gap).
+- Nothing is retained while the recorder is not running.
+
 ### Planned branches
 
 | Branch | Purpose |

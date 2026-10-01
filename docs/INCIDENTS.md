@@ -41,6 +41,18 @@ The investigator should identify memory exhaustion / OOMKilled as the likely roo
 
 A frontend or dependent service may be impacted by the backend failure but should not be incorrectly identified as the root cause.
 
+### Post-mortem variant (Iteration 4)
+
+`scripts/inject/oom-then-replace.ps1`:
+1. A simulated operator replaces the backend pods after at least two OOM kills.
+2. The investigation then runs after the failing instances are gone.
+
+The expected diagnosis is still memory exhaustion, from retained evidence. Without evidence history, the
+expected result is "undetermined": the live system no longer holds the evidence.
+
+Validated live on 2026-10-01 (`docs/validation/iter-04-oom-postmortem.md`); the offline regression is in
+`tests/test_history.py`.
+
 ---
 
 ## Incident 2 — Database Configuration / Connectivity Failure

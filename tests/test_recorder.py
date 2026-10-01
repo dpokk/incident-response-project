@@ -42,12 +42,16 @@ def oom_killed(pod, restarts, finished):
     return pod
 
 
+def restart_in_cluster(kube, pod):
+    kube.w["pods"] = [pod if p["name"] == pod["name"] else p for p in kube.w["pods"]]
+
+
 def test_each_termination_is_kept_with_the_run_it_ended_and_its_logs(tmp_path):
     rec, kube, store, clock = make_recorder(tmp_path)
     kube.w["logs"][("backend-11111", True)] = [(NOW - 320, _j(level="warning", msg="memory usage approaching container limit"))]
     clock.t = NOW - 300
-    rec.on_pod("MODIFIED", oom_killed(backend(kube), 1, NOW - 301))
-    rec.poll_once()                         # the ended run's logs are fetched on the next poll
+    restart_in_cluster(kube, oom_killed(backend(kube), 1, NOW - 301))
+    rec.poll_once()                         # the poll sees the restart and fetches the ended run's logs at once
     terms = store.lifecycle("shop", "backend", NOW - 900, NOW, "terminated")
     assert [(t["instance"], t["data"]["generation"], t["data"]["reason"], t["t_basis"]) for t in terms] == \
         [("backend-11111", 0, "OOMKilled", "exact")]
@@ -67,7 +71,7 @@ def test_previous_logs_are_not_stored_under_the_wrong_run(tmp_path):
 
 def test_an_empty_previous_log_is_retried_on_later_polls(tmp_path):
     rec, kube, store, clock = make_recorder(tmp_path)
-    rec.on_pod("MODIFIED", oom_killed(backend(kube), 1, NOW - 301))
+    restart_in_cluster(kube, oom_killed(backend(kube), 1, NOW - 301))
     rec.poll_once()                                          # Kubernetes has nothing for the ended run yet
     assert store.log_generations("shop", "backend", NOW - 900, NOW) == []
     kube.w["logs"][("backend-11111", True)] = [(NOW - 302, "last words")]
@@ -87,12 +91,27 @@ def test_current_run_lines_are_captured_once_and_only_from_that_run(tmp_path):
 
 
 def test_deleted_pods_are_remembered(tmp_path):
-    rec, kube, store, clock = make_recorder(tmp_path)
-    clock.t = NOW - 200
-    rec.on_pod("DELETED", backend(kube))
+    rec, kube, store, clock = make_recorder(tmp_path)          # first poll at NOW - 600
+    kube.w["pods"] = [p for p in kube.w["pods"] if p["name"] != "backend-11111"]
+    clock.t = NOW - 595
+    rec.poll_once()                                          # the pod is missing from this snapshot
     inst = next(i for i in store.instances("shop", "backend", NOW - 900, NOW) if i["instance"] == "backend-11111")
-    assert inst["gone_at"] == NOW - 200 and inst["component"] == "backend"
+    assert inst["gone_at"] == NOW - 595 and inst["component"] == "backend"
     assert store.component_of("shop", "backend-11111") == "backend"
+    [gone] = store.lifecycle("shop", "backend", NOW - 900, NOW, "deleted")
+    assert gone["t_basis"] == "observed" and gone["data"]["not_before"] == NOW - 600   # between two polls
+
+
+def test_a_restart_then_deletion_between_polls_still_records_the_termination(tmp_path):
+    rec, kube, store, clock = make_recorder(tmp_path)
+    restart_in_cluster(kube, oom_killed(backend(kube), 1, NOW - 590))
+    clock.t = NOW - 595
+    rec.poll_once()
+    kube.w["pods"] = [p for p in kube.w["pods"] if p["name"] != "backend-11111"]
+    clock.t = NOW - 590
+    rec.poll_once()
+    assert [t["data"]["reason"] for t in store.lifecycle("shop", "backend", NOW - 900, NOW, "terminated")] == ["OOMKilled"]
+    assert store.lifecycle("shop", "backend", NOW - 900, NOW, "deleted")
 
 
 def test_events_configuration_and_definitions_are_versioned_and_secrets_never_stored(tmp_path):
