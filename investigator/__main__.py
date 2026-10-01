@@ -24,6 +24,7 @@ def main() -> None:
     st = sub.add_parser("status", help="print live health of the watched namespace")
     st.add_argument("--once", action="store_true")
     sub.add_parser("record", help="only record evidence history (no detection), e.g. alongside manual investigations")
+    sub.add_parser("review", help="listen for Slack Approve/Reject interactions (Socket Mode) and record decisions")
     w = sub.add_parser("watch", help="detect incidents, investigate them and report")
     w.add_argument("--no-slack", action="store_true")
     w.add_argument("--quiet", action="store_true", help="don't print every sample")
@@ -39,12 +40,12 @@ def main() -> None:
     settings = Settings()
 
     if args.cmd in ("replay", "post"):
-        from . import report as rpt
         from . import slack
+        from . import slack_view
         if args.cmd == "post":
             with open(args.report_file, encoding="utf-8") as f:
                 r = json.load(f)
-            print("posted to Slack" if slack.post(settings, rpt.slack_payload(r, args.report_file[:-5] + ".md")) else "NOT posted")
+            print("posted to Slack" if slack.post(settings, slack_view.investigation_message(r)) else "NOT posted")
             return
         from .evidence import EvidenceStore
         from .pipeline import diagnose_and_report
@@ -58,6 +59,16 @@ def main() -> None:
             saved["store"] = legacy.upgrade(saved["store"])
         diagnose_and_report(settings, incident, EvidenceStore.from_dict(saved["store"]),
                             (saved["window"]["start"], saved["window"]["end"]), post_to_slack=args.slack)
+        return
+
+    if args.cmd == "review":
+        # Needs Slack and the review store only - never the cluster: reviewing records decisions, it changes nothing.
+        from . import slack_app
+        from .pipeline import log, review_service
+        try:
+            slack_app.start(settings, review_service(settings), log=log, block=True)
+        except KeyboardInterrupt:
+            print("\nstopped")
         return
 
     from . import providers as providers_mod

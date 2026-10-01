@@ -362,8 +362,38 @@ diagnosis + reconstruction + impact + facts  →  plan_remediation()  →  Remed
   `entry_requests_succeed`, `error_ratio_below`.
 - **Presentation.** `plan.to_dict()` is plain, deterministic JSON. It is saved as `INC-*.plan.json` and
   embedded in the report JSON. The text and markdown reports render it from the dict. Slack, a UI or an API
-  (Iteration 6) consume the same dict: **Slack consumes the contract; it does not define it.** The current
-  Slack message is unchanged.
+  (Iteration 6) consume the same dict: **Slack consumes the contract; it does not define it.**
+
+**As implemented (Iteration 6 in progress, human review; nothing executes).**
+
+```text
+RemediationPlan dict ─→ review.register_plan() ─→ digest (sha256 of canonical JSON)
+        │                    (review.py, state/reviews.db)
+        └─→ slack_view (render) ─→ slack.Transport ─→ incident thread (root + investigation + plan)
+Slack click ─→ Socket Mode ─→ slack_app.handle_interaction() ─→ review.decide() ─→ decision recorded
+                                                              └─→ thread updated ─→ STOP
+```
+
+- **Layers.**
+  - `slack_view.py` is presentation only.
+  - `review.py` is the Slack-independent review model (stdlib only; a Slack ID is just a reviewer string).
+  - `slack.py` is the transport and the thread registry (`state/slack_threads.json`).
+  - `slack_app.py` translates an interaction into `decide()` and shows the result.
+
+  Architecture tests forbid these modules to import providers, capabilities, `subprocess` or the planner, and
+  forbid the planner to import Slack or the review.
+- **Decision record.** Each record holds the incident, the plan digest, the action index and type, the
+  decision, the reviewer, the supplied parameters, the comment, the time, `effective` and the refusal reason.
+  Refused attempts are audited too.
+- **Rules.**
+  - Only `SLACK_APPROVERS` may decide.
+  - Decisions are per action, and the allowed set depends on the action type.
+  - The first effective decision stands.
+  - A newer plan supersedes the older one and its decisions.
+  - Required values are typed by the engineer and validated; a candidate from the evidence is never used
+    implicitly.
+- **Authorisation boundary (§10).** Approval is a recorded human decision, not an execution trigger. Nothing in
+  Iteration 6 reads an approval to change the system; that is Iteration 7, behind a policy check.
 
 ## 10. Authorization Boundary
 
@@ -548,7 +578,7 @@ Do not add yet:
 
 These belong to later milestones in `ROADMAP.md`.
 
-## 18. Actual Implementation Map (as of Iteration 4, complete)
+## 18. Actual Implementation Map (as of Iteration 6, in progress)
 
 The architecture above as it exists in the repository (there is no `src/`; the investigator is the
 `investigator/` package):
@@ -570,10 +600,14 @@ Impact               investigator/impact.py              affected instances, dep
                                                          duration, propagation, blast radius (evidence-backed)
 Remediation plan     investigator/remediation.py         deterministic planner; no capabilities, no execution
                      investigator/remediation_model.py   RemediationPlan contract (imports nothing else)
-Report               investigator/report.py, slack.py    text / markdown / json / Slack
+Report               investigator/report.py              text / markdown / json
+Human review         investigator/review.py              decisions bound to a plan digest (state/reviews.db)
+Slack                investigator/slack_view.py          Block Kit rendering (presentation only)
+                     investigator/slack.py               transport, one thread per incident
+                     investigator/slack_app.py           Socket Mode interactions -> review.decide()
 ```
 
-`tests/test_architecture.py` enforces three boundaries:
+`tests/test_architecture.py` enforces these boundaries (plus the remediation and human-review boundaries of §9):
 - **§2 boundary.** It fails if a provider-independent module imports provider code. This includes the
   history store and the recorder: the engine reaches retained evidence only through capabilities.
 - **Vocabulary.** It fails if reasoning code uses Kubernetes vocabulary.

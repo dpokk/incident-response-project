@@ -1,16 +1,18 @@
 """Pipeline with clean stage boundaries:
 
     Detection -> Evidence collection -> Diagnosis -> Incident report -> Remediation plan (proposal only)
-    [future: human review (Iteration 6) -> approved execution + verification (Iteration 7)]
+    -> Slack incident thread + human review (decisions recorded by review.py)
+    [future: approved execution + verification (Iteration 7)]
 
-Each stage only consumes the previous stage's output. The pipeline stops after the plan: no restarts,
-scaling, config changes or any other corrective action. The plan requires human approval and is never executed.
+Each stage only consumes the previous stage's output. The pipeline stops after the plan is presented for review:
+no restarts, scaling, config changes or any other corrective action. A human decision is recorded, never executed.
 """
 import time
 from datetime import datetime
 
 from . import report as rpt
 from . import slack
+from .review import ReviewService
 from .collect import collect
 from .context import IncidentContext
 from .detector import Detector, format_sample
@@ -65,16 +67,32 @@ def diagnose_and_report(settings, incident: dict, store: EvidenceStore, window: 
     paths = rpt.save(report, store, dx, settings.reports_dir)
     print("\n" + rpt.render_text(report) + "\n", flush=True)
     log(f"  saved {paths['text']} (+ .md, .json, .evidence.json)")
+    # Present the plan for human review: the review store binds any later decision to this exact plan (digest).
+    review = review_service(settings)
+    digest = review.register_plan(incident["id"], report["remediation_plan"], (report.get("window") or {}).get("end"))
+    log(f"  plan registered for review (digest {digest[:12]})")
     if post_to_slack and settings.slack_configured:
-        if slack.post(settings, rpt.slack_payload(report, paths["markdown"]), log=log):
-            log("  report posted to Slack")
+        transport = slack.Transport(settings, log)
+        if slack.publish_investigation(transport, slack.ThreadRegistry(settings.slack_threads_path), report, review,
+                                       digest, settings.namespace, time.time()):
+            log("  investigation and plan posted to the incident's Slack thread")
     log("Done. No remediation performed: the plan awaits human review.")
-    return {"report": report, "paths": paths}
+    return {"report": report, "paths": paths, "digest": digest}
+
+
+def review_service(settings) -> ReviewService:
+    return ReviewService(settings.reviews_path, settings.slack_approvers)
 
 
 def watch(settings, providers: Providers, post_to_slack: bool = True, verbose: bool = True) -> None:
     recorder = providers.new_resources()
     recorder.start_background_recording()   # evidence history recorder (or the older pod journal)
+    if post_to_slack and settings.slack_app_token:
+        try:                                 # human review of plans in the incident threads (records decisions only)
+            from . import slack_app
+            slack_app.start(settings, review_service(settings), log=log)
+        except Exception as exc:  # noqa: BLE001 - review is optional; watching continues without it
+            log(f"Slack review listener not started: {type(exc).__name__}: {exc}")
     det = Detector(settings, providers.new_resources(), providers.metrics, clock=providers.clock)
     det.sample()
     log(f"Watching {providers.describe()} every {settings.poll_interval_s:.0f}s "
@@ -100,7 +118,8 @@ def watch(settings, providers: Providers, post_to_slack: bool = True, verbose: b
                 log(f"INCIDENT DETECTED {incident['id']}: " + "; ".join(x["text"] for x in s["signals"])[:300])
                 log(f"Collecting symptoms for {settings.investigate_delay_s:.0f}s before investigating")
                 if post_to_slack and settings.slack_post_detection and settings.slack_configured:
-                    slack.post(settings, rpt.detection_payload(incident, settings.namespace), log=log)
+                    slack.publish_detection(slack.Transport(settings, log), slack.ThreadRegistry(settings.slack_threads_path),
+                                            incident, settings.namespace)
             continue
         seen = {(x["kind"], x["subject"]) for x in incident["signals"]}
         new = [x for x in s["signals"] if (x["kind"], x["subject"]) not in seen]
@@ -127,5 +146,6 @@ def watch(settings, providers: Providers, post_to_slack: bool = True, verbose: b
         elif incident.get("reported") and s["t"] - last_unhealthy >= settings.resolve_stable_s:
             log(f"Incident {incident['id']} symptoms have cleared; back to watching")
             if post_to_slack and settings.slack_configured:
-                slack.post(settings, rpt.resolved_payload(incident, settings.namespace), log=log)
+                slack.publish_resolved(slack.Transport(settings, log), slack.ThreadRegistry(settings.slack_threads_path),
+                                       review_service(settings), incident, settings.namespace)
             incident = None

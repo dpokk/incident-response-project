@@ -2,5 +2,7 @@
 kubernetes>=29
 requests>=2.31
 python-dotenv>=1.0
+# Slack Socket Mode listener for human review (Iteration 6)
+slack_sdk==3.44.1
 # Tests
 pytest>=7

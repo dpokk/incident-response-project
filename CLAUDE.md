@@ -17,8 +17,8 @@ These documents are the source of truth for project direction. Before making sub
 
 Iterations 1 to 5 have been completed; Iteration 5 is remediation planning (a typed, evidence-backed plan, no
 execution). The next milestone is Iteration 6 (Slack incident experience + human review, consuming the
-`RemediationPlan` contract), then Iteration 7 (approved remediation execution + verification). Iteration 6 has
-not been started. See `docs/ROADMAP.md`.
+`RemediationPlan` contract), then Iteration 7 (approved remediation execution + verification). Iteration 6 is
+in progress: code and offline tests are done, the live demo is pending. See `docs/ROADMAP.md`.
 
 ### Iteration 1
 The original prototype detected a Kubernetes `OOMKilled` incident using a Python-based investigator.
@@ -125,13 +125,28 @@ How it works:
 
 Every plan has `requires_human_approval: true` and `execution.status: not_executed`.
 
+### Iteration 6 — in progress (Slack incident experience + human review)
+
+Each incident is one Slack thread. The parts:
+- **Rendering:** `slack_view.py`, presentation only.
+- **Transport and thread registry:** `slack.py`. It uses the bot token for threads and updates, with the
+  webhook as an unthreaded fallback.
+- **Interactions:** `slack_app.py`, over Socket Mode (`SLACK_APP_TOKEN`).
+
+Reviews go through `review.py`, which is Slack-independent and stores to `state/reviews.db`:
+- Decisions are per action and bound to the plan digest.
+- Only users in `SLACK_APPROVERS` may decide.
+- A newer plan supersedes the old one; duplicates and conflicts are refused; every attempt is audited.
+- Required parameters are typed by the engineer and validated, never inferred.
+
+Decisions are recorded, never executed. The live demo is pending.
+
 ### Important Current Boundary
 
-The investigator deliberately stops at a **proposed plan**: diagnosis, then a plan for human review. Nothing is
-approved or executed.
+The investigator deliberately stops at a **recorded human decision** on a proposed plan. Nothing is executed.
 
 There is currently:
-- No approval workflow and no remediation execution (Iterations 6 and 7)
+- No remediation execution and nothing that acts on an approval (Iteration 7)
 - No automated remediation
 - No autonomous production actions
 - No LLM/AI investigator
@@ -209,10 +224,11 @@ incident occurs
 → impact/blast radius determined
 → structured report generated
 → remediation plan proposed (structured; requires human approval; not executed)
-→ report posted to Slack
+→ report and plan posted to the incident's Slack thread
+→ human decision per action recorded (Iteration 6; not executed)
 
-Approval (Iteration 6) and execution (Iteration 7) are later milestones and must not be silently introduced
-into the planner or the diagnosis implementation.
+Execution (Iteration 7) is a later milestone and must not be silently introduced into the planner, the review
+model or the diagnosis implementation.
 
 ## Source of Truth Rule
 

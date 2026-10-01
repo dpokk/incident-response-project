@@ -93,6 +93,25 @@ def test_remediation_planning_has_no_path_to_the_system():
                                                          "dataclasses.field", "enum", "enum.Enum"}
 
 
+def test_human_review_layers_keep_their_boundaries():
+    """Iteration 6: the review model is independent of Slack and has no path to the system; the Slack layer cannot
+    reach infrastructure or remediation logic; the planner does not know about Slack or the review."""
+    no_system = ("capabilities", "kube", "kubernetes", "prom", "providers", "subprocess", "shutil", "socket",
+                 "history_store", "collect", "planner", "dependencies", "diagnosis", "remediation")
+
+    def offenders(name, banned):
+        return {i for i in _imports(PKG / name) for b in banned
+                if i == b or i.startswith(b + ".") or i.endswith("." + b) or i.split(".")[0] == b}
+    assert not offenders("review.py", no_system + ("slack", "slack_view", "slack_app", "slack_sdk", "requests", "os",
+                                                   "urllib", "http"))
+    for name in ("slack.py", "slack_view.py", "slack_app.py"):
+        assert not offenders(name, no_system), name
+    assert not offenders("remediation.py", ("slack", "slack_view", "slack_app", "slack_sdk", "review"))
+    # presentation only: slack_view makes no remediation or review decisions
+    src = (PKG / "slack_view.py").read_text(encoding="utf-8")
+    assert "plan_remediation" not in src and ".decide(" not in src
+
+
 def test_adapters_implement_the_whole_interface():
     from investigator.capabilities.base import MetricsProvider, ResourceProvider
     from investigator.capabilities.kubernetes import KubernetesAdapter
