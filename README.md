@@ -1,4 +1,4 @@
-# Incident Investigation Prototype: Iterations 1–5 complete (investigation, history, remediation planning)
+# Incident Investigation Prototype: Iterations 1–6 complete (investigation, history, remediation planning, human review)
 
 An evidence-driven incident investigator, proven first on a local Kubernetes application. Failures are
 injected into the running system. The investigator is **not told what failed**. It decides which
@@ -8,7 +8,8 @@ remediation.
 
 ```
 Detection -> Incident context -> Investigation planner <-> Capabilities (Kubernetes / Prometheus adapters)
-          -> Diagnosis -> Incident report                     [future: Remediation -> Verification]
+          -> Diagnosis -> Incident report -> Remediation plan -> Slack thread + human review (recorded)
+                                                              [future: approved execution -> verification]
 ```
 
 Project direction, roadmap and architecture principles live in `CLAUDE.md` and `docs/`. Iteration 1 is
@@ -35,7 +36,9 @@ archived in `archive/iteration1/`.
 - **Iteration 5 (remediation planning) is complete.** A deterministic planner produces a structured,
   evidence-backed `RemediationPlan` for human review. Nothing is executed.
 
-  Next: Iteration 6, Slack incident experience + human review (not started).
+- **Iteration 6 (Slack incident experience + human review) is complete** and validated live
+  (`docs/validation/iter-06-slack-review.md`). Each incident becomes one Slack thread, and authorised engineers record a decision
+  per action (Approve / Reject / Investigate first, or Acknowledge). Decisions are recorded, never executed.
 - **Kubernetes is the only resource provider implemented so far.** Provider agnosticism is not claimed
   until a second provider exercises the same interface (Iteration 8 in `docs/ROADMAP.md`).
 
@@ -63,7 +66,9 @@ Investigator layout:
 | Adapters | `capabilities/kubernetes.py` (+ `kube.py`), `capabilities/prometheus.py` (+ `prom.py`) | yes, by design |
 | Evidence history | `capabilities/kubernetes_recorder.py` (records), `history_store.py` (SQLite store) | recorder yes; store no |
 | Composition root | `providers.py` (chooses the adapters) | the one place that names them |
-| Diagnosis, report, CLI | `diagnosis.py`, `report.py`, `slack.py`, `pipeline.py`, `__main__.py` | no |
+| Diagnosis, report, CLI | `diagnosis.py`, `report.py`, `pipeline.py`, `__main__.py` | no |
+| Remediation plan | `remediation.py`, `remediation_model.py` | no |
+| Human review | `review.py` (decisions bound to a plan digest), `slack_view.py`, `slack.py`, `slack_app.py` | Slack-specific only in the `slack*` modules |
 | Compatibility | `legacy.py` (reads evidence saved in the old Kubernetes vocabulary) | yes, replay only |
 
 `tests/test_architecture.py` enforces two rules:
@@ -211,6 +216,21 @@ How actions are chosen:
 - Values the evidence cannot supply, such as a new memory limit, are left for an engineer.
 - The planner has no access to the system.
 
+### Human review in Slack (Iteration 6)
+
+- **One thread per incident.** The root message is the detection (later the review summary and "symptoms
+  cleared"); the investigation and the plan are replies.
+- **Controls.** The plan message has controls per action: Approve / Reject / Investigate first for a change, and
+  Acknowledge for an investigation step. When a value is missing (e.g. the new memory limit), the engineer types
+  it in the message; it is validated, and a value is never inferred from the evidence.
+- **Who may decide.** Only Slack user IDs in `SLACK_APPROVERS` can decide. Everyone else gets a private notice
+  and the attempt is audited.
+- **What is recorded.** Decisions go to `state/reviews.db`, bound to the digest of the exact plan. A newer plan
+  supersedes the old one and its decisions. Duplicate or conflicting clicks are refused.
+- **What Slack needs.** Threads and updates need `SLACK_BOT_TOKEN` + `SLACK_CHANNEL`; the webhook alone posts
+  unthreaded. Clicks arrive over Socket Mode (`SLACK_APP_TOKEN`, same Slack app, Interactivity enabled).
+- **Nothing executes.** An approval is a record; nothing in this iteration acts on it.
+
 ## Running it
 
 Run everything from the project folder with Docker Desktop running.
@@ -244,13 +264,13 @@ python -m investigator record                   # only record evidence history (
 python -m investigator investigate --since 10m  # on-demand investigation, using retained history
 python -m investigator replay reports\INC-....evidence.json   # re-diagnose saved evidence offline
 python -m investigator post reports\INC-....json              # post a saved report to Slack
+python -m investigator review                   # only listen for Slack review clicks (watch also listens)
 minikube stop -p incident-demo                  # stop the cluster when done
 ```
 
-## Explicitly out of scope (Iterations 3–5)
+## Explicitly out of scope (Iterations 3–6)
 
 The following are later milestones in `docs/ROADMAP.md`:
-- Slack incident experience and human review/approval of plans (Iteration 6);
 - executing approved actions and verifying them (Iteration 7);
 - an LLM-assisted planner;
 - a second provider (Iteration 8);

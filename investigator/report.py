@@ -312,50 +312,6 @@ def _trim(text: str, limit: int = 2900) -> str:
     return text if len(text) <= limit else text[: limit - 20] + "\n... (truncated)"
 
 
-def slack_payload(r: dict, report_path: str | None = None) -> dict:
-    dep = "\n".join(f"*{d['type']}* `{d['endpoint']}` ({d['variable']}) - {d['state']}" for d in r["dependencies"]) or "none"
-    blocks = [
-        {"type": "header", "text": {"type": "plain_text", "text": f"Incident {r['id']} - {r['failure_category_label']}"[:150]}},
-        {"type": "section", "fields": [
-            {"type": "mrkdwn", "text": f"*Affected component:*\n{r['affected_component']['name']}"},
-            {"type": "mrkdwn", "text": f"*Failure category:*\n{r['failure_category_label']}"},
-            {"type": "mrkdwn", "text": f"*Root-cause component:*\n{_rcc(r)}"},
-            {"type": "mrkdwn", "text": f"*Confidence:*\n{r['confidence_label']} ({r['confidence']:.0%})"},
-            {"type": "mrkdwn", "text": f"*Status:*\n{r['investigation_status']}"},
-        ]},
-        {"type": "section", "text": {"type": "mrkdwn", "text": _trim(f"*Dependencies involved:*\n{dep}")}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": _trim(
-            "*Observed symptoms:*\n" + "\n".join(f"- {s['text']}" for s in r["observed_symptoms"][:6]))}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": _trim(
-            "*Diagnosis:*\n" + "\n".join(f"{i}. {d['statement']}" for i, d in enumerate(r["diagnosis"], 1)))}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": _trim(f"*Likely root cause:*\n{r['likely_root_cause']}")}},
-        *([{"type": "section", "text": {"type": "mrkdwn", "text": _trim(
-            "*Impact:*\n" + "\n".join(f"- {x}" for x in [
-                r["impact"]["instances"]["statement"], r["impact"]["users"]["statement"],
-                "Duration: " + r["impact"]["duration"]["statement"],
-                "Propagation: " + r["impact"]["propagation_statement"]]))}}]
-          if r.get("impact", {}).get("assessed") else []),
-        {"type": "section", "text": {"type": "mrkdwn", "text": _trim(
-            "*Alternatives ruled out:*\n" + "\n".join(f"- {a['label']} ({a['component']}): {a['why_not'][:150]}"
-                                                    for a in r["alternatives_considered"][:4]))}},
-        {"type": "context", "elements": [{"type": "mrkdwn", "text": _trim(
-            f"{len(r['evidence'])} evidence facts cited of {r['facts_collected']} collected • {r['remediation']} • "
-            f"{r['generated_by']}" + (f" • full report: `{report_path}`" if report_path else ""), 1900)}]},
-    ]
-    return {"text": f"Incident {r['id']}: {r['failure_category_label']} in {r['affected_component']['name']}", "blocks": blocks}
-
-
-def detection_payload(incident: dict, namespace: str) -> dict:
-    text = (f":large_orange_circle: *Incident detected* in `{namespace}` ({incident['id']})\n"
-            + "\n".join(f"- {s['text']}" for s in incident["signals"][:5]) + "\nInvestigating...")
-    return {"text": f"Incident detected in {namespace}", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]}
-
-
-def resolved_payload(incident: dict, namespace: str) -> dict:
-    text = f":large_green_circle: Incident {incident['id']} in `{namespace}`: symptoms have cleared."
-    return {"text": text, "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]}
-
-
 def save(r: dict, store: EvidenceStore, dx: dict, reports_dir: Path) -> dict:
     reports_dir.mkdir(parents=True, exist_ok=True)
     base = reports_dir / r["id"]

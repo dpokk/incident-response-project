@@ -61,6 +61,11 @@ class Settings:
     slack_channel: str = field(default_factory=lambda: _env("SLACK_CHANNEL"))
     slack_webhook_url: str = field(default_factory=lambda: _env("SLACK_WEBHOOK_URL"))
     slack_post_detection: bool = field(default_factory=lambda: _bool("SLACK_POST_DETECTION", True))
+    # Human review (Iteration 6): Socket Mode app-level token (xapp-...) for inbound Approve/Reject interactions,
+    # and the Slack user IDs allowed to make a decision. Never logged.
+    slack_app_token: str = field(default_factory=lambda: _env("SLACK_APP_TOKEN"))
+    slack_approvers: frozenset = field(default_factory=lambda: frozenset(
+        a.strip() for a in _env("SLACK_APPROVERS").split(",") if a.strip()))
 
     # Evidence history (Iteration 4): a recorder retains what the platform forgets (earlier runs' logs, deleted
     # instances, expired events, earlier configuration) in a local SQLite file under state/.
@@ -74,6 +79,14 @@ class Settings:
     @property
     def history_path(self) -> Path:
         return self.state_dir / "history.db"
+
+    @property
+    def reviews_path(self) -> Path:
+        return self.state_dir / "reviews.db"
+
+    @property
+    def slack_threads_path(self) -> Path:
+        return self.state_dir / "slack_threads.json"
 
     @property
     def slack_configured(self) -> bool:
