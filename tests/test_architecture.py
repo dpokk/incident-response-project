@@ -9,7 +9,7 @@ from pathlib import Path
 
 PKG = Path(__file__).resolve().parent.parent / "investigator"
 ENGINE_MODULES = ["collect.py", "dependencies.py", "diagnosis.py", "metrics.py", "logparse.py", "evidence.py",
-                  "report.py", "planner.py", "context.py", "detector.py", "pipeline.py", "__main__.py"]
+                  "report.py", "planner.py", "context.py", "detector.py", "pipeline.py", "__main__.py", "timeline.py"]
 # providers.py is the composition root: the one place allowed to choose concrete adapters.
 # The evidence history store and recorder are reached only through capabilities (Iteration 4).
 FORBIDDEN = ("kubernetes", "kube", "prom", "capabilities.kubernetes", "capabilities.prometheus", "requests",
@@ -41,7 +41,7 @@ def test_engine_does_not_import_providers():
 
 
 REASONING_MODULES = ["collect.py", "dependencies.py", "diagnosis.py", "planner.py", "detector.py", "metrics.py",
-                     "context.py", "report.py"]
+                     "context.py", "report.py", "timeline.py"]
 PROVIDER_WORDS = ("OOMKilled", "CrashLoopBackOff", "BackOff", "ImagePull", "ErrImagePull", "CreateContainer",
                   "FailedScheduling", "ScalingReplicaSet", "Unhealthy", "Killing", "kubelet", "ReplicaSet",
                   "workload/", "k8s_event", "container_terminated")
