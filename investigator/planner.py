@@ -6,6 +6,8 @@ The planner is deterministic and evidence-driven. It starts from the components 
 detection signals and follows the evidence:
 
   * a process restarted             -> read its previous instance's logs (why did it end?)
+  * it restarted more than once, or an instance is gone
+                                    -> read retained logs of the runs the live system no longer has
   * errors about a dependency, or the dependency looks unhealthy
                                     -> test connectivity from inside the consumer, and examine the
                                        component that serves the dependency
@@ -58,10 +60,15 @@ class InvestigationPlanner:
         tr = ctx.window
         rec.record_signals(store, ctx.incident)
         self.components = caps.list_components() or []
-        self.decide("collect", "events and deployment history",
+        self.decide("collect", "events, deployment and configuration history",
                     "cheap, window-wide context: what happened and what changed recently")
         rec.record_events(store, caps, tr)
         rec.record_changes(store, caps, tr)
+        for c in self.components:
+            rec.record_configuration_history(store, caps, c, tr)
+        self.decide("collect", "evidence coverage",
+                    "know which evidence history exists for the window before relying on it, and state what is missing")
+        rec.record_coverage(store, caps, tr)
         rec.record_services(store, caps)
         if ctx.entry:
             self.decide("probe", ctx.entry[0], "confirm the user-facing symptom with a synthetic request")
@@ -102,7 +109,19 @@ class InvestigationPlanner:
         if restarted:
             self.decide("read previous logs of", c, f"{len(restarted)} process(es) restarted; the ended instance's "
                         f"last output may show why ({', '.join(restarted[:3])})")
-        rec.record_logs(store, caps, rs, tr, include_previous=bool(restarted))
+        # The live system keeps only the current and previous run: anything older, or from an instance that is
+        # gone, can only come from retained history.
+        repeated = [f"{i.name}/{p.name}" for i in rs.instances for p in i.processes if p.restarts > 1]
+        gone = sorted({p.name for p in rs.past_instances} | {h.instance for h in rs.history if h.instance_gone})
+        if repeated or gone:
+            why = []
+            if repeated:
+                why.append(f"{len(repeated)} process(es) restarted more than once, and only the previous run's logs "
+                           f"are still live")
+            if gone:
+                why.append(f"{len(gone)} instance(s) no longer exist ({', '.join(gone[:3])})")
+            self.decide("read retained logs of", c, "; ".join(why))
+        rec.record_logs(store, caps, rs, tr, include_previous=bool(restarted), include_retained=bool(repeated or gone))
 
         own_failure = self.failing(c)
         for ref in caps.get_dependencies(c) or []:

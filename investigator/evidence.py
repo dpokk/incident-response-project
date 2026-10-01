@@ -3,8 +3,24 @@
 A Fact records *what was observed*, *where* (subject), *by which source*, and *when*. It never
 states a conclusion ("PostgreSQL is down"); it states the observation ("Service shop/postgres has
 0 ready endpoints"). Diagnoses cite fact IDs so every conclusion is traceable to observations.
+
+Time (Iteration 4) keeps three moments apart and never manufactures precision:
+  event time       `t` - when the observed thing happened, read with `t_basis`
+  observation time `observed_at` - when the source saw it (e.g. the recorder, or a live read)
+  collection time  `collected_at` - when this investigation collected it
+`origin` says whether the evidence was read live or retained by the evidence history.
 """
+import time
 from dataclasses import asdict, dataclass, field
+
+# How to read Fact.t:
+T_BASES = {
+    "exact": "the source stated when it happened",
+    "bounded": "it happened between t_earliest and t_latest; t is the latest possible time",
+    "observed": "only the time it was observed is known; it happened at or before t",
+    "before_window": "it began before the evidence window; t is when it was last observed",
+    "unknown": "no time is known",
+}
 
 
 @dataclass
@@ -16,25 +32,34 @@ class Fact:
     text: str            # human-readable observation (no interpretation)
     data: dict = field(default_factory=dict)
     t: float | None = None  # when the observed thing happened, if known
-    # How to read `t`. Never manufacture precision:
-    #   "exact"         - t is when it happened
-    #   "before_window" - it began before the investigation window; t is when it was last observed
-    #                     (data["observed_at"]); data["first_seen"] keeps the source's own first timestamp
+    # How to read `t` (see T_BASES). For "before_window" events, data["first_seen"] keeps the source's own
+    # first timestamp and data["observed_at"] the last observation.
     t_basis: str = "exact"
+    t_earliest: float | None = None   # bounds, when t_basis is "bounded"
+    t_latest: float | None = None
+    origin: str = "live"              # live | retained | mixed (live and retained evidence combined)
+    collected_at: float | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
 class EvidenceStore:
-    def __init__(self):
+    def __init__(self, clock=time.time):
         self.facts: list[Fact] = []
         self.trace: list[dict] = []   # investigation steps / capability calls, in order
+        self.clock = clock
 
     def add(self, source: str, subject: str, kind: str, text: str, t: float | None = None,
-            t_basis: str = "exact", **data) -> Fact:
+            t_basis: str = "exact", t_earliest: float | None = None, t_latest: float | None = None,
+            origin: str = "live", **data) -> Fact:
+        if t_basis not in T_BASES:
+            raise ValueError(f"unknown t_basis {t_basis!r}")
+        if t is None and t_basis == "exact":
+            t_basis = "unknown"
         fact = Fact(id=f"F{len(self.facts) + 1}", source=source, subject=subject, kind=kind, text=text, data=data,
-                    t=t, t_basis=t_basis)
+                    t=t, t_basis=t_basis, t_earliest=t_earliest, t_latest=t_latest, origin=origin,
+                    collected_at=self.clock())
         self.facts.append(fact)
         return fact
 
@@ -65,6 +90,6 @@ class EvidenceStore:
     @classmethod
     def from_dict(cls, d: dict) -> "EvidenceStore":
         store = cls()
-        store.facts = [Fact(**f) for f in d["facts"]]
+        store.facts = [Fact(**f) for f in d["facts"]]   # facts saved before Iteration 4 take the field defaults
         store.trace = d.get("trace", [])
         return store

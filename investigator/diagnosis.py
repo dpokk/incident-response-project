@@ -181,7 +181,7 @@ def check_crash(v: View, store: EvidenceStore, dep_health: dict) -> Finding:
         f.reject("the exception that ended the process is a dependency connection error, pointing at the dependency",
                  dep_exc[0])
     else:
-        if all(t.data.get("instance_gone") for t in errored):
+        if all(_logs_lost(t) for t in errored):
             f.reject("the terminated instance no longer exists, so its logs (and any traceback) could not be read",
                      errored[0])
         else:
@@ -212,9 +212,14 @@ def check_crash(v: View, store: EvidenceStore, dep_health: dict) -> Finding:
     else:
         f.root_cause = f"{v.name} process exits with code {code} on its own" + (
             "; why could not be determined because the crashed instance and its logs no longer exist"
-            if all(t.data.get("instance_gone") for t in errored) else " and is restarted repeatedly")
+            if all(_logs_lost(t) for t in errored) else " and is restarted repeatedly")
     f.score = min(f.score, 1.0)
     return f
+
+
+def _logs_lost(term: Fact) -> bool:
+    """The run's instance is gone and its logs were not retained either."""
+    return bool(term.data.get("instance_gone")) and not term.data.get("logs_retained")
 
 
 def check_dependencies(v: View, store: EvidenceStore) -> list[Finding]:

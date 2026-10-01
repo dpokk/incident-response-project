@@ -62,8 +62,18 @@ class Settings:
     slack_webhook_url: str = field(default_factory=lambda: _env("SLACK_WEBHOOK_URL"))
     slack_post_detection: bool = field(default_factory=lambda: _bool("SLACK_POST_DETECTION", True))
 
+    # Evidence history (Iteration 4): a recorder retains what the platform forgets (earlier runs' logs, deleted
+    # instances, expired events, earlier configuration) in a local SQLite file under state/.
+    history_enabled: bool = field(default_factory=lambda: _bool("HISTORY_ENABLED", True))
+    history_retention_h: float = field(default_factory=lambda: _float("HISTORY_RETENTION_H", 24))
+    history_max_lines_per_min: int = field(default_factory=lambda: int(_float("HISTORY_MAX_LINES_PER_MIN", 3000)))
+
     state_dir: Path = ROOT / "state"
     reports_dir: Path = ROOT / "reports"
+
+    @property
+    def history_path(self) -> Path:
+        return self.state_dir / "history.db"
 
     @property
     def slack_configured(self) -> bool:

@@ -1,4 +1,4 @@
-# Incident Investigation Prototype: Iteration 3 (capability-based investigation)
+# Incident Investigation Prototype: Iteration 4 in progress (historical evidence)
 
 An evidence-driven incident investigator, proven first on a local Kubernetes application. Failures are
 injected into the running system. The investigator is **not told what failed**. It decides which
@@ -20,6 +20,10 @@ archived in `archive/iteration1/`.
   - step 2: incident context + planner;
   - step 3: detection on capabilities;
   - step 4: provider-neutral fact vocabulary.
+- **Iteration 4 (historical evidence and incident reconstruction) is in progress.** Done so far:
+  evidence retention. A recorder keeps what Kubernetes forgets, so a crash can be diagnosed after the
+  crashed pods are gone. Timeline reconstruction, metrics correlation and impact assessment are next
+  (`docs/ROADMAP.md`).
 - **Kubernetes is the only resource provider implemented so far.** Provider agnosticism is not claimed
   until a second provider exercises the same interface (Iteration 8 in `docs/ROADMAP.md`).
 
@@ -45,6 +49,7 @@ Investigator layout:
 | Evidence recording | `collect.py`, `dependencies.py`, `metrics.py`, `logparse.py`, `evidence.py` | no |
 | Capability interface | `capabilities/base.py`, `capabilities/__init__.py`, `capabilities/references.py` | no |
 | Adapters | `capabilities/kubernetes.py` (+ `kube.py`), `capabilities/prometheus.py` (+ `prom.py`) | yes, by design |
+| Evidence history | `capabilities/kubernetes_recorder.py` (records), `history_store.py` (SQLite store) | recorder yes; store no |
 | Composition root | `providers.py` (chooses the adapters) | the one place that names them |
 | Diagnosis, report, CLI | `diagnosis.py`, `report.py`, `slack.py`, `pipeline.py`, `__main__.py` | no |
 | Compatibility | `legacy.py` (reads evidence saved in the old Kubernetes vocabulary) | yes, replay only |
@@ -100,6 +105,14 @@ provider-independent:
 | `probe_request` | A synthetic user request through the API server's service proxy |
 | `get_deployment_history` | ReplicaSet revisions |
 | `get_metrics` | Separate `PrometheusMetrics` adapter: request rate, error ratio, memory (optional) |
+| `get_log_history` | Retained logs of runs Kubernetes no longer serves (older runs, deleted pods) |
+| `get_configuration_history` | Recorded ConfigMap / Secret (fingerprint only) / workload definition changes, with exact or bounded times |
+| `get_evidence_coverage` | When the recorder was running; gaps are stated in the report |
+
+**Evidence history.** Kubernetes keeps only a container's current and previous run, forgets a deleted pod
+at once, and expires events after about an hour. While `watch` (or `record`) runs, a recorder keeps all of
+these in `state/history.db` for 24 hours. The adapter serves the retained evidence marked as `retained`.
+The report lists what the history covered and what it did not.
 
 Records use a neutral vocabulary: a *component* has *instances* that run *processes*. Every call is
 traced, including which provider served it, and cached for the investigation.
@@ -184,13 +197,14 @@ Other commands:
 
 ```powershell
 python -m investigator status                   # live health line every 5 s
-python -m investigator investigate --since 10m  # on-demand investigation of the current state
+python -m investigator record                   # only record evidence history (watch also records)
+python -m investigator investigate --since 10m  # on-demand investigation, using retained history
 python -m investigator replay reports\INC-....evidence.json   # re-diagnose saved evidence offline
 python -m investigator post reports\INC-....json              # post a saved report to Slack
 minikube stop -p incident-demo                  # stop the cluster when done
 ```
 
-## Explicitly out of scope (Iteration 3)
+## Explicitly out of scope (Iterations 3–4)
 
 The following are later milestones in `docs/ROADMAP.md`:
 - an LLM-assisted planner;

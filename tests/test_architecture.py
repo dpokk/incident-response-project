@@ -11,7 +11,9 @@ PKG = Path(__file__).resolve().parent.parent / "investigator"
 ENGINE_MODULES = ["collect.py", "dependencies.py", "diagnosis.py", "metrics.py", "logparse.py", "evidence.py",
                   "report.py", "planner.py", "context.py", "detector.py", "pipeline.py", "__main__.py"]
 # providers.py is the composition root: the one place allowed to choose concrete adapters.
-FORBIDDEN = ("kubernetes", "kube", "prom", "capabilities.kubernetes", "capabilities.prometheus", "requests")
+# The evidence history store and recorder are reached only through capabilities (Iteration 4).
+FORBIDDEN = ("kubernetes", "kube", "prom", "capabilities.kubernetes", "capabilities.prometheus", "requests",
+             "history_store", "capabilities.kubernetes_recorder", "kubernetes_recorder", "sqlite3")
 
 
 def _imports(path: Path) -> set[str]:
@@ -61,6 +63,15 @@ def test_reasoning_uses_neutral_vocabulary():
         if found:
             offenders[name] = found
     assert not offenders, f"provider-specific vocabulary in reasoning code: {offenders}"
+
+
+def test_history_store_is_provider_neutral():
+    """The store holds evidence for any provider: it must not depend on Kubernetes or its vocabulary."""
+    path = PKG / "history_store.py"
+    bad = {i for i in _imports(path) for f in ("kubernetes", "kube", "prom", "capabilities") if i == f or i.startswith(f + ".")
+           or i.endswith("." + f)}
+    words = {w for s in _code_strings(path) for w in PROVIDER_WORDS + ("Pod", "ConfigMap", "namespace") if w in s}
+    assert not bad and not words, (bad, words)
 
 
 def test_adapters_implement_the_whole_interface():

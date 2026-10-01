@@ -49,11 +49,12 @@ def collect(caps: Capabilities, incident: dict, start: float, end: float, entry:
     store.step("events", "events for the components in the window; infrastructure events")
     record_events(store, caps, tr)
 
-    log("  [4/8] application logs (current and previous process instances)")
-    store.step("logs", "current logs since window start; previous-instance logs for restarted processes")
+    log("  [4/8] application logs (current, previous and retained process runs)")
+    store.step("logs", "current logs since window start; previous-instance logs for restarted processes; "
+                       "retained logs of runs the live system no longer has")
     for c in components:
         if states[c]:
-            record_logs(store, caps, states[c], tr)
+            record_logs(store, caps, states[c], tr, include_retained=True)
 
     log("  [5/8] services and endpoints")
     store.step("services", "services in scope and their ready endpoints")
@@ -64,9 +65,12 @@ def collect(caps: Capabilities, incident: dict, start: float, end: float, entry:
     for c in components:
         record_dependencies(store, caps, c, start)
 
-    log("  [7/8] change history (rollouts)")
-    store.step("changes", "deployment history shortly before/during the incident")
+    log("  [7/8] change history (rollouts, recorded configuration and definition changes)")
+    store.step("changes", "deployment and configuration history shortly before/during the incident")
     record_changes(store, caps, tr)
+    for c in components:
+        record_configuration_history(store, caps, c, tr)
+    record_coverage(store, caps, tr)
 
     if entry:
         record_entry_probe(store, caps, entry)
@@ -126,20 +130,39 @@ def record_resource_state(store: EvidenceStore, caps: Capabilities, rs: Resource
         seen_terms.add(key)
         proc = next((p for i in rs.instances if i.name == h.instance for p in i.processes if p.name == h.process), None)
         default_words = next(iter(words.values()), ("instance", "process"))
-        _termination(store, subj, h.instance, h.process, proc.memory_limit_bytes if proc else None, h.termination,
-                     h.restarts, h.source, words.get(h.instance, default_words), gone=h.instance_gone)
+        _termination(store, subj, h.instance, h.process, proc.memory_limit_bytes if proc else h.memory_limit_bytes,
+                     h.termination, h.restarts, h.source, words.get(h.instance, default_words),
+                     gone=h.instance_gone, logs_retained=h.logs_retained, generation=h.generation,
+                     origin="retained" if h.source.endswith(".history") else "live")
+    for p in rs.past_instances:   # instances that existed in the window but are gone now
+        iw = p.kind.lower()
+        store.add(f"{src}.history", subj, "past_instance",
+                  f"{p.kind} {p.name} of {rs.component} no longer exists"
+                  + (f" (gone since {hms(p.gone_at)})" if p.gone_at else " (its disappearance was not observed)")
+                  + (f"; logs of {p.retained_runs} of its run(s) were retained" if p.retained_runs
+                     else f"; no logs of this {iw} were retained"),
+                  t=p.gone_at, t_basis="observed" if p.gone_at else "unknown", origin="retained",
+                  instance=p.name, created=p.created, gone_at=p.gone_at, retained_runs=p.retained_runs)
 
 
-def _termination(store, subj, instance, process, mem, t: Termination, restarts, source, words, gone=False):
+def _termination(store, subj, instance, process, mem, t: Termination, restarts, source, words, gone=False,
+                 logs_retained=False, generation=None, origin="live"):
     ran = (t.finished_at - t.started_at) if t.finished_at and t.started_at else None
     instance_word, process_word = words
+    run = f" (run #{generation + 1})" if generation is not None else ""
+    if gone and logs_retained:
+        note = f"; that {instance_word} no longer exists, but the logs of this run were retained"
+    elif gone:
+        note = f"; that {instance_word} no longer exists, so its logs are unavailable"
+    else:
+        note = ""
     store.add(source, subj, "process_terminated",
-              f"{process_word.capitalize()} {process} in {instance_word} {instance} terminated: reason={t.reason}, "
+              f"{process_word.capitalize()} {process} in {instance_word} {instance}{run} terminated: reason={t.reason}, "
               f"exit code {t.exit_code}" + (f", after running {ran:.0f}s" if ran is not None else "")
-              + (f" (memory limit {mib(mem)})" if mem else "")
-              + (f"; that {instance_word} no longer exists, so its logs are unavailable" if gone else ""),
-              t=t.finished_at, instance=instance, process=process, reason=t.reason, cause=t.cause,
-              exit_code=t.exit_code, ran_s=ran, memory_limit=mem, restarts=restarts, instance_gone=gone)
+              + (f" (memory limit {mib(mem)})" if mem else "") + note,
+              t=t.finished_at, origin=origin, instance=instance, process=process, reason=t.reason, cause=t.cause,
+              exit_code=t.exit_code, ran_s=ran, memory_limit=mem, restarts=restarts, instance_gone=gone,
+              logs_retained=logs_retained, generation=generation)
 
 
 def record_events(store: EvidenceStore, caps: Capabilities, tr: TimeRange) -> None:
@@ -151,7 +174,8 @@ def record_events(store: EvidenceStore, caps: Capabilities, tr: TimeRange) -> No
                logparse.normalize(e.message.split(":")[0] if e.category == "health_check_failed" else e.message))
         g = groups.setdefault(key, {"component": e.component, "kind": e.object_kind, "reason": e.reason,
                                     "category": e.category, "type": e.type, "message": e.message[:300], "count": 0,
-                                    "first": e.first, "last": e.last, "objects": set()})
+                                    "first": e.first, "last": e.last, "objects": set(), "origins": set()})
+        g["origins"].add(getattr(e, "origin", "live"))
         g["count"] += e.count
         g["first"] = min(filter(None, [g["first"], e.first]), default=None)
         g["last"] = max(filter(None, [g["last"], e.last]), default=None)
@@ -169,7 +193,7 @@ def record_events(store: EvidenceStore, caps: Capabilities, tr: TimeRange) -> No
                   f"{g['type']} event {g['reason']} on {g['kind']} {', '.join(sorted(g['objects']))[:120]} "
                   f"(x{g['count']}, {when}): {g['message'][:200]}",
                   t=g["last"] if before else g["first"], t_basis="before_window" if before else "exact",
-                  reason=g["reason"], category=g["category"], type=g["type"], count=g["count"], object_kind=g["kind"],
+                  origin=_origin(g["origins"]), reason=g["reason"], category=g["category"], type=g["type"], count=g["count"], object_kind=g["kind"],
                   message=g["message"], first_seen=g["first"], observed_at=g["last"] if before else g["first"],
                   last=g["last"])
     for e in caps.get_events(tr, infrastructure=True) or []:
@@ -180,65 +204,92 @@ def record_events(store: EvidenceStore, caps: Capabilities, tr: TimeRange) -> No
 
 
 def record_logs(store: EvidenceStore, caps: Capabilities, rs: ResourceState, tr: TimeRange,
-                include_previous: bool | None = None) -> None:
+                include_previous: bool | None = None, include_retained: bool = False) -> None:
     """Logs of every instance/process. include_previous: None = for processes that restarted (default),
-    True/False = the caller (the planner) has decided."""
+    True/False = the caller (the planner) has decided. include_retained: also read the retained logs of runs
+    the live system no longer has (earlier runs, instances that are gone)."""
     start, end = tr.start, tr.end
     subj = f"component/{rs.component}"
+    # Every run whose logs are available: (label, instance, instance word, process word, process, lines, origin, ended)
+    runs = []
+    for inst in rs.instances:
+        for p in inst.processes:
+            runs.append(("current", inst.name, inst.kind.lower(), inst.process_kind, p.name,
+                         caps.get_logs(rs.component, inst.name, p.name, tr) or [], "live", False))
+            if p.restarts > 0 and include_previous is not False:
+                runs.append(("previous", inst.name, inst.kind.lower(), inst.process_kind, p.name,
+                             caps.get_logs(rs.component, inst.name, p.name, tr, previous=True) or [], "live", True))
+    if include_retained:
+        words = (rs.instances[0].kind.lower(), rs.instances[0].process_kind) if rs.instances else ("instance", "process")
+        for h in caps.get_log_history(rs.component, tr) or []:
+            runs.append((f"run #{h.generation + 1}", h.instance, words[0], words[1], h.process, h.lines, "retained",
+                         h.termination is not None or h.instance_gone))
+            if h.dropped:
+                store.add(f"{caps.resources.name}.history", subj, "evidence_gap",
+                          f"{h.dropped} log line(s) of {h.process} run #{h.generation + 1} in {words[0]} {h.instance} were "
+                          f"not retained (recording rate limit); what they said is unknown",
+                          origin="retained", instance=h.instance, process=h.process, generation=h.generation,
+                          dropped=h.dropped, gap="log_lines_dropped")
     sigs: dict[tuple, dict] = {}
     levels = defaultdict(int)
     errors: dict[str, dict] = {}
-    for inst in rs.instances:
-        for p in inst.processes:
-            generations = [("current", caps.get_logs(rs.component, inst.name, p.name, tr) or [])]
-            if p.restarts > 0 and include_previous is not False:
-                generations.append(("previous", caps.get_logs(rs.component, inst.name, p.name, tr, previous=True) or []))
-            for generation, lines in generations:
-                recs = [r for r in logparse.parse_records(lines) if r["_t"] is None or start - 5 <= r["_t"] <= end + 5]
-                a = logparse.analyze(recs)
-                for lvl, n in a["levels"].items():
-                    levels[lvl] += n
-                for s in a["signatures"]:
-                    k = (s["signature"], s["target_host"], s["target_port"])
-                    g = sigs.setdefault(k, {**s, "count": 0, "instances": set(), "generations": set()})
-                    g["count"] += s["count"]
-                    g["first"] = min(filter(None, [g["first"], s["first"]]), default=None)
-                    g["last"] = max(filter(None, [g["last"], s["last"]]), default=None)
-                    g["instances"].add(inst.name)
-                    g["generations"].add(generation)
-                for e in a["error_groups"]:
-                    g = errors.setdefault(logparse.normalize(e["message"]), {**e, "count": 0})
-                    g["count"] += e["count"]
-                for tb in a["tracebacks"]:
-                    site = tb["crash_site"] or {}
-                    store.add("logs", subj, "log_exception",
-                              f"{generation.capitalize()} {inst.process_kind} instance of {p.name} in "
-                              f"{inst.kind.lower()} {inst.name} logged an unhandled {tb['type']}: {tb['message'][:160]}"
-                              + (f" at {site.get('file')}:{site.get('line')} in {site.get('func')}()" if site else ""),
-                              t=tb["t"], instance=inst.name, process=p.name, generation=generation,
-                              exc_type=tb["type"], message=tb["message"], crash_site=site, frames=tb["frames"],
-                              dependency_signature=logparse.classify(tb["type"] + ": " + tb["message"]))
-                if generation == "previous" and a["tail"]:
-                    store.add("logs", subj, "log_tail_before_exit",
-                              f"Last log lines of the previous {p.name} instance in {inst.kind.lower()} {inst.name}: "
-                              + " | ".join(t[:120] for t in a["tail"][-3:]),
-                              t=a["last"], instance=inst.name, process=p.name, tail=a["tail"])
+    origins = set()
+    for label, inst_name, inst_word, proc_word, proc, lines, origin, ended in runs:
+        recs = [r for r in logparse.parse_records(lines) if r["_t"] is None or start - 5 <= r["_t"] <= end + 5]
+        if recs:
+            origins.add(origin)
+        a = logparse.analyze(recs)
+        for lvl, n in a["levels"].items():
+            levels[lvl] += n
+        for s in a["signatures"]:
+            k = (s["signature"], s["target_host"], s["target_port"])
+            g = sigs.setdefault(k, {**s, "count": 0, "instances": set(), "generations": set(), "origins": set()})
+            g["count"] += s["count"]
+            g["first"] = min(filter(None, [g["first"], s["first"]]), default=None)
+            g["last"] = max(filter(None, [g["last"], s["last"]]), default=None)
+            g["instances"].add(inst_name)
+            g["generations"].add(label)
+            g["origins"].add(origin)
+        for e in a["error_groups"]:
+            g = errors.setdefault(logparse.normalize(e["message"]), {**e, "count": 0})
+            g["count"] += e["count"]
+        run_name = (f"{label.capitalize()} {proc_word} instance of {proc}" if origin == "live"
+                    else f"{proc_word.capitalize()} {proc} {label} (retained)")
+        for tb in a["tracebacks"]:
+            site = tb["crash_site"] or {}
+            store.add("logs", subj, "log_exception",
+                      f"{run_name} in {inst_word} {inst_name} logged an unhandled {tb['type']}: {tb['message'][:160]}"
+                      + (f" at {site.get('file')}:{site.get('line')} in {site.get('func')}()" if site else ""),
+                      t=tb["t"], origin=origin, instance=inst_name, process=proc, generation=label,
+                      exc_type=tb["type"], message=tb["message"], crash_site=site, frames=tb["frames"],
+                      dependency_signature=logparse.classify(tb["type"] + ": " + tb["message"]))
+        if ended and a["tail"]:
+            which = f"the previous {proc} instance" if origin == "live" else f"{proc} {label} (retained)"
+            store.add("logs", subj, "log_tail_before_exit",
+                      f"Last log lines of {which} in {inst_word} {inst_name}: " + " | ".join(t[:120] for t in a["tail"][-3:]),
+                      t=a["last"], origin=origin, instance=inst_name, process=proc, generation=label, tail=a["tail"])
     for s in sorted(sigs.values(), key=lambda s: -s["count"]):
         target = f" referencing {s['target_host']}" + (f":{s['target_port']}" if s["target_port"] else "") if s["target_host"] else ""
         store.add("logs", subj, "log_signature",
                   f"{rs.component} logged {s['count']} {s['signature'].replace('_', ' ')} message(s){target} "
-                  f"({hms(s['first'])}-{hms(s['last'])}), e.g. \"{s['sample'][:180]}\"",
-                  t=s["first"], signature=s["signature"], target_host=s["target_host"], target_port=s["target_port"],
-                  count=s["count"], instances=sorted(s["instances"]), generations=sorted(s["generations"]), last=s["last"],
-                  sample=s["sample"])
+                  f"({hms(s['first'])}-{hms(s['last'])}), e.g. \"{s['sample'][:180]}\""
+                  + (" [includes retained logs]" if "retained" in s["origins"] else ""),
+                  t=s["first"], origin=_origin(s["origins"]), signature=s["signature"], target_host=s["target_host"],
+                  target_port=s["target_port"], count=s["count"], instances=sorted(s["instances"]),
+                  generations=sorted(s["generations"]), last=s["last"], sample=s["sample"])
     if levels.get("error") or levels.get("critical") or levels.get("warning"):
         top = sorted(errors.values(), key=lambda e: -e["count"])[:4]
         store.add("logs", subj, "log_levels",
                   f"{rs.component} logged {levels.get('error', 0) + levels.get('critical', 0)} error and "
                   f"{levels.get('warning', 0)} warning lines in the window"
                   + (f"; most frequent errors: " + "; ".join(f"\"{e['message'][:80]}\" x{e['count']}" for e in top) if top else ""),
+                  origin=_origin(origins), t_basis="unknown",
                   errors=levels.get("error", 0) + levels.get("critical", 0), warnings=levels.get("warning", 0),
                   top_errors=[{"message": e["message"], "count": e["count"]} for e in top])
+
+
+def _origin(origins: set) -> str:
+    return "mixed" if len(origins) > 1 else next(iter(origins), "live")
 
 
 def record_services(store: EvidenceStore, caps: Capabilities) -> None:
@@ -261,6 +312,59 @@ def record_changes(store: EvidenceStore, caps: Capabilities, tr: TimeRange) -> N
         store.add(f"{caps.resources.name}.deployment_history", f"component/{c.component}", "change",
                   f"{c.component_kind} {c.component} rolled out revision {c.revision} ({c.detail})",
                   t=c.at, component=c.component, change=c.kind, revision=c.revision)
+
+
+def record_configuration_history(store: EvidenceStore, caps: Capabilities, component: str, tr: TimeRange) -> None:
+    """Recorded changes to what a component runs with. Only the time the source states is used as the change
+    time; otherwise the change is bounded by the recorder's observations before and after it."""
+    for c in caps.get_configuration_history(component, TimeRange(tr.start - CHANGE_LOOKBACK_S, tr.end)) or []:
+        what = (f"{c.item} changed (value hidden)" if c.sensitive
+                else f"{c.item} changed from {_val(c.before)} to {_val(c.after)}")
+        if c.t is not None:
+            when, kw = f"at {hms(c.t)}", {"t": c.t, "t_basis": "exact"}
+        elif c.t_earliest is not None:
+            when, kw = (f"between {hms(c.t_earliest)} and {hms(c.t_latest)}",
+                        {"t": c.t_latest, "t_basis": "bounded", "t_earliest": c.t_earliest, "t_latest": c.t_latest})
+        else:
+            when, kw = (f"before {hms(c.t_latest)} (not observed earlier)",
+                        {"t": c.t_latest, "t_basis": "observed", "t_latest": c.t_latest})
+        store.add(f"{caps.resources.name}.history", f"component/{component}", "configuration_change",
+                  f"{c.source}: {what}, {when}", origin="retained", component=component, source_object=c.source,
+                  item=c.item, before=None if c.sensitive else c.before, after=None if c.sensitive else c.after,
+                  sensitive=c.sensitive, **kw)
+
+
+def _val(v) -> str:
+    return "(unset)" if v is None else f"'{str(v)[:80]}'"
+
+
+def record_coverage(store: EvidenceStore, caps: Capabilities, tr: TimeRange) -> None:
+    """What evidence history exists for the window, and where it is missing. Missing history is stated as a
+    fact so reports carry the limitation instead of silently reasoning from less."""
+    spans = sorted(caps.get_evidence_coverage(tr) or [], key=lambda c: c.start)
+    src = f"{caps.resources.name}.history"
+    if not spans:
+        store.add(src, "system", "evidence_gap",
+                  f"No retained evidence history covers {hms(tr.start)}-{hms(tr.end)}: only current state, the current "
+                  f"and previous run's logs, and events the platform still keeps could be examined",
+                  t_basis="unknown", gap="no_history", window_start=tr.start, window_end=tr.end)
+        return
+    cursor = tr.start
+    for c in spans:
+        store.add(src, "system", "evidence_coverage",
+                  f"Evidence history recorded {hms(max(c.start, tr.start))}-{hms(min(c.end, tr.end))} ({c.detail})",
+                  t_basis="unknown", origin="retained", coverage_source=c.source, start=c.start, end=c.end)
+        if c.start > cursor + 10:
+            store.add(src, "system", "evidence_gap",
+                      f"No evidence history for {hms(cursor)}-{hms(c.start)} (nothing was being recorded)",
+                      t=c.start, t_basis="bounded", t_earliest=cursor, t_latest=c.start, gap="not_recorded",
+                      start=cursor, end=c.start)
+        cursor = max(cursor, c.end)
+    if cursor < tr.end - 30:
+        store.add(src, "system", "evidence_gap",
+                  f"No evidence history for {hms(cursor)}-{hms(tr.end)} (recording stopped or fell behind)",
+                  t=tr.end, t_basis="bounded", t_earliest=cursor, t_latest=tr.end, gap="not_recorded",
+                  start=cursor, end=tr.end)
 
 
 def record_entry_probe(store: EvidenceStore, caps: Capabilities, entry: tuple) -> None:

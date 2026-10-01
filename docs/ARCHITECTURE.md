@@ -187,7 +187,20 @@ The system should not fabricate exact timestamps.
 If timestamps are uncertain, represent uncertainty rather than inventing precision.
 
 **As implemented:**
-- **Time basis on every fact.** Each fact carries `t_basis`, which is `exact` or `before_window`.
+- **Three times per fact, kept apart.**
+  - `t`: event time. How to read it is given by `t_basis`, see below.
+  - `collected_at`: when the investigation collected the fact.
+  - `observed_at`: when the source saw it; recorded where the source provides it.
+- **`origin`.** One of `live`, `retained` or `mixed`; says whether the evidence came from the system now
+  or from evidence history.
+- **Time basis on every fact.** `t_basis` takes one of five values:
+  - `exact`: the source stated the time.
+  - `bounded`: known only to lie between `t_earliest` and `t_latest`, e.g. a change seen between two
+    recorder observations.
+  - `observed`: only when it was seen.
+  - `before_window`.
+  - `unknown`.
+- **Report wording.** Reports print bounded times as "by HH:MM:SS" and observed ones as "seen HH:MM:SS".
 - **Pre-window events.** An aggregated event whose first occurrence predates the investigation window
   keeps the source's own `first_seen` and is placed at `observed_at`, its last observation. Reports list
   it as "before window" and never re-date it to the window start.
@@ -431,7 +444,7 @@ Do not add yet:
 
 These belong to later milestones in `ROADMAP.md`.
 
-## 18. Actual Implementation Map (as of Iteration 3)
+## 18. Actual Implementation Map (as of Iteration 4, branch 1: evidence retention)
 
 The architecture above as it exists in the repository (there is no `src/`; the investigator is the
 `investigator/` package):
@@ -443,15 +456,39 @@ Planner              investigator/planner.py             decides what to examine
 Capability layer     investigator/capabilities/          interface (base.py), traced facade (__init__.py)
   adapters           capabilities/kubernetes.py          Kubernetes (the only resource provider so far)
                      capabilities/prometheus.py          metrics (optional)
+  evidence history   capabilities/kubernetes_recorder.py records what Kubernetes forgets (provider side)
+                     investigator/history_store.py       provider-neutral SQLite store (state/history.db)
 Composition root     investigator/providers.py           the one place that chooses adapters
 Evidence             collect.py, dependencies.py, metrics.py, logparse.py -> evidence.py (facts)
 Diagnosis            investigator/diagnosis.py            neutral causes/categories -> findings -> root cause
 Report               investigator/report.py, slack.py    text / markdown / json / Slack
 ```
 
-`tests/test_architecture.py` enforces two boundaries:
-- **§2 boundary.** It fails if a provider-independent module imports provider code.
+`tests/test_architecture.py` enforces three boundaries:
+- **§2 boundary.** It fails if a provider-independent module imports provider code. This includes the
+  history store and the recorder: the engine reaches retained evidence only through capabilities.
 - **Vocabulary.** It fails if reasoning code uses Kubernetes vocabulary.
+- **Neutral store.** The history store must not depend on Kubernetes or its vocabulary.
+
+**Evidence history** (Iteration 4).
+
+How it is recorded and stored:
+- The recorder runs inside `watch`, or alone as `record`.
+- It watches pods and polls logs, events, ConfigMaps, Secret fingerprints and workload definitions.
+- The store keeps per-run logs, lifecycle, events, object versions and recording sessions.
+- Retention is 24 h by default. Log lines over a per-minute cap are dropped, and the drop is counted.
+
+How the adapter serves it:
+- Earlier runs and deleted instances: `get_resource_state`, `get_log_history`.
+- Expired events: `get_events`.
+- Recorded configuration and definition changes: `get_configuration_history`.
+- Recording sessions: `get_evidence_coverage`. Coverage gaps become `evidence_gap` facts and are listed in
+  the report.
+
+Known limits:
+- Nothing is retained while the recorder is not running.
+- Lines a pod writes in its last ~5 s before it is deleted are lost.
+- Prometheus keeps its own data on an `emptyDir`, so metrics are lost if its pod is recreated.
 
 Kubernetes is the only resource provider. Provider agnosticism is not claimed until a second provider
 exercises the same interface (Iteration 8).

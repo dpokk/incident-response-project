@@ -184,14 +184,14 @@ class Kube:
             text = resp.data.decode("utf-8", errors="replace")
         except ApiException:
             return []
-        out = []
-        for line in text.splitlines():
-            stamp, _, rest = line.partition(" ")
-            try:
-                out.append((ts(stamp[:26] + "Z" if len(stamp) > 27 else stamp), rest))
-            except ValueError:
-                out.append((None, line))
-        return out
+        return [_log_line(line) for line in text.splitlines()]
+
+    def watch_pods(self, ns: str, timeout_s: int = 60):
+        """Pod changes as (event type, pod summary) until the watch times out (callers reconnect). Uses its own
+        connection pool: a long-lived watch must not hold a connection other threads need."""
+        core = client.CoreV1Api(client.ApiClient())
+        for ev in watch.Watch().stream(core.list_namespaced_pod, ns, timeout_seconds=timeout_s):
+            yield ev["type"], pod_summary(ev["object"])
 
     # -- probes (read-only) ---------------------------------------------------------
     def service_proxy_get(self, ns: str, service: str, port: str, path: str, timeout: float = 10) -> tuple[int, str]:
@@ -232,6 +232,15 @@ class Kube:
                 return ast.literal_eval(line)
         except Exception as exc:  # noqa: BLE001
             return {"error": f"{type(exc).__name__}: {exc}"[:300]}
+
+
+def _log_line(line: str) -> tuple[float | None, str]:
+    """Split a `timestamps=True` log line into (runtime timestamp, text)."""
+    stamp, _, rest = line.partition(" ")
+    try:
+        return ts(stamp[:26] + "Z" if len(stamp) > 27 else stamp), rest
+    except ValueError:
+        return None, line
 
 
 def _probe(p) -> dict | None:
