@@ -15,9 +15,10 @@ These documents are the source of truth for project direction. Before making sub
 
 ## Current Project State
 
-Iterations 1, 2, 3 and 4 have been completed. Iteration 5 (remediation planning: a typed, evidence-backed plan,
-no execution) is in progress. Next are Iteration 6 (Slack incident experience + human review) and Iteration 7
-(approved remediation execution + verification). See `docs/ROADMAP.md`.
+Iterations 1 to 5 have been completed; Iteration 5 is remediation planning (a typed, evidence-backed plan, no
+execution). The next milestone is Iteration 6 (Slack incident experience + human review, consuming the
+`RemediationPlan` contract), then Iteration 7 (approved remediation execution + verification). Iteration 6 has
+not been started. See `docs/ROADMAP.md`.
 
 ### Iteration 1
 The original prototype detected a Kubernetes `OOMKilled` incident using a Python-based investigator.
@@ -109,7 +110,7 @@ crash, and a recovered PostgreSQL outage. See `docs/validation/iter-04-oom-postm
 
 Known limitations and backlog are listed in `docs/ROADMAP.md` (Iteration 4 status).
 
-### Iteration 5 (in progress) — remediation planning
+### Iteration 5 — completed (remediation planning)
 
 `investigator/remediation.py` turns a finished investigation into a `RemediationPlan`
 (`investigator/remediation_model.py`, the contract that Slack, a UI or an API consume in Iteration 6).

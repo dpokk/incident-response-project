@@ -1,4 +1,4 @@
-# Incident Investigation Prototype: Iterations 1–4 complete; Iteration 5 (remediation planning) in progress
+# Incident Investigation Prototype: Iterations 1–5 complete (investigation, history, remediation planning)
 
 An evidence-driven incident investigator, proven first on a local Kubernetes application. Failures are
 injected into the running system. The investigator is **not told what failed**. It decides which
@@ -32,8 +32,10 @@ archived in `archive/iteration1/`.
   - **Validated live** after the failure was gone: OOM, crash, and a PostgreSQL outage that had recovered
     (`docs/validation/iter-04-oom-postmortem.md`).
 
-- **Iteration 5 (remediation planning) is in progress.** A deterministic planner produces a structured,
+- **Iteration 5 (remediation planning) is complete.** A deterministic planner produces a structured,
   evidence-backed `RemediationPlan` for human review. Nothing is executed.
+
+  Next: Iteration 6, Slack incident experience + human review (not started).
 - **Kubernetes is the only resource provider implemented so far.** Provider agnosticism is not claimed
   until a second provider exercises the same interface (Iteration 8 in `docs/ROADMAP.md`).
 

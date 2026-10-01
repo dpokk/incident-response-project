@@ -9,8 +9,8 @@
 | Stabilization after Iteration 2 | Complete |
 | Iteration 3 — Capability-based investigation | Complete |
 | Iteration 4 — Historical evidence & incident reconstruction | Complete |
-| Iteration 5 — Remediation planning | **In progress** |
-| Iteration 6 — Slack incident experience + human review | Planned |
+| Iteration 5 — Remediation planning | Complete |
+| Iteration 6 — Slack incident experience + human review | **Next — not started** |
 | Iteration 7 — Approved remediation execution + verification | Planned |
 | Iteration 8 — Second provider | Planned |
 | Iterations 9–11 — SaaS control plane, customer connector, external pilot | Planned |
@@ -19,7 +19,9 @@ The project is currently at:
 
 > Capability-based, evidence-driven incident investigation and reporting, proven on Kubernetes. The investigator
 > can reconstruct workload failures (OOM, crash) and a recovered dependency outage after the failure is no
-> longer visible in live state (Iteration 4 complete). In progress: Iteration 5, remediation planning.
+> longer visible in live state (Iteration 4). For each incident it proposes a structured, evidence-backed
+> remediation plan for human review, and never executes it (Iteration 5 complete). Next: Iteration 6, Slack
+> incident experience + human review.
 
 The project is NOT currently a production SaaS platform and does NOT currently execute remediation.
 
@@ -389,7 +391,7 @@ Recorded as limitations and backlog, not Iteration 4 work:
    - missing evidence.
 10. No remediation or production-changing behaviour is introduced.
 
-## Iteration 5 — Remediation Planning — IN PROGRESS
+## Iteration 5 — Remediation Planning — COMPLETED
 
 Defined on 2026-10-01.
 
@@ -443,9 +445,14 @@ The four existing incident classes:
 
 Plus insufficient evidence and unsupported categories.
 
-### Status (2026-10-01): implemented; pending review
+### Status — COMPLETED (2026-10-01)
 
-Done on branch `feature/iter-05-remediation-planning`. This is not marked complete until it has been reviewed.
+Merged into `main` from `docs/iter-05-roadmap-definition` and `feature/iter-05-remediation-planning`. All 24
+completion criteria were verified:
+- 128/128 tests pass;
+- the diagnoses of all baseline scenarios and of every saved live incident are unchanged;
+- a live pipeline run left all cluster objects unchanged;
+- plan generated YES, human approval implemented NO, remediation executed NO.
 
 What exists:
 - `investigator/remediation_model.py`: the `RemediationPlan` contract.
