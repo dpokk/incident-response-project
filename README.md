@@ -21,9 +21,11 @@ archived in `archive/iteration1/`.
   - step 3: detection on capabilities;
   - step 4: provider-neutral fact vocabulary.
 - **Iteration 4 (historical evidence and incident reconstruction) is in progress.** Done so far:
-  evidence retention. A recorder keeps what Kubernetes forgets, so a crash can be diagnosed after the
-  crashed pods are gone. Timeline reconstruction, metrics correlation and impact assessment are next
-  (`docs/ROADMAP.md`).
+  - **Evidence retention.** A recorder keeps what Kubernetes forgets, so a crash can be diagnosed after the
+    crashed pods are gone.
+  - **Timeline reconstruction.** Phases, ordering and uncertainty, inferred from the facts.
+
+  Metrics correlation and impact assessment are next (`docs/ROADMAP.md`).
 - **Kubernetes is the only resource provider implemented so far.** Provider agnosticism is not claimed
   until a second provider exercises the same interface (Iteration 8 in `docs/ROADMAP.md`).
 
@@ -163,7 +165,9 @@ marked as *impacted*. There is no scenario flag anywhere. `tests/test_scenarios.
 - likely root cause
 - confidence
 - alternatives considered, with why they were rejected
-- timeline
+- reconstructed timeline (inferred): phases from onset to recovery, what changed first, when symptoms began,
+  the earliest recorded failure, what preceded it, ordering (never cause) and stated uncertainty
+- observed timeline entries, and evidence coverage and limitations
 - investigation trace
 
 It's saved as `.txt`, `.md`, `.json` and `.evidence.json`, and optionally posted to Slack.

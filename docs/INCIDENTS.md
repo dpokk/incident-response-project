@@ -142,9 +142,16 @@ What exists today:
 - When Prometheus is available, it reports the traffic increase (e.g. "~100 → ~870 req/s, 8.7x") as a
   **contributing factor**.
 - Iteration 1 (archived) reconstructed the full T1–T8 timeline from metrics.
+- Iteration 4 reconstructs the incident from facts: onset → development → failure → recovery, with ordering
+  and uncertainty. Recovery time is taken from instance readiness, and only when the evidence supports it.
+  With retained history, the memory warning of the run that took the spike becomes the onset.
 
-What is not implemented in the current investigator: metric threshold-crossing timeline entries (CPU/memory
-saturation times, error-rate return to baseline) and the recovery time. Treat those parts as planned.
+What is not implemented yet: metric threshold-crossing entries (CPU/memory saturation times, error-rate
+return to baseline). These are planned on `feature/iter-04-metrics-correlation`.
+
+Known metrics limit: in the live runs of 2026-09-30, Prometheus never sampled backend memory above 45% of the
+limit. Only 13–42 samples per pod were recorded in 15 minutes, because cAdvisor scrapes go sparse under load.
+Memory metrics alone cannot show this incident's memory climb.
 
 ### Intended Chain
 

@@ -201,6 +201,28 @@ If timestamps are uncertain, represent uncertainty rather than inventing precisi
   - `before_window`.
   - `unknown`.
 - **Report wording.** Reports print bounded times as "by HH:MM:SS" and observed ones as "seen HH:MM:SS".
+- **Reconstruction** (`investigator/timeline.py`, Iteration 4) builds three layers:
+  - **Observed entries.** Facts with a role (change, precursor, symptom, failure, context) and a time
+    interval taken from their time basis.
+  - **Inferred phases.** Baseline → onset → development → failure → recovery → after, each citing its
+    facts.
+  - **Inferred ordering.** "A preceded B" only when the intervals do not overlap. Ordering is never cause.
+- **The questions it answers:**
+  - **What changed first:** the first change in the lead-up, otherwise the latest earlier change with its
+    age.
+  - When symptoms began.
+  - The earliest *recorded* failure.
+  - What happened just before it.
+  - What happened after recovery.
+- **Rules that keep it honest:**
+  - Recovery is claimed only when every instance of the failing components is ready, became ready after
+    the last failure (by the source's own timestamps), and has stopped logging errors.
+  - Restarts that outnumber recorded terminations, and back-off seen before the first recorded failure, are
+    stated as unrecorded earlier failures.
+  - An observation aggregated since before the window is never used as the onset, because its first
+    sighting may belong to an earlier episode.
+- **Limit.** "First change" means first in order, not relevant. Relevance is the diagnosis' job, so an
+  unrelated change inside the window (e.g. another operation) is listed but not blamed.
 - **Pre-window events.** An aggregated event whose first occurrence predates the investigation window
   keeps the source's own `first_seen` and is placed at `observed_at`, its last observation. Reports list
   it as "before window" and never re-date it to the window start.
@@ -461,6 +483,7 @@ Capability layer     investigator/capabilities/          interface (base.py), tr
 Composition root     investigator/providers.py           the one place that chooses adapters
 Evidence             collect.py, dependencies.py, metrics.py, logparse.py -> evidence.py (facts)
 Diagnosis            investigator/diagnosis.py            neutral causes/categories -> findings -> root cause
+Timeline             investigator/timeline.py            phases, ordering, answers, uncertainty (inferred)
 Report               investigator/report.py, slack.py    text / markdown / json / Slack
 ```
 
