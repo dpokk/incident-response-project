@@ -15,8 +15,8 @@ These documents are the source of truth for project direction. Before making sub
 
 ## Current Project State
 
-Iterations 1, 2 and 3 have been completed. Iteration 4 (historical evidence and incident reconstruction) is
-in progress; see `docs/ROADMAP.md` for its scope, decisions and branches.
+Iterations 1, 2, 3 and 4 have been completed. The next milestone is Iteration 5 (remediation planning: a typed,
+evidence-backed plan, no execution). It has not been started. See `docs/ROADMAP.md`.
 
 ### Iteration 1
 The original prototype detected a Kubernetes `OOMKilled` incident using a Python-based investigator.
@@ -85,9 +85,32 @@ Done:
 Architecture tests keep provider code and vocabulary out of the reasoning modules. Kubernetes is the only
 resource provider, so provider agnosticism is not claimed.
 
+### Iteration 4 — completed (historical evidence and incident reconstruction)
+
+Done:
+- **Evidence history.** A client-side recorder (`capabilities/kubernetes_recorder.py`, run by `watch` or
+  `record`) writes to a local SQLite store (`history_store.py`, `state/history.db`, 24 h). It keeps:
+  - logs of every run;
+  - terminations;
+  - deleted pods;
+  - events;
+  - configuration and definition versions;
+  - availability (ready endpoints and replicas).
+
+  The engine reaches all of it only through capabilities.
+- **Timeline reconstruction** (`timeline.py`): phases, ordering (never cause), uncertainty. Times are
+  moments `{earliest, latest, basis}` and never shown more precisely than known.
+- **Metrics** as time-bounded evidence. Traffic → OOM is linked only by order, component and call path.
+- **Impact assessment** (`impact.py`), separate from the root cause. No invented quantities.
+
+Validated live, after the failure was no longer visible: OOM (pods replaced, and crash-looping), application
+crash, and a recovered PostgreSQL outage. See `docs/validation/iter-04-oom-postmortem.md`.
+
+Known limitations and backlog are listed in `docs/ROADMAP.md` (Iteration 4 status).
+
 ### Important Current Boundary
 
-The investigator deliberately stops at diagnosis (unchanged in Iteration 3).
+The investigator deliberately stops at diagnosis (unchanged in Iterations 3 and 4).
 
 There is currently:
 - No automated remediation

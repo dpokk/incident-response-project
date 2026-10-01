@@ -1,4 +1,4 @@
-# Incident Investigation Prototype: Iteration 4 in progress (historical evidence)
+# Incident Investigation Prototype: Iterations 1–4 complete (historical evidence and reconstruction)
 
 An evidence-driven incident investigator, proven first on a local Kubernetes application. Failures are
 injected into the running system. The investigator is **not told what failed**. It decides which
@@ -20,17 +20,19 @@ archived in `archive/iteration1/`.
   - step 2: incident context + planner;
   - step 3: detection on capabilities;
   - step 4: provider-neutral fact vocabulary.
-- **Iteration 4 (historical evidence and incident reconstruction) is in progress.** Done so far:
-  - **Evidence retention.** A recorder keeps what Kubernetes forgets, so a crash can be diagnosed after the
-    crashed pods are gone.
-  - **Timeline reconstruction.** Phases, ordering and uncertainty, inferred from the facts.
+- **Iteration 4 (historical evidence and incident reconstruction) is complete.**
+  - **Evidence retention.** A recorder keeps what Kubernetes forgets: earlier runs' logs, deleted pods,
+    expired events, configuration, and the availability of services.
+  - **Timeline reconstruction.** Phases, ordering and uncertainty, inferred from the facts. Uncertain times
+    are shown as ranges.
   - **Metrics correlation.** Threshold crossings with bounded times; traffic is linked to an OOM only by
     order, component and call path.
-
   - **Impact assessment.** Affected and gone instances, dependency state, impacted callers, users (failed
     requests estimated only when metrics allow), duration, propagation and blast radius.
+  - **Validated live** after the failure was gone: OOM, crash, and a PostgreSQL outage that had recovered
+    (`docs/validation/iter-04-oom-postmortem.md`).
 
-  Next: the live OOM post-mortem validation (`docs/ROADMAP.md`).
+  Next: Iteration 5, remediation planning (not started).
 - **Kubernetes is the only resource provider implemented so far.** Provider agnosticism is not claimed
   until a second provider exercises the same interface (Iteration 8 in `docs/ROADMAP.md`).
 
