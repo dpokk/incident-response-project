@@ -15,8 +15,8 @@ These documents are the source of truth for project direction. Before making sub
 
 ## Current Project State
 
-Iterations 1, 2 and 3 have been completed. The next milestone is Iteration 4 (richer observability + Slack
-workflow).
+Iterations 1, 2 and 3 have been completed. Iteration 4 (historical evidence and incident reconstruction) is
+in progress; see `docs/ROADMAP.md` for its scope, decisions and branches.
 
 ### Iteration 1
 The original prototype detected a Kubernetes `OOMKilled` incident using a Python-based investigator.
@@ -110,7 +110,7 @@ The intended progression is:
 Current deterministic investigator
 → capability abstraction
 → adaptive/AI-assisted investigation
-→ richer observability and Slack workflow
+→ historical evidence and incident reconstruction
 → remediation planning
 → human-approved remediation
 → verification
