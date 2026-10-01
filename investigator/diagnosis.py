@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 from .evidence import EvidenceStore, Fact
 from .logparse import DEPENDENCY_SIGNATURES
-from .timeline import fact_order
+from .timeline import fact_order, fmt_moment
 
 CATEGORY_LABELS = {
     "memory_exhaustion": "Memory exhaustion (killed at its memory limit)",
@@ -272,7 +272,19 @@ def check_crash(v: View, store: EvidenceStore, dep_health: dict) -> Finding:
     if runtimes:
         f.say(f"Each instance ran only {min(runtimes):.0f}-{max(runtimes):.0f}s before exiting", errored[:2])
     healthy_deps = [d for d in dep_health.get(v.name, []) if d["healthy"]]
-    if dep_health.get(v.name) and len(healthy_deps) == len(dep_health[v.name]):
+    # "Reachable now" says nothing about the time of the crash if recorded history shows the dependency was down
+    # then, or came back just before: such a crash may be linked to the outage or its recovery.
+    crash_t = [t.t for t in errored if t.t is not None]
+    near = [(d, o) for d in dep_health.get(v.name, []) for o in d.get("outages", [])
+            if crash_t and (o.data.get("start_earliest") is None or o.data["start_earliest"] <= max(crash_t))
+            and (o.data.get("ongoing") or (o.data.get("end_latest") or 0) >= min(crash_t) - 120)]
+    if near:
+        d, o = near[0]
+        f.say(f"Recorded history shows {d['endpoint']} was unavailable "
+              + ("at the time of the exit" if o.data.get("ongoing") or (o.data.get("end_latest") or 0) >= max(crash_t)
+                 else f"until {fmt_moment(_bound(o, 'end'))}, shortly before the exit")
+              + ": the exit may be linked to that outage or to its recovery", [o])
+    elif dep_health.get(v.name) and len(healthy_deps) == len(dep_health[v.name]):
         f.add(0.1, [d["fact"] for d in healthy_deps], "its dependencies are reachable, so the crash is not a dependency outage")
         f.say(f"{v.name}'s configured dependencies are reachable ({', '.join(d['endpoint'] for d in healthy_deps)}), so "
               f"the crash is not caused by a dependency being down", [d["fact"] for d in healthy_deps])
@@ -380,9 +392,23 @@ def check_dependencies(v: View, store: EvidenceStore) -> list[Finding]:
         elif lookup:
             una.score *= 0.3
             una.reject(f"'{host}' does not exist at all, so this is not an outage of an existing dependency", lookup)
+        # Recorded history: was the dependency unavailable while the errors happened (and has recovered since)?
+        outage = next((o for o in store.find(kind="availability_outage", subject=subj)
+                       if _overlaps_errors(o, dep_logs + dep_exc)), None)
+        steady = next(iter(store.find(kind="availability_steady", subject=subj)), None)
+        if outage:
+            una.add(0.3, outage, "recorded history: nothing was ready to serve it while the errors happened")
+            una.say(f"{outage.text}; {v.name}'s connection errors fall inside that period", [outage] + dep_logs[:1])
+            if outage.data.get("scaled_to_zero"):
+                una.add(0.15, outage, "the component behind it had been scaled to zero")
+        elif steady:
+            una.reject(f"recorded history shows it stayed available ({steady.text})", steady)
+            una.score *= 0.5
         if eps and eps.data["ready"] == 0:
             una.add(0.3, eps, "the Service has no ready endpoints")
             una.say(f"Nothing is serving that Service: {eps.text}", [eps])
+        elif eps and outage:
+            una.say(f"It has recovered since: {eps.text}", [eps])     # healthy now, unavailable then
         elif eps:
             una.reject(f"the Service has {eps.data['ready']} ready endpoint(s)", eps)
             una.score *= 0.5
@@ -400,11 +426,19 @@ def check_dependencies(v: View, store: EvidenceStore) -> list[Finding]:
             una.add(0.15, probe, "the name resolves but connections are refused/time out")
             una.say(f"From inside the application instance '{host}' resolves, but the TCP connection is "
                     f"{probe.data['tcp']}", [probe])
+        elif probe and probe.data["tcp"] == "ok" and outage:
+            una.say(f"A TCP connection to {host}:{port} succeeds now (it has recovered)", [probe])
         elif probe and probe.data["tcp"] == "ok":
             una.reject(f"a TCP connection to {host}:{port} succeeds from the application instance", probe)
             una.score *= 0.5
-        why = ("it has been scaled to zero replicas" if down and down[0].data["desired"] == 0 else
-               "its component has no ready replicas" if down else "the service has no ready endpoints")
+        if outage and not down and not (eps and eps.data["ready"] == 0):
+            when = (f"from {fmt_moment(_bound(outage, 'start'))} until "
+                    + (fmt_moment(_bound(outage, 'end')) if not outage.data["ongoing"] else "the end of the recording"))
+            why = (f"it was unavailable {when}" + ("; it had been scaled to zero" if outage.data.get("scaled_to_zero")
+                                                   else "") + " (it has recovered since)")
+        else:
+            why = ("it has been scaled to zero replicas" if down and down[0].data["desired"] == 0 else
+                   "its component has no ready replicas" if down else "the service has no ready endpoints")
         una.root_cause = (f"{v.name}'s configuration is valid ({ref.data['variable']} -> {host}:{port}), but its "
                           f"{dep['type']} dependency is unavailable: {why}")
         una.backing = mis.backing = [b.data["component"] for b in backing]
@@ -412,6 +446,24 @@ def check_dependencies(v: View, store: EvidenceStore) -> list[Finding]:
             f.score = min(f.score, 1.0)
         out += [mis, una]
     return out
+
+
+def _bound(outage: Fact, which: str) -> dict:
+    lo, hi = outage.data.get(f"{which}_earliest"), outage.data.get(f"{which}_latest")
+    return {"earliest": lo, "latest": hi, "basis": "exact" if lo is not None and lo == hi else "bounded"}
+
+
+def _overlaps_errors(outage: Fact, errors: list[Fact]) -> bool:
+    """Did any of the consumer's dependency errors happen while the recorded outage may have been in effect?"""
+    lo = outage.data.get("start_earliest")
+    hi = None if outage.data.get("ongoing") else outage.data.get("end_latest")
+    for e in errors:
+        first, last = e.t, e.data.get("last") or e.t
+        if first is None:
+            continue
+        if (hi is None or first <= hi) and (lo is None or last >= lo):
+            return True
+    return False
 
 
 def _matches(sig: Fact, host: str, port, address: str | None = None) -> bool:
@@ -498,7 +550,8 @@ def diagnose(store: EvidenceStore) -> dict:
             eps = next(iter(store.find(kind="service_endpoints", subject=subj)), None)
             healthy = bool(probe and probe.data["tcp"] == "ok") or bool(not probe and eps and eps.data["ready"] > 0)
             dep_health.setdefault(v.name, []).append({"endpoint": f"{ref.data['host']}:{ref.data['port']}",
-                                                      "healthy": healthy, "fact": probe or eps})
+                                                      "healthy": healthy, "fact": probe or eps,
+                                                      "outages": store.find(kind="availability_outage", subject=subj)})
 
     findings: list[Finding] = []
     for v in views.values():

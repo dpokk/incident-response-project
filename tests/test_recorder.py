@@ -137,6 +137,22 @@ def test_events_configuration_and_definitions_are_versioned_and_secrets_never_st
     assert b"s3cret" not in raw and b"rotated" not in raw
 
 
+def test_availability_is_recorded_only_when_it_changes(tmp_path):
+    from investigator.capabilities.kubernetes_recorder import ENDPOINTS_KIND, STATUS_KIND
+    rec, kube, store, clock = make_recorder(tmp_path)              # first poll at NOW - 600: postgres 1 ready
+    clock.t = NOW - 595
+    rec.poll_once()                                                # unchanged: no new version
+    kube.w["endpoints"]["postgres"] = 0
+    kube.w["workloads"][2].update(replicas_desired=0, replicas_ready=0)
+    clock.t = NOW - 590
+    rec.poll_once()
+    eps = store.versions("shop", ENDPOINTS_KIND, "postgres", NOW - 900, NOW)
+    assert [v["content"]["ready"] for v in eps] == [1, 0]
+    assert (eps[1]["previous_checked_at"], eps[1]["observed_at"]) == (NOW - 595, NOW - 590)   # bounded change
+    assert [v["content"] for v in store.versions("shop", STATUS_KIND, "postgres", NOW - 900, NOW)] == \
+        [{"desired": 1, "ready": 1}, {"desired": 0, "ready": 0}]
+
+
 def test_recording_sessions_define_coverage(tmp_path):
     rec, kube, store, clock = make_recorder(tmp_path)
     clock.t = NOW - 100

@@ -168,6 +168,21 @@ class ConfigChange:
 
 
 @dataclass
+class AvailabilityChange:
+    """A recorded availability state of what serves a dependency, from the moment it was first seen.
+
+    The state took effect after `t_earliest` (the last observation of the previous state; None = before the
+    recorded range began) and no later than `t_latest`."""
+    name: str
+    kind: str                          # "service" (ready endpoints) | "component" (ready replicas)
+    ready: int
+    total: int | None                  # endpoints in total, or desired replicas
+    t_earliest: float | None
+    t_latest: float
+    observed_at: float
+
+
+@dataclass
 class Coverage:
     """A span of time for which a source retained evidence. Outside these spans nothing was recorded."""
     source: str                        # e.g. "kubernetes.history"
@@ -334,6 +349,11 @@ class ResourceProvider(ABC):
 
     def get_configuration_history(self, component: str, time_range: TimeRange) -> list[ConfigChange]:
         """Recorded changes to the component's configuration and definition."""
+        return []
+
+    def get_availability_history(self, host: str, port: int | None, time_range: TimeRange) -> list[AvailabilityChange]:
+        """Recorded availability of what serves a configured endpoint (and of the components behind it), as
+        changes over the range, preceded by the state in force when the range began."""
         return []
 
     def get_evidence_coverage(self, time_range: TimeRange) -> list[Coverage]:

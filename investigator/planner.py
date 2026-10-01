@@ -134,6 +134,13 @@ class InvestigationPlanner:
                        if errors else f"{ref.host}:{ref.port} looks unhealthy")
                 self.decide("test connectivity", f"{c} -> {ref.host}:{ref.port}", why)
                 probe_dependency(caps, store, c, ref)
+            if errors and not unhealthy:
+                # The errors say the dependency failed, but it looks healthy now: it may have failed and recovered.
+                # Only recorded history can tell.
+                self.decide("read availability history of", f"{ref.host}:{ref.port}",
+                            f"{c} logged errors about it, but it looks healthy now: was it unavailable while the "
+                            f"errors happened?")
+                rec.record_availability_history(store, caps, c, ref.host, ref.port, tr)
             for b in summary["backing"]:
                 if errors:
                     self.enqueue(b, f"{c}'s errors point at {ref.host}, served by {b}")

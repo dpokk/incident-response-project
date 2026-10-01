@@ -17,7 +17,8 @@ class Capabilities:
                              "get_dependencies", "list_services", "get_service_health", "check_connectivity",
                              "probe_request", "get_deployment_history",
                              # evidence history (Iteration 4)
-                             "get_log_history", "get_configuration_history", "get_evidence_coverage")
+                             "get_log_history", "get_configuration_history", "get_evidence_coverage",
+                             "get_availability_history")
 
     def __init__(self, resources: ResourceProvider, store: EvidenceStore, metrics: MetricsProvider | None = None):
         self.resources, self.metrics, self.store = resources, metrics, store

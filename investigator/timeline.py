@@ -56,8 +56,10 @@ def role(f: Fact) -> str | None:
         return "precursor"
     if k in ("metric_error_ratio", "detection_signal"):
         return "symptom"
-    if k == "metric_error_ratio_recovered":
+    if k in ("metric_error_ratio_recovered", "availability_restored"):
         return "recovery"
+    if k == "availability_outage":
+        return "failure"           # of the component that serves the dependency (data["component"])
     if k in ("log_tail_before_exit", "past_instance"):
         return "context"
     return None
@@ -82,6 +84,8 @@ def component_of(f: Fact) -> str | None:
     kind, _, name = f.subject.partition("/")
     if kind in ("component", "service"):
         return name
+    if f.kind in ("availability_outage", "availability_restored"):
+        return f.data.get("component")                  # the dependency's own component, not its consumer
     return f.data.get("consumer") or f.data.get("component")
 
 
@@ -221,7 +225,8 @@ def reconstruct(store: EvidenceStore, dx: dict, window: tuple) -> dict:
     later_changes = [c for c in changes if last_failure is not None and precedes(last_failure, c) is True]
     first_impact = first(lambda e: e["component"] in impacted and e["role"] in ("symptom", "failure"))
 
-    recovery = _recovery(store, focus, last_failure, end)
+    own = {c: [e for e in failures if e["component"] == c] for c in focus}
+    recovery = _recovery(store, focus, last_failure, end, _point(first_failure), own)
     uncertain: list[str] = _unrecorded_failures(store, focus, entries, first_failure)
     phases = _phases(entries, onset, first_failure, last_failure, recovery, prior_changes, store, focus,
                      (start, end), uncertain, separate)
@@ -292,14 +297,17 @@ def _point(e: dict | None) -> float | None:
     return None if e is None else (e["interval"][0] if e["interval"][0] is not None else e["interval"][1])
 
 
-def _recovery(store: EvidenceStore, focus: set, last_failure: dict | None, end: float) -> dict | None:
+def _recovery(store: EvidenceStore, focus: set, last_failure: dict | None, end: float,
+              first_failure_t: float | None = None, own_failures: dict | None = None) -> dict | None:
     """Recovery is claimed only when, for every failing component, all instances are ready, each became ready
-    after the last failure (the source's own `ready_since`), and its errors have stopped. Otherwise the report
-    says it had not recovered, or that when it recovered is unknown."""
+    after the last failure (the source's own `ready_since`), and its errors have stopped. A component whose
+    instances stayed ready throughout (ready since before the failure began, e.g. the consumer of a dependency
+    that went down) had no readiness to recover: only its errors must have stopped. Otherwise the report says it
+    had not recovered, or that when it recovered is unknown."""
     if last_failure is None or last_failure["interval"][1] is None:
         return None
     after_t = last_failure["interval"][1]
-    times, facts, unknown = [], [], []
+    times, facts, unknown, steady = [], [], [], []
     for comp in sorted(focus):
         status = next(iter(store.find(kind="component_status", subject=f"component/{comp}")), None)
         insts = store.find(kind="instance_status", subject=f"component/{comp}")
@@ -324,20 +332,36 @@ def _recovery(store: EvidenceStore, focus: set, last_failure: dict | None, end: 
             return {"t": None, "facts": facts, "recovered": None,
                     "statement": f"{comp} became ready again only after the investigated window ended: recovery "
                                  f"within the window was not observed"}
-        if any(s is None or s <= after_t for s in since):
+        # Each component recovers from its *own* failures (a dependency can be back before its consumer's last
+        # failure). Instances ready since before the failures began stayed ready and need no recovery time.
+        mine = (own_failures or {}).get(comp) or []
+        comp_last = max((e["interval"][1] for e in mine if e["interval"][1] is not None), default=after_t)
+        comp_first = min((_point(e) for e in mine if _point(e) is not None), default=first_failure_t)
+        recovered_since = [s for s in since if s is not None and comp_first is not None and s > comp_first]
+        if first_failure_t is not None and len(focus) > 1 and not recovered_since \
+                and all(s is not None and s <= first_failure_t for s in since):
+            steady.append(comp)            # ready all along; its errors have stopped (checked above)
+        elif recovered_since and all(s is not None and (s > comp_last or (comp_first is not None and s <= comp_first))
+                                     for s in since):
+            times.append(max(recovered_since))   # the instances that went down are ready again after its failures
+        elif any(s is None or s <= comp_last for s in since):
             unknown.append(comp)
         else:
             times.append(max(since))
     if not facts:
         return None
+    if steady and not times and not unknown:
+        unknown = steady                   # nothing else to date the recovery by
     if unknown:
         return {"t": None, "facts": facts, "recovered": None,
                 "statement": f"{', '.join(unknown)} ready now, but when it became ready again after the failure is "
                              f"not known from the evidence"}
     t = max(times)
+    stayed = f"; {', '.join(steady)} stayed ready throughout and its errors stopped" if steady else ""
+    recovered = sorted(c for c in focus if c not in steady)
     return {"t": t, "facts": facts, "recovered": True,
-            "statement": f"All instances of {', '.join(sorted(focus))} were ready again by {hms(t)}, and no errors "
-                         f"were logged after that"}
+            "statement": f"All instances of {', '.join(recovered)} were ready again by {hms(t)}, and no errors "
+                         f"were logged after that{stayed}"}
 
 
 def _unrecorded_failures(store: EvidenceStore, focus: set, entries: list, first_failure: dict | None) -> list[str]:
@@ -426,7 +450,9 @@ def _relation(a, b, label_a, label_b) -> dict | None:
         # The gap is certain only when both ends are exact; otherwise only its minimum is known.
         gap = b["interval"][0] - a["interval"][1]
         both_exact = a["interval"][0] == a["interval"][1] and b["interval"][0] == b["interval"][1]
-        stmt = f"{label_a} ({a['id']}) preceded {label_b} ({b['id']}) by {'' if both_exact else 'at least '}{gap:.0f}s"
+        by = ("less than a second" if gap < 1 and both_exact else "an unknown amount (it began first)" if gap < 1
+              else f"{'' if both_exact else 'at least '}{gap:.0f}s")
+        stmt = f"{label_a} ({a['id']}) preceded {label_b} ({b['id']}) by {by}"
     elif order is False:
         stmt = f"{label_b} ({b['id']}) came before {label_a} ({a['id']})"
     else:

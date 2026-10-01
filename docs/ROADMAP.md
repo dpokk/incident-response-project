@@ -307,19 +307,34 @@ Kubernetes-specific code stays in the adapter layer.
 
 ### Progress (2026-10-01)
 
-All five branches are implemented. The first four are merged into `main`; the validation branch is pending
-review. The iteration is not marked complete until it has been reviewed.
+All five planned branches are merged into `main`. The completion audit found two gaps, and a finalization pass
+addresses them; it is pending approval:
+- `fix/iter-04-uncertain-timestamps` — bounded times were shown as exact.
+- `feature/iter-04-historical-dependency-state` — a recovered dependency outage could not be reconstructed.
 
-Live validation (`docs/validation/iter-04-oom-postmortem.md`): the OOM was investigated after both
-OOM-killed pods had been replaced.
-- Without evidence history: **Undetermined (0%)**.
-- With evidence history: **memory exhaustion (85%)**, with impact, timeline and recovery.
+Live validation (`docs/validation/iter-04-oom-postmortem.md`), each investigated after the original failure
+was no longer visible in live state:
 
-Known limits at this point:
-- Memory metrics are too sparse to show the memory climb.
-- The traffic → memory → kill link was not established on live data; the ordering stayed undetermined.
-- Overlapping incidents are only partly separated (they need a quiet gap).
-- Nothing is retained while the recorder is not running.
+| Incident | Without history | With history |
+|---|---|---|
+| OOM, pods replaced | Undetermined (0%) | Memory exhaustion (85%) |
+| OOM, crash-looping pods (the Iteration 3 problem) | Memory exhaustion (70%) | Memory exhaustion (85%); the memory warning comes from the retained 587 s run |
+| PostgreSQL down, then recovered before investigation | **Application crash (75%) — wrong** | **Dependency unavailable; root cause postgres, affected backend, impacted frontend** (57%: a real backend crash during the recovery is the runner-up) |
+
+Recorded as limitations and backlog, not Iteration 4 work:
+- Confidence scores are heuristic and not calibrated.
+- There is no automated live regression.
+- Metrics sampling is sparse, and live traffic → memory → OOM causality remains unproven.
+- Readiness transitions are recorded but not consumed.
+- Some capabilities remain Kubernetes-shaped.
+- Interpretation is growing inside `report.build()`.
+- The recorder is client-side and must be running.
+- Thresholds have been tuned against the demo application.
+- Overlapping incidents need better separation.
+- Connectivity is not retained historically: availability comes from endpoint and replica counts.
+- The demo backend can crash with an unhandled `_queue.Empty` after a `UniqueViolation` when PostgreSQL comes
+  back. This was the "unexplained exit" since Iteration 3. It is a demo application bug, and it is reported by
+  the investigator as a separate finding.
 
 ### Planned branches
 

@@ -102,6 +102,24 @@ PostgreSQL unavailability should be identified as the likely root cause, with ba
 - **Failure category:** dependency unavailable.
 - **Also impacted:** `frontend` (the caller of backend).
 
+### Recovered-outage variant (Iteration 4)
+
+The scenario:
+1. `scripts/inject/db-down.ps1`.
+2. Then `kubectl -n shop scale deploy/postgres --replicas=1`.
+3. Investigate after PostgreSQL is healthy again.
+
+Expected: with evidence history, the recorder's availability history (ready endpoints and replicas, bounded
+between two polls) shows the outage. The diagnosis is dependency unavailable: root cause postgres, affected
+backend, impacted frontend, recovered since. Without history, the live state shows nothing wrong with
+PostgreSQL.
+
+Validated live on 2026-10-01 (`docs/validation/iter-04-oom-postmortem.md`):
+- Without history, the investigation concluded "application crash" (wrong).
+- With history, it reached the right root cause.
+
+The offline regression is `tests/test_dependency_history.py`.
+
 ### Important Contrast
 
 This scenario must remain distinguishable from Incident 2.

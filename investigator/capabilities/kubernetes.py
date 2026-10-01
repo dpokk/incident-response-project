@@ -13,7 +13,8 @@ import json
 from pathlib import Path
 
 from ..kube import read_journal
-from .base import (BackingComponent, Change, ConfigChange, ConfigEntry, ConnectivityResult, Coverage, DependencyRef,
+from .base import (AvailabilityChange, BackingComponent, Change, ConfigChange, ConfigEntry, ConnectivityResult, Coverage,
+                   DependencyRef,
                    EventRecord, InstanceState, LogHistory, PastInstance, ProcessState, RequestResult, ResourceProvider,
                    ResourceState, ServiceHealth, SimilarService, Termination, TerminationRecord, TimeRange)
 from .references import PORT_TYPES, extract_references
@@ -366,6 +367,30 @@ class KubernetesAdapter(ResourceProvider):
                         sensitive=sensitive, t=new["modified_at"] if exact else None,
                         t_earliest=None if exact else new["previous_checked_at"], t_latest=None if exact else new["observed_at"],
                         observed_at=new["observed_at"]))
+        return out
+
+    def get_availability_history(self, host: str, port: int | None, time_range: TimeRange) -> list[AvailabilityChange]:
+        """Recorded ready endpoints of the Service a host names, and ready replicas of the workloads behind it."""
+        if self.history is None:
+            return []
+        from .kubernetes_recorder import ENDPOINTS_KIND, STATUS_KIND
+        name, ns, internal = _split_host(host, self.ns)
+        if not internal or ns != self.ns:
+            return []                               # the recorder covers its own namespace only
+        svc = next((s for s in self._once("all_services", lambda: self.kube.services(None))
+                    if s["name"] == name and s["namespace"] == ns), None)
+        backing = [w["name"] for w in self._workloads() if svc and svc["selector"] and w["selector"]
+                   and all(w["selector"].get(k) == v for k, v in svc["selector"].items())]
+        out = []
+        for kind, obj in [(ENDPOINTS_KIND, name)] + [(STATUS_KIND, b) for b in backing]:
+            for v in self.history.versions(self.ns, kind, obj, time_range.start, time_range.end):
+                c = v["content"]
+                if kind == ENDPOINTS_KIND:
+                    out.append(AvailabilityChange(obj, "service", c["ready"], c["ready"] + c["not_ready"],
+                                                  v["previous_checked_at"], v["observed_at"], v["observed_at"]))
+                else:
+                    out.append(AvailabilityChange(obj, "component", c["ready"], c["desired"],
+                                                  v["previous_checked_at"], v["observed_at"], v["observed_at"]))
         return out
 
     def get_evidence_coverage(self, time_range: TimeRange) -> list[Coverage]:

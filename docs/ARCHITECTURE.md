@@ -535,6 +535,14 @@ How it is recorded and stored:
 - The store keeps per-run logs, lifecycle, events, object versions and recording sessions.
 - Retention is 24 h by default. Log lines over a per-minute cap are dropped, and the drop is counted.
 
+Availability is also recorded, for dependency outages that recover before the investigation:
+- Ready endpoints per Service and ready replicas per workload are stored only when they change, with bounds
+  between two polls.
+- They are served through `get_availability_history(host, port, range)`.
+- They become `availability_outage` / `availability_restored` / `availability_steady` facts.
+- The planner reads them when a consumer logged errors about a dependency that looks healthy now.
+- Connectivity is not recorded historically.
+
 How the adapter serves it:
 - Earlier runs and deleted instances: `get_resource_state`, `get_log_history`.
 - Expired events: `get_events`.
