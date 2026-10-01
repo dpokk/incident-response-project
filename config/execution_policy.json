@@ -1,0 +1,17 @@
+{
+  "_comment": "Iteration 7 execution policy for the local demo environment. Configurable, not hard-coded safety rules. Action types use the RemediationPlan vocabulary (AdjustResourceLimit = adjust_resource_limit, ...). allowed_executors: \"approvers\" (= SLACK_APPROVERS) or a list of Slack user IDs.",
+  "allowed_action_types": ["adjust_resource_limit", "scale_workload", "restore_configuration"],
+  "allowed_namespaces": ["shop"],
+  "max_memory_limit": "1Gi",
+  "max_replicas": 3,
+  "max_plan_age_seconds": 900,
+  "allowed_executors": "approvers",
+  "verification": {
+    "_settle": "Settled = the changed component ready on settle_stable_samples consecutive samples (poll interval apart), at most settle_max_seconds. 120 s from the Demo A calibration: under near-capacity load recovery took ~80 s (docs/validation/iter-07-demo-a-calibration.md).",
+    "settle_max_seconds": 120,
+    "settle_stable_samples": 3,
+    "window_seconds": 120,
+    "window_min_seconds": 60,
+    "window_max_seconds": 300
+  }
+}

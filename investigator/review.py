@@ -159,7 +159,11 @@ class ReviewService:
             return None
         r = row[0]
         return {"plan": json.loads(r["plan_json"]), "digest": digest, "collected_at": r["collected_at"],
-                "superseded_by": r["superseded_by"]}
+                "registered_at": r["registered_at"], "superseded_by": r["superseded_by"]}
+
+    def effective_decision(self, incident_id: str, digest: str, index: int) -> dict | None:
+        """The decision that stands for one action of one plan (None = no effective decision yet)."""
+        return self._effective(incident_id, digest, index)
 
     def current_digest(self, incident_id: str) -> str | None:
         row = self._q("SELECT plan_digest FROM plans WHERE incident_id=? AND superseded_by IS NULL", (incident_id,))

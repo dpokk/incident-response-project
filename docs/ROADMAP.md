@@ -11,8 +11,8 @@
 | Iteration 4 — Historical evidence & incident reconstruction | Complete |
 | Iteration 5 — Remediation planning | Complete |
 | Iteration 6 — Slack incident experience + human review | Complete |
-| Iteration 7 — Approved remediation execution + verification | **Next — not started** |
-| Iteration 8 — Second provider | Planned |
+| Iteration 7 — Approved remediation execution + verification | Complete (Demo A not demonstrated; documented exception) |
+| Iteration 8 — Second provider | **Next — not started** |
 | Iterations 9–11 — SaaS control plane, customer connector, external pilot | Planned |
 
 The project is currently at:
@@ -22,10 +22,12 @@ The project is currently at:
 > longer visible in live state (Iteration 4). For each incident it proposes a structured, evidence-backed
 > remediation plan for human review, and never executes it (Iteration 5 complete). Iteration 6 (complete)
 > presents the incident and plan as one Slack thread where authorised engineers record per-action decisions;
-> decisions are recorded, never executed. Next: Iteration 7, approved
-> remediation execution + verification.
+> decisions are recorded. Iteration 7 (complete) executes an approved, typed action only after a separate
+> Execute, a live recheck, policy and a dry run, then verifies the result against the plan's criteria
+> (RESOLVED / NOT_RESOLVED / INCONCLUSIVE). Next: Iteration 8, a second provider.
 
-The project is NOT currently a production SaaS platform and does NOT currently execute remediation.
+The project is NOT currently a production SaaS platform and does NOT remediate autonomously: every change needs
+a human approval and a separate human Execute.
 
 ## Current Status
 
@@ -602,6 +604,112 @@ Resolved / Not resolved
 
 Rollback follows the plan's rollback section. If verification fails, the system does not keep executing
 changes; it returns to investigation or asks for human intervention.
+
+### Agreed design (2026-10-01)
+
+Approval and execution are two separate human decisions: Approve, then Execute (no third confirmation).
+
+An Execute request passes these steps, in order:
+1. Authorization: executors default to the approvers list.
+2. An effective approval exists on the exact current plan digest.
+3. Plan age is within `max_plan_age_seconds`.
+4. The policy allows the change (`config/execution_policy.json`).
+5. An atomic claim is taken, one per (incident, digest, action).
+6. A fresh live recheck runs through the capability layer.
+7. A dry run is performed and recorded.
+8. Exactly one typed, compare-and-set change is applied.
+9. Verification evaluates the plan's own criteria over a bounded window, giving RESOLVED / NOT_RESOLVED /
+   INCONCLUSIVE.
+
+Rules:
+- **Uncertain state stops everything.** An interrupted execution is marked uncertain and is never retried; acting
+  again requires a fresh investigation and plan.
+- **Live-recheck semantics.** The live value must still equal the plan's pre-change value. If it already equals
+  the target, the action is treated as already applied or not needed and is not applied again.
+- **Rollback** is offered only after NOT_RESOLVED or INCONCLUSIVE. It is a typed action and goes through the same
+  controls.
+- **Duplicate-incident suppression.** The executed action's expected rollout or restart effects must not open
+  duplicate incidents. The suppression is scoped to that incident and action, and to the execution and
+  verification period.
+- **Demo A load is calibrated by experiment** before the live demos, and the result is recorded.
+
+### Milestone log
+
+- Milestone 1 (execution architecture) is done:
+  - `execution_model.py`, `execution_policy.py` and `execution_store.py` (audit + idempotency claim in
+    `state/reviews.db`);
+  - `actuators/base.py` (three typed compare-and-set operations);
+  - `executor.py` (authorization, approval validity, typed change, plan age, policy, claim).
+- Milestone 2 (safe Kubernetes execution) is done:
+  - `recheck.py`: per-action live recheck through capabilities; expected value, else already applied (not needed), else state changed;
+  - `actuators/kubernetes.py`: the only cluster writer; strategic-merge patches with a resourceVersion precondition;
+  - the executor's dry run, then one compare-and-set write; partial or unknown results become `uncertain`.
+  Server-side dry runs of all three operations against the live cluster were accepted, and no object changed.
+- Milestone 3 (verification) is done:
+  - `verification.py` evaluates the plan's own criteria through capabilities: a settle period (originally: until the target is ready, at most 60 s; changed in Milestone 5 to 3 consecutive ready samples, at most 120 s), then a 120 s observation window sampled at the poll interval;
+  - the outcome is RESOLVED / NOT_RESOLVED / INCONCLUSIVE: missing evidence is never success, and only kills in instances started after the change count;
+  - when verification is not RESOLVED, the executor stops and registers a typed rollback plan (`remediation.plan_rollback`) under `<incident>#rollback-<execution>`. It needs its own approval and Execute, goes through the same controls (minus the relevance check), and never chains;
+  - an interrupted verification is recorded as INCONCLUSIVE.
+- Milestone 4 (Slack execution experience) is done:
+  - an Execute button appears only on approved change actions, only where an executor is available, and not on stale plans;
+  - one evolving execution message per execution shows safety checks, dry run, the applied change, verification evidence per criterion and the outcome;
+  - refusals are explained (unauthorized and duplicate clicks only to the clicker);
+  - the rollback plan is posted with its own review controls;
+  - the root shows the execution outcome, and the stale-plan display uses the policy's maximum plan age;
+  - detection drops only the expected effects of a running change (that incident's components, during execution and verification plus 60 s).
+
+### Status — COMPLETED (2026-10-01), with one documented exception (Demo A)
+
+Built in five milestones on `feature/iter-07-approved-remediation-execution`:
+1. **Execution architecture:**
+   - `execution_model.py`;
+   - `execution_policy.py` + `config/execution_policy.json`;
+   - `execution_store.py` (audit + atomic, permanent claim per action);
+   - `actuators/base.py` (three typed compare-and-set operations);
+   - `executor.py`.
+2. **Safe execution:**
+   - `recheck.py`: live recheck through capabilities;
+   - `actuators/kubernetes.py`: the only cluster writer; strategic-merge patches with a resourceVersion
+     precondition;
+   - the sequence dry run → one write; partial or unknown results become `uncertain` and are never retried.
+3. **Verification** (`verification.py`):
+   - the plan's own criteria;
+   - settled = ready on 3 consecutive samples, at most 120 s; then a 120 s observation window;
+   - RESOLVED / NOT_RESOLVED / INCONCLUSIVE;
+   - a failure stops and offers a typed rollback plan (`remediation.plan_rollback`) that needs its own approval and
+     Execute.
+4. **Slack:**
+   - the Execute button;
+   - one evolving execution message (checks, dry run, change, evidence, outcome);
+   - refusals explained;
+   - rollback plan posted for review;
+   - scoped, time-bounded suppression of the expected effects of a running change.
+5. **Live demonstrations** (`docs/validation/iter-07-live-demos.md`):
+   - B (PostgreSQL 0 → 1): RESOLVED.
+   - C (wrong DB host, restored to the recorded value):
+     - first run NOT_RESOLVED, because an unrelated backend stall during a PostgreSQL checkpoint broke the error-ratio
+       criterion inside the window (a correct verdict);
+     - re-run RESOLVED.
+   - D (overload, memory 192Mi → 256Mi): NOT_RESOLVED, with 8 new OOM kills after the change; no further change was
+     made. Its rollback (256Mi → 192Mi) was then approved and executed separately → RESOLVED.
+
+Tests: 219 pass (152 from Iterations 1–6, unchanged in behaviour, plus 67 for Iteration 7).
+
+**Exception: Demo A (OOM → higher limit → RESOLVED) was not demonstrated. Accepted by the user.**
+- **Calibration** (`docs/validation/iter-07-demo-a-calibration.md`, 11 runs):
+  - at a constant load the limit makes no difference;
+  - after an OOM cascade, *any* rollout ended it, including an insufficient 200Mi control;
+  - so a RESOLVED result would not be attributable to the larger limit.
+- **Two live attempts:** the backend recovered on its own before the evidence was collected, so the plans
+  (correctly) said "no immediate action".
+- **Coverage:** the successful, failed and rollback execution paths are covered by B, C and D.
+
+Known limitations:
+- **Duplicate incidents:** `watch` can open them for one persisting failure (existing detection behaviour).
+- **Suppression:** the expected-effect suppression was not needed in the live demos (tests only).
+- **Verification:** it reports observed state, not cause.
+- **Thread readback:** the bot cannot read threads back without `channels:history`.
+- **Webhook-only mode:** works offline in tests only.
 
 ## Iteration 8 — Provider Abstraction + Second Provider
 

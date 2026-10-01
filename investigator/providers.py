@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
+from .actuators.base import Actuator
 from .capabilities import Capabilities
 from .capabilities.base import MetricsProvider, ResourceProvider
 from .evidence import EvidenceStore
@@ -20,6 +21,8 @@ class Providers:
     clock: Callable[[], float]                       # the observed system's clock (handles VM clock skew)
     clock_offset: float = 0.0
     history: object | None = None                    # the evidence history store, if enabled
+    # The cluster writer (Iteration 7). Only the executor receives it; investigation never does.
+    new_actuator: Callable[[], Actuator] | None = None
 
     def capabilities(self, store: EvidenceStore) -> Capabilities:
         return Capabilities(self.new_resources(), store, self.metrics)
@@ -57,4 +60,8 @@ def connect(settings, log=print) -> Providers:
         return KubernetesAdapter(kube, settings.namespace, journal_path=settings.state_dir / "pod_journal.jsonl",
                                  active_probes=settings.active_probes, clock=clock, history=history,
                                  recorder_options=recorder_options)
-    return Providers(new_resources, metrics, clock, offset, history)
+
+    def new_actuator() -> Actuator:
+        from .actuators.kubernetes import KubernetesActuator
+        return KubernetesActuator(kube, settings.namespace)
+    return Providers(new_resources, metrics, clock, offset, history, new_actuator)

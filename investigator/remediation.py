@@ -17,6 +17,8 @@ How actions are chosen - generically, never by incident name:
     investigate. "No safe action" is a valid result; an action is never manufactured.
   * Values the evidence cannot supply (e.g. how much memory is enough) are left empty and flagged for a human.
 """
+import re
+
 from .evidence import EvidenceStore, Fact
 from .remediation_model import (ActionType, Assessment, Check, IncidentState, ProposedAction, RemediationPlan,
                                 Rollback, Statement, Uncertainty, Urgency, VerificationCriterion)
@@ -428,6 +430,83 @@ def plan_remediation(dx: dict, reconstruction: dict | None, impact: dict | None,
                    f"an engineer" for a in corrective if not a.parameters_complete]
             + ["The plan describes the state when the evidence was collected; re-check before acting"]),
         evidence=[{"id": fid, "text": store.by_id(fid).text} for fid in cited if store.by_id(fid)])
+
+
+def plan_rollback(plan: dict, action_index: int, applied: dict, outcome: str, reason: str,
+                  rollback_id: str) -> RemediationPlan | None:
+    """A one-action plan that puts back the value recorded immediately before an executed change (Iteration 7).
+
+    Offered only after verification did not confirm the change (NOT_RESOLVED / INCONCLUSIVE). It is a proposal like
+    any other: it must be approved and executed through the same controls. `applied` is the execution's recorded
+    result ({"before", "after"} as the provider reported them). Returns None if the previous value is unknown."""
+    a = plan["actions"][action_index]
+    before, after = applied.get("before"), applied.get("after")
+    if before in (None, "") or after in (None, ""):
+        return None
+    t = ActionType(a["type"])
+    comp = (a["target"] or {}).get("component") or (plan.get("diagnosis") or {}).get("affected_component")
+    why = [Statement(f"The executed change ({after} replaced {before}) was verified {outcome}: {reason}")]
+    if t == ActionType.ADJUST_RESOURCE_LIMIT:
+        cur, prev = _bytes(after), _bytes(before)
+        if cur is None or prev is None:
+            return None
+        action = ProposedAction(
+            type=t, target=dict(a["target"]), parameters={"resource": "memory", "current_limit_bytes": cur,
+                                                          "current_limit": _mib(cur), "proposed_limit_bytes": prev,
+                                                          "proposed_limit": _mib(prev)},
+            parameters_complete=True, urgency=Urgency.IMMEDIATE,
+            summary=f"Roll back {comp}'s memory limit from {_mib(cur)} to the previous {_mib(prev)}",
+            rationale=why, preconditions=[f"The live memory limit is still {_mib(cur)}"],
+            expected_final_state=[f"{comp}'s memory limit is {_mib(prev)} again"],
+            risks=[Statement(f"The original failure (kills at {_mib(prev)}) is expected to recur under the same load")],
+            rollback=Rollback("restore_previous_value", f"Re-apply {_mib(cur)}", {"limit_bytes": cur}),
+            verification=_verify_component(comp))
+    elif t == ActionType.SCALE_WORKLOAD:
+        cur, prev = int(after), int(before)
+        action = ProposedAction(
+            type=t, target=dict(a["target"]), parameters={"current_replicas": cur, "target_replicas": prev},
+            parameters_complete=True, urgency=Urgency.IMMEDIATE,
+            summary=f"Roll back {comp}'s replicas from {cur} to the previous {prev}",
+            rationale=why, preconditions=[f"{comp} still has {cur} desired replica(s)"],
+            expected_final_state=[f"{comp} has {prev} desired replica(s) again"],
+            risks=[Statement(f"With {prev} replica(s), the original failure is expected to recur")],
+            rollback=Rollback("restore_previous_value", f"Scale {comp} to {cur} again", {"replicas": cur}),
+            verification=_verify_component(comp) if prev > 0 else [])
+    elif t == ActionType.RESTORE_CONFIGURATION:
+        item, source = a["target"].get("config_item"), a["target"].get("source")
+        action = ProposedAction(
+            type=t, target=dict(a["target"]),
+            parameters={"current_host": after, "restore_to": None, "restore_to_host": before},
+            parameters_complete=True, urgency=Urgency.IMMEDIATE,
+            summary=f"Roll back the host in {item} ({source}) from '{after}' to the previous '{before}'",
+            rationale=why, preconditions=[f"{item} still points to '{after}'"],
+            expected_final_state=[f"{item} points to '{before}' again"],
+            risks=[Statement(f"'{before}' is the value diagnosed as faulty: the dependency is expected to be "
+                             f"unreachable again")],
+            rollback=Rollback("restore_previous_value", f"Point {item} to '{after}' again", {"host": after}),
+            verification=_verify_component((plan.get("diagnosis") or {}).get("affected_component")))
+    else:
+        return None
+    dx = plan.get("diagnosis") or {}
+    return RemediationPlan(
+        incident_id=rollback_id, diagnosis=dict(dx), incident_state=IncidentState.UNKNOWN,
+        current_state=[Statement(f"After the executed change: {reason}")],
+        assessment=Assessment.ACTION_PROPOSED,
+        assessment_reason=f"Rollback offered because verification of the executed change was {outcome}",
+        actions=[action], rationale=why,
+        uncertainty=Uncertainty(confidence=dx.get("confidence") or 0.0, confidence_label=dx.get("confidence_label")
+                                or "Low", notes=["A rollback restores the previous value; it does not fix the "
+                                                 "original failure"]),
+        evidence=[], generated_by="deterministic rollback planner (restores the value recorded before the executed "
+                                  "change; plans only, never executes)")
+
+
+_QTY = re.compile(r"\s*(\d+(?:\.\d+)?)\s*(Ki|Mi|Gi)?\s*")
+
+
+def _bytes(q) -> float | None:
+    m = _QTY.fullmatch(str(q))
+    return float(m.group(1)) * {None: 1, "Ki": 2**10, "Mi": 2**20, "Gi": 2**30}[m.group(2)] if m else None
 
 
 def _incident_state(s: Situation, corrective: list[ProposedAction]) -> IncidentState:

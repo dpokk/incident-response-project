@@ -15,11 +15,13 @@ These documents are the source of truth for project direction. Before making sub
 
 ## Current Project State
 
-Iterations 1 to 6 have been completed:
+Iterations 1 to 7 have been completed:
 - **Iteration 5:** remediation planning. It produces a typed, evidence-backed plan and executes nothing.
-- **Iteration 6:** Slack incident thread + human review. Decisions are recorded, never executed.
+- **Iteration 6:** Slack incident thread + human review. Decisions are recorded.
+- **Iteration 7:** approved remediation execution + verification. Demo A (OOM fixed by a higher limit) is a
+  documented exception.
 
-The next milestone is Iteration 7 (approved remediation execution + verification). See `docs/ROADMAP.md`.
+The next milestone is Iteration 8 (second provider). See `docs/ROADMAP.md`.
 
 ### Iteration 1
 The original prototype detected a Kubernetes `OOMKilled` incident using a Python-based investigator.
@@ -140,14 +142,39 @@ Reviews go through `review.py`, which is Slack-independent and stores to `state/
 - A newer plan supersedes the old one; duplicates and conflicts are refused; every attempt is audited.
 - Required parameters are typed by the engineer and validated, never inferred.
 
-Decisions are recorded, never executed. Validated live: `docs/validation/iter-06-slack-review.md`.
+Decisions are recorded, never executed by the review layer. Validated live: `docs/validation/iter-06-slack-review.md`.
+
+### Iteration 7 — completed (approved remediation execution + verification)
+
+Approval and execution are two separate human decisions. An Execute click in Slack becomes an
+`ExecutionRequest` for `executor.py`, the only holder of the cluster writer (`actuators/`). It then checks, in
+order:
+1. the executor is allowed (default: the approvers);
+2. an effective approval exists on the exact current plan digest;
+3. the plan age is within the policy maximum;
+4. the policy allows the change (`config/execution_policy.json`);
+5. an atomic, permanent claim is taken (never twice);
+6. the live recheck passes (`recheck.py`, capabilities only): the expected pre-change value is still there;
+   the target value means already applied;
+7. a dry run is accepted;
+8. exactly ONE typed compare-and-set change is applied;
+9. verification (`verification.py`) evaluates the plan's own criteria → RESOLVED / NOT_RESOLVED /
+   INCONCLUSIVE.
+
+A failure stops: no automatic follow-up, and an uncertain state is never retried. A typed rollback plan is
+offered for its own approval and Execute. Everything is audited in `state/reviews.db`. Live record:
+`docs/validation/iter-07-live-demos.md`; the Demo A calibration is in
+`docs/validation/iter-07-demo-a-calibration.md`.
 
 ### Important Current Boundary
 
-The investigator deliberately stops at a **recorded human decision** on a proposed plan. Nothing is executed.
+Nothing changes the system without a human approval AND a separate human Execute. Execution is limited to three
+typed actions (memory limit, replicas, one configuration value + restart) behind policy, a live recheck and a
+dry run, and the result is verified.
 
 There is currently:
-- No remediation execution and nothing that acts on an approval (Iteration 7)
+- No automatic or chained remediation, and no automatic rollback
+- No arbitrary command, kubectl, exec or YAML execution
 - No automated remediation
 - No autonomous production actions
 - No LLM/AI investigator
@@ -226,10 +253,11 @@ incident occurs
 → structured report generated
 → remediation plan proposed (structured; requires human approval; not executed)
 → report and plan posted to the incident's Slack thread
-→ human decision per action recorded (Iteration 6; not executed)
+→ human decision per action recorded (Iteration 6)
+→ separate human Execute → recheck, policy, dry run → one typed change → verification (Iteration 7)
 
-Execution (Iteration 7) is a later milestone and must not be silently introduced into the planner, the review
-model or the diagnosis implementation.
+Execution stays in `executor.py` + `actuators/`. It must not be introduced into the planner, the review model,
+Slack or the diagnosis implementation; architecture tests enforce this.
 
 ## Source of Truth Rule
 
