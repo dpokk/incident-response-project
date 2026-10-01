@@ -1,15 +1,16 @@
-# Incident Investigation Prototype: Iterations 1–6 complete (investigation, history, remediation planning, human review)
+# Incident Investigation Prototype: Iterations 1–7 complete (investigation, history, planning, human review, approved execution)
 
 An evidence-driven incident investigator, proven first on a local Kubernetes application. Failures are
 injected into the running system. The investigator is **not told what failed**. It decides which
 evidence is relevant and gathers it through provider-independent **capabilities**, then works out the
-affected component and failure category and writes a structured incident report. It does no
-remediation.
+affected component and failure category, writes a structured incident report and proposes a typed
+remediation plan. A change is made only when an engineer approves it and then separately clicks Execute;
+the result is verified against the plan's criteria.
 
 ```
 Detection -> Incident context -> Investigation planner <-> Capabilities (Kubernetes / Prometheus adapters)
           -> Diagnosis -> Incident report -> Remediation plan -> Slack thread + human review (recorded)
-                                                              [future: approved execution -> verification]
+          -> [Execute] recheck + policy + dry run -> ONE typed change -> verification -> outcome
 ```
 
 Project direction, roadmap and architecture principles live in `CLAUDE.md` and `docs/`. Iteration 1 is
@@ -38,7 +39,12 @@ archived in `archive/iteration1/`.
 
 - **Iteration 6 (Slack incident experience + human review) is complete** and validated live
   (`docs/validation/iter-06-slack-review.md`). Each incident becomes one Slack thread, and authorised engineers record a decision
-  per action (Approve / Reject / Investigate first, or Acknowledge). Decisions are recorded, never executed.
+  per action (Approve / Reject / Investigate first, or Acknowledge). Decisions are recorded.
+- **Iteration 7 (approved remediation execution + verification) is complete** (`docs/validation/iter-07-live-demos.md`):
+  - **Demonstrated live:** PostgreSQL scaled up → RESOLVED; wrong DB host restored → RESOLVED; an insufficient
+    memory limit under overload → NOT_RESOLVED, then a separately approved rollback.
+  - **Not demonstrated:** the OOM-fixed-by-a-higher-limit demo; why is explained in
+    `docs/validation/iter-07-demo-a-calibration.md`.
 - **Kubernetes is the only resource provider implemented so far.** Provider agnosticism is not claimed
   until a second provider exercises the same interface (Iteration 8 in `docs/ROADMAP.md`).
 
@@ -69,6 +75,8 @@ Investigator layout:
 | Diagnosis, report, CLI | `diagnosis.py`, `report.py`, `pipeline.py`, `__main__.py` | no |
 | Remediation plan | `remediation.py`, `remediation_model.py` | no |
 | Human review | `review.py` (decisions bound to a plan digest), `slack_view.py`, `slack.py`, `slack_app.py` | Slack-specific only in the `slack*` modules |
+| Execution | `executor.py`, `execution_policy.py`, `execution_store.py`, `execution_model.py`, `recheck.py`, `verification.py` | no |
+| Cluster writer | `actuators/base.py` (interface), `actuators/kubernetes.py` (the only code that writes) | adapter yes, by design |
 | Compatibility | `legacy.py` (reads evidence saved in the old Kubernetes vocabulary) | yes, replay only |
 
 `tests/test_architecture.py` enforces two rules:
@@ -229,7 +237,23 @@ How actions are chosen:
   supersedes the old one and its decisions. Duplicate or conflicting clicks are refused.
 - **What Slack needs.** Threads and updates need `SLACK_BOT_TOKEN` + `SLACK_CHANNEL`; the webhook alone posts
   unthreaded. Clicks arrive over Socket Mode (`SLACK_APP_TOKEN`, same Slack app, Interactivity enabled).
-- **Nothing executes.** An approval is a record; nothing in this iteration acts on it.
+- **Approval alone executes nothing.** It is a record; Execute is a separate step (below).
+
+### Approved execution + verification (Iteration 7)
+
+- **Execute.** After approval, an **Execute** button appears on a change action, but only where the listener can
+  reach the cluster, and never on a plan older than the policy's maximum age.
+- **Before the change:**
+  - authorization, approval on the exact current plan, plan age, policy (`config/execution_policy.json`);
+  - an atomic claim, so an action is never executed twice;
+  - a live recheck: the value the plan saw must still be there; the target value means already applied;
+  - a dry run.
+- **The change.** Exactly one typed change: memory limit, replicas, or one configuration value + restart. There
+  is no command, kubectl, exec or YAML anywhere.
+- **Verification.** The plan's criteria are checked after a settle period, over a 120 s window: RESOLVED /
+  NOT_RESOLVED / INCONCLUSIVE. Uncertainty is never reported as success.
+- **Failure.** Nothing further changes. A typed rollback plan is posted and needs its own approval and Execute.
+- **Audit.** Every request, refusal, check, dry run, change and verification is recorded in `state/reviews.db`.
 
 ## Running it
 
@@ -264,14 +288,14 @@ python -m investigator record                   # only record evidence history (
 python -m investigator investigate --since 10m  # on-demand investigation, using retained history
 python -m investigator replay reports\INC-....evidence.json   # re-diagnose saved evidence offline
 python -m investigator post reports\INC-....json              # post a saved report to Slack
-python -m investigator review                   # only listen for Slack review clicks (watch also listens)
+python -m investigator review                   # only the Slack listener: review + Execute (watch also listens)
 minikube stop -p incident-demo                  # stop the cluster when done
 ```
 
-## Explicitly out of scope (Iterations 3–6)
+## Explicitly out of scope (Iterations 3–7)
 
-The following are later milestones in `docs/ROADMAP.md`:
-- executing approved actions and verifying them (Iteration 7);
+The following are later milestones in `docs/ROADMAP.md`, or not planned:
+- automatic, chained or unapproved remediation, and automatic rollback;
 - an LLM-assisted planner;
 - a second provider (Iteration 8);
 - automated remediation;

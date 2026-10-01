@@ -392,8 +392,37 @@ Slack click ─→ Socket Mode ─→ slack_app.handle_interaction() ─→ revi
   - A newer plan supersedes the older one and its decisions.
   - Required values are typed by the engineer and validated; a candidate from the evidence is never used
     implicitly.
-- **Authorisation boundary (§10).** Approval is a recorded human decision, not an execution trigger. Nothing in
-  Iteration 6 reads an approval to change the system; that is Iteration 7, behind a policy check.
+- **Authorisation boundary (§10).** Approval is a recorded human decision, not an execution trigger. Only a
+  separate Execute (Iteration 7, below) acts on it.
+
+**As implemented (Iteration 7, approved execution + verification).**
+
+```text
+Execute click -> slack_app (handed the service; imports no executor) -> ExecutionService.execute()
+  authorization -> approval on the exact current digest -> typed ChangeRequest -> plan age -> policy
+  -> atomic claim (execution_store) -> live recheck (recheck.py, capabilities only) -> dry run
+  -> ONE compare-and-set write (actuators/kubernetes.py) -> verification (verification.py) -> outcome
+```
+
+- **The write side is separate from capabilities.** Capabilities stay read-only.
+  - `actuators/base.py` has exactly three typed compare-and-set operations with dry run.
+  - `actuators/kubernetes.py` is the only code that writes (fixed strategic-merge patches with a resourceVersion
+    precondition).
+  - Only `executor.py` holds an actuator; `providers.py` chooses it.
+- **The executor reads only through capabilities** (recheck and verification).
+- **Policy** (`execution_policy.py`) constrains execution independently of the planner.
+- **Claims.** One per (incident, digest, action), permanent. An interrupted execution becomes `uncertain`
+  (never retried); an interrupted verification becomes INCONCLUSIVE.
+- **Verification evaluates the plan's criteria; it invents no thresholds.**
+  - Settled = ready on N consecutive samples, then an observation window.
+  - Any failing criterion → NOT_RESOLVED; all evaluated and passing → RESOLVED; otherwise INCONCLUSIVE.
+  - It reports state, not cause.
+- **Failure stops.** A typed rollback plan (`remediation.plan_rollback`) is registered for review under
+  `<incident>#rollback-<id>`. It goes through the same controls and never chains.
+- **Detection.** It ignores only the expected effects of a running change: that incident's components, during
+  execution and verification plus a grace period.
+- **Architecture tests** prove that the planner, review and Slack cannot write, that only the actuator adapter
+  makes write calls, and that the execution modules do not import providers.
 
 ## 10. Authorization Boundary
 
@@ -578,7 +607,7 @@ Do not add yet:
 
 These belong to later milestones in `ROADMAP.md`.
 
-## 18. Actual Implementation Map (as of Iteration 6, complete)
+## 18. Actual Implementation Map (as of Iteration 7, complete)
 
 The architecture above as it exists in the repository (there is no `src/`; the investigator is the
 `investigator/` package):
@@ -604,7 +633,14 @@ Report               investigator/report.py              text / markdown / json
 Human review         investigator/review.py              decisions bound to a plan digest (state/reviews.db)
 Slack                investigator/slack_view.py          Block Kit rendering (presentation only)
                      investigator/slack.py               transport, one thread per incident
-                     investigator/slack_app.py           Socket Mode interactions -> review.decide()
+                     investigator/slack_app.py           Socket Mode: review.decide(); Execute -> the given service
+Execution            investigator/executor.py            the only holder of the cluster writer; checks -> one change
+                     investigator/execution_policy.py    environment policy (config/execution_policy.json)
+                     investigator/execution_store.py     audit + atomic claims (state/reviews.db)
+                     investigator/recheck.py             live recheck, capabilities only
+                     investigator/verification.py        the plan's criteria over a bounded window
+Cluster writer       investigator/actuators/base.py      three typed compare-and-set operations
+                     investigator/actuators/kubernetes.py the only code that writes to Kubernetes
 ```
 
 `tests/test_architecture.py` enforces these boundaries (plus the remediation and human-review boundaries of §9):
