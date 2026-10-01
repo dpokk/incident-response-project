@@ -209,7 +209,9 @@ class ReviewService:
         atype = action["type"] if action else None
 
         def refuse(reason: str, message: str) -> ReviewOutcome:
-            self._record(incident_id, digest, action_index, atype, decision, reviewer, {}, comment, False, reason)
+            # The audit keeps what was typed (unvalidated, never used); the decision stays ineffective.
+            attempted = {"raw_input": str(supplied)[:200]} if supplied and str(supplied).strip() else {}
+            self._record(incident_id, digest, action_index, atype, decision, reviewer, attempted, comment, False, reason)
             status = self.statuses(incident_id, digest).get(action_index, {}).get("status", "unknown") if rec else "unknown"
             return ReviewOutcome(False, status, message)
 

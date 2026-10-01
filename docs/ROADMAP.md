@@ -557,8 +557,10 @@ Done (branch `feature/iter-06-slack-human-review`):
 - 22 new tests (rendering, review model, interaction handler with a fake transport, architecture boundary);
   150/150 pass.
 
-Pending: the live demo (incident → Slack thread → human decision recorded → thread updated → nothing executed,
-no Kubernetes object changed). Iteration 6 is not complete until it is validated live.
+Live demo run on 2026-10-01 (`docs/validation/iter-06-slack-review.md`). The flow was: OOM incident → one Slack
+thread → a missing and an invalid value refused → `256Mi` approval and an acknowledgement recorded against the
+plan digest → thread updated → nothing executed, no Kubernetes spec changed. The reviewer's visual confirmation
+of the thread is pending before Iteration 6 is marked complete.
 
 ### Not part of Iteration 6
 

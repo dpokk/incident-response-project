@@ -194,6 +194,9 @@ def test_incomplete_parameters_must_be_supplied_and_valid(tmp_path):
         out = svc.decide("INC-TEST", d, 0, "approved", APPROVER, supplied=bad)
         assert not out.effective and out.message.startswith("Not recorded"), bad
     assert svc.statuses("INC-TEST", d)[0]["status"] == "awaiting_review"
+    refused = svc.decisions("INC-TEST")
+    assert [r["reason"] for r in refused] == ["parameter_missing"] + ["parameter_invalid"] * 5
+    assert refused[1]["supplied_parameters"] == {"raw_input": "lots"}       # audited as typed, never effective
     assert svc.decide("INC-TEST", d, 0, "approved", APPROVER, supplied=" 1Gi ").record["supplied_parameters"] == \
         {"proposed_limit": "1Gi"}
 
