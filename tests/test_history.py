@@ -192,6 +192,56 @@ def test_retained_logs_are_only_read_when_the_evidence_calls_for_it(tmp_path):
     assert not [s for s in facts.trace if s["step"] == "capability" and s["detail"] == "get_log_history"]
 
 
+def world_oom_pods_replaced():
+    """The Iteration 4 validation scenario (scripts/inject/oom-then-replace.ps1): both backend pods were
+    OOM-killed, then replaced by an operator's rollout. Live state: two healthy new pods, nothing about the OOM."""
+    w = base_world()
+    w["pods"][1] = {**_pod("backend-77777", "backend"), "created": NOW - 140, "ready_since": NOW - 130}
+    w["pods"][2] = {**_pod("backend-88888", "backend"), "created": NOW - 135, "ready_since": NOW - 125}
+    w["replicasets"].append({"name": "backend-rs2", "deployment": "backend", "created": NOW - 140, "revision": "2",
+                             "replicas": 2, "ready": 2})
+    w["logs"][("frontend-aaaaa", False)] = [(NOW - 150 + i, _j(level="error", msg="upstream request to backend failed",
+                                                               upstream="http://backend.shop.svc.cluster.local:8080",
+                                                               reason="upstream_connect_error", count=300,
+                                                               sample_error="Connection refused"))
+                                            for i in range(0, 15, 5)]
+    w["entry"] = (200, '{"status": "accepted"}')
+    return w
+
+
+def fill_oom_replaced_history(store, clock):
+    record_session(store, clock, NOW - 900, NOW)
+    for pod in ("backend-11111", "backend-22222"):
+        clock.t = NOW - 600
+        store.upsert_instance("shop", pod, "backend", "Pod", NOW - 3600)
+        store.add_log_lines("shop", "backend", pod, "backend", 0, [
+            (NOW - 170, _j(level="warning", msg="request backlog growing; workers cannot keep up", inflight=300)),
+            (NOW - 156, _j(level="warning", msg="memory usage approaching container limit", mem_limit_ratio=0.9))])
+        store.add_lifecycle("shop", "backend", pod, "backend", "terminated", NOW - 155, generation=0,
+                            reason="OOMKilled", exit_code=137, started_at=NOW - 3000, restart_count=1)
+        store.mark_gone("shop", pod, NOW - 138)
+
+
+def test_oom_after_the_pods_were_replaced_needs_retained_history(tmp_path):
+    """Success criterion 3: the OOM is investigated after the failing instances are gone. The live run of
+    2026-10-01 gave exactly this: Undetermined without history, memory exhaustion (85%) with it."""
+    without, _, _ = investigate(world_oom_pods_replaced(), signals=None)
+    assert without["category"] == "undetermined"
+    store, clock = history(tmp_path)
+    fill_oom_replaced_history(store, clock)
+    for strategy in ("planned", "exhaustive"):
+        dx, facts, report = investigate(world_oom_pods_replaced(), store, strategy)
+        assert dx["category"] == "memory_exhaustion" and dx["affected_component"] == "backend", strategy
+        assert dx["confidence"] >= 0.75                      # kills + retained memory warning + repeated kills
+        cited = [facts.by_id(i) for i in dx["evidence"]]
+        assert any(f.kind == "process_terminated" and f.origin == "retained" for f in cited)
+        assert any(f.data.get("signature") == "memory_pressure" and f.origin == "retained" for f in cited)
+        imp = report["impact"]
+        assert (imp["instances"]["affected"], imp["instances"]["gone"]) == (2, 2)
+        rec = next(p for p in report["reconstruction"]["phases"] if p["phase"] == "recovery")
+        assert rec["start"] == NOW - 125                     # both replacements ready, after the last kill
+
+
 # --------------------------------------------------------------------------- D. time and configuration history
 
 def test_configuration_changes_carry_exact_or_bounded_times_and_never_secret_values(tmp_path):

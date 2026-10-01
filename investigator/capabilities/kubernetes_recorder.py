@@ -40,6 +40,7 @@ class KubernetesRecorder:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._last_prune = 0.0
+        self._last_poll_t: float | None = None
 
     # ------------------------------------------------------------------ lifecycle
     def start(self, threads: bool = True) -> None:
@@ -50,21 +51,13 @@ class KubernetesRecorder:
             self.on_pod("ADDED", p, initial=True)
         self.poll_once()
         if threads:
-            threading.Thread(target=self._watch_loop, daemon=True, name="recorder-pods").start()
+            # One loop does everything. (A pod watch was tried first: with this environment's HTTP client the
+            # watch delivered its events only when it closed, ~60 s late - too late to fetch an ended run's logs
+            # before the pod was deleted. Comparing pod snapshots every poll is simpler and timely.)
             threading.Thread(target=self._poll_loop, daemon=True, name="recorder-poll").start()
 
     def stop(self) -> None:
         self._stop.set()
-
-    def _watch_loop(self) -> None:
-        while not self._stop.is_set():
-            try:
-                for etype, pod in self.kube.watch_pods(self.ns):
-                    self.on_pod(etype, pod)
-                    if self._stop.is_set():
-                        return
-            except Exception:  # noqa: BLE001 - reconnect on any API hiccup
-                time.sleep(2)
 
     def _poll_loop(self) -> None:
         while not self._stop.wait(self.poll_s):
@@ -91,8 +84,10 @@ class KubernetesRecorder:
                 self.pods[name] = pod
         self.store.upsert_instance(self.ns, name, comp, "Pod", pod.get("created"))
         if etype == "DELETED":
+            # Seen missing at this poll: it went away after the previous poll and no later than now.
             self.store.mark_gone(self.ns, name, now)
-            self.store.add_lifecycle(self.ns, comp, name, None, "deleted", now, "observed")
+            self.store.add_lifecycle(self.ns, comp, name, None, "deleted", now, "observed",
+                                     not_before=self._last_poll_t)
             return
         if prev is None and not initial:
             self.store.add_lifecycle(self.ns, comp, name, None, "created", pod.get("created") or now,
@@ -159,18 +154,23 @@ class KubernetesRecorder:
 
     # ------------------------------------------------------------------ the poll
     def poll_once(self) -> None:
+        self.workloads = self.kube.workloads(self.ns)
+        pods = self.kube.pods(self.ns)
+        live = {p["name"] for p in pods}
+        # Lifecycle from snapshots: on_pod compares each pod with the previous snapshot (restarts, readiness,
+        # waiting); pods missing from this snapshot were deleted since the last poll.
+        for p in pods:
+            self.on_pod("MODIFIED" if p["name"] in self.pods else "ADDED", p)
+        for name in [n for n in self.pods if n not in live]:
+            self.on_pod("DELETED", self.pods[name])
+        # Ended runs' logs right away, while Kubernetes still has them; an empty read is retried next polls.
         with self._lock:
             pending, self.backfills = self.backfills, []
         for pod, comp, container, gen, attempts in pending:
-            # Right after a restart the previous run's log can still be empty: retry on the next polls.
             if self.backfill_previous(pod, comp, container, gen) == 0 and attempts < BACKFILL_ATTEMPTS - 1:
                 with self._lock:
                     self.backfills.append((pod, comp, container, gen, attempts + 1))
-        self.workloads = self.kube.workloads(self.ns)
-        pods = self.kube.pods(self.ns)
         for p in pods:
-            if p["name"] not in self.pods:      # the watch may lag: never miss a pod's logs because of it
-                self.on_pod("ADDED", p)
             self.capture_current(p)
         for e in self.kube.events(self.ns):
             comp = self._event_component(e["object_kind"], e["object_name"])
@@ -185,8 +185,8 @@ class KubernetesRecorder:
             self.store.add_version(self.ns, "Secret", name, None, {k: fingerprint(v) for k, v in values.items()})
         for w in self.workloads:
             self.store.add_version(self.ns, w["kind"], w["name"], w["name"], _definition(w))
-        live = {p["name"] for p in pods}
         self.last_line = {k: v for k, v in self.last_line.items() if k[0] in live}
+        self._last_poll_t = self.clock()
         if self.session is not None:
             self.store.heartbeat(self.session)
         if self.clock() - self._last_prune > 3600:

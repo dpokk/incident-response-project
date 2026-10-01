@@ -186,13 +186,6 @@ class Kube:
             return []
         return [_log_line(line) for line in text.splitlines()]
 
-    def watch_pods(self, ns: str, timeout_s: int = 60):
-        """Pod changes as (event type, pod summary) until the watch times out (callers reconnect). Uses its own
-        connection pool: a long-lived watch must not hold a connection other threads need."""
-        core = client.CoreV1Api(client.ApiClient())
-        for ev in watch.Watch().stream(core.list_namespaced_pod, ns, timeout_seconds=timeout_s):
-            yield ev["type"], pod_summary(ev["object"])
-
     # -- probes (read-only) ---------------------------------------------------------
     def service_proxy_get(self, ns: str, service: str, port: str, path: str, timeout: float = 10) -> tuple[int, str]:
         """HTTP GET through the API server's service proxy, i.e. a synthetic user request."""

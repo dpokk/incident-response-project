@@ -87,6 +87,15 @@ fails fast by design: an unexpected exception terminates the process.
 
 `scripts\restore.ps1` recovers manually from any of them.
 
+**Post-mortem scenario (Iteration 4).** `scripts\inject\oom-then-replace.ps1` runs demo A, then a simulated
+operator replaces the backend pods, so the OOM-killed instances are gone. Then run
+`python -m investigator investigate --since 5m` with the recorder running beforehand:
+
+- **With evidence history:** memory exhaustion, 85% in the validation run.
+- **Without it:** undetermined.
+
+See `docs/validation/iter-04-oom-postmortem.md`.
+
 ## How the investigator works
 
 **Detection** (`detector.py`) reports only symptoms, never causes:
