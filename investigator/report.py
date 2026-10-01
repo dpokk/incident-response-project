@@ -12,7 +12,7 @@ from .timeline import reconstruct
 
 TIMELINE_KINDS = {"detection_signal", "process_terminated", "event", "log_signature", "log_exception",
                   "change", "config_changed", "metric_traffic_change", "metric_error_ratio", "metric_memory_high",
-                  "log_tail_before_exit", "configuration_change", "past_instance"}
+                  "log_tail_before_exit", "configuration_change", "past_instance", "metric_error_ratio_recovered"}
 COVERAGE_KINDS = ("evidence_coverage", "evidence_gap")
 
 
@@ -73,6 +73,7 @@ def build(incident: dict, store: EvidenceStore, dx: dict, window: tuple, ongoing
         "diagnosis": [{"statement": r["statement"], "facts": r["facts"]} for r in dx["reasoning"]],
         "likely_root_cause": dx["root_cause"],
         "contributing_factors": dx["contributing_factors"],
+        "correlations": dx.get("correlations", []),
         "confidence": dx["confidence"],
         "confidence_label": dx["confidence_label"],
         "alternatives_considered": dx["alternatives"],
@@ -137,6 +138,10 @@ def render_text(r: dict) -> str:
     L += ["", "LIKELY ROOT CAUSE", f"  {r['likely_root_cause']}"]
     if r["contributing_factors"]:
         L += ["", "CONTRIBUTING FACTORS"] + [f"  - {c['statement']}  [{', '.join(c['facts'])}]" for c in r["contributing_factors"]]
+    if r.get("correlations"):
+        mark = {True: "linked", False: "not linked", None: "not established"}
+        L += ["", "CORRELATIONS (checked against order, component and call path)"]
+        L += [f"  - [{mark[c['linked']]}] {c['statement']}  [{', '.join(c['facts'])}]" for c in r["correlations"]]
     L += ["", f"CONFIDENCE: {r['confidence_label']} ({r['confidence']:.0%})", "",
           "ALTERNATIVES CONSIDERED"]
     L += [f"  - {a['label']} in {a['component']} (score {a['score']:.2f}): {a['why_not']}" for a in r["alternatives_considered"]]
@@ -173,6 +178,10 @@ def render_markdown(r: dict) -> str:
     out += ["", "## Likely root cause", r["likely_root_cause"]]
     if r["contributing_factors"]:
         out += ["", "## Contributing factors"] + [f"- {c['statement']} _[{', '.join(c['facts'])}]_" for c in r["contributing_factors"]]
+    if r.get("correlations"):
+        mark = {True: "linked", False: "not linked", None: "not established"}
+        out += ["", "## Correlations (checked against order, component and call path)"]
+        out += [f"- **{mark[c['linked']]}**: {c['statement']} _[{', '.join(c['facts'])}]_" for c in r["correlations"]]
     out += ["", "## Alternatives considered", "", "| Category | Component | Score | Why not |", "|---|---|---|---|"]
     out += [f"| {a['label']} | {a['component']} | {a['score']:.2f} | {a['why_not'].replace('|', '/')} |"
             for a in r["alternatives_considered"]]

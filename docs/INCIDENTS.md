@@ -146,12 +146,36 @@ What exists today:
   and uncertainty. Recovery time is taken from instance readiness, and only when the evidence supports it.
   With retained history, the memory warning of the run that took the spike becomes the onset.
 
-What is not implemented yet: metric threshold-crossing entries (CPU/memory saturation times, error-rate
-return to baseline). These are planned on `feature/iter-04-metrics-correlation`.
+- **Metrics as time-anchored evidence** (Iteration 4).
+  - Threshold crossings get *bounded* times: traffic onset, memory at 80% of the limit, error ratio above 5%
+    and back below. The bound is widened by a rate's averaging window, because a 15 s rate shows a change up
+    to 15 s late.
+  - Instances that no longer exist are included.
+  - Earlier episodes in the baseline lookback are named, not counted.
+  - Memory sampling density is reported as a fact.
+- **Correlation, checked by evidence.** Traffic is a contributing factor only when all three hold:
+  1. the entry point's configuration shows its traffic reaches the killed component;
+  2. the traffic rose before memory evidence on that component;
+  3. that memory evidence came before the first kill.
 
-Known metrics limit: in the live runs of 2026-09-30, Prometheus never sampled backend memory above 45% of the
-limit. Only 13–42 samples per pod were recorded in 15 minutes, because cAdvisor scrapes go sparse under load.
-Memory metrics alone cannot show this incident's memory climb.
+  Otherwise the report lists the correlation as "not linked" or "not established", with the reason. An
+  entry point whose configuration was not examined makes the path "unknown", never "absent", and the
+  planner examines it when metrics are queried.
+
+CPU saturation is not implemented.
+
+**Live replay of the OOM run of 2026-09-30, 23:21:59–23:27:51:**
+- **Traffic:** rose 10.2x, onset between 23:26:44 and 23:27:04. An earlier spike from 23:14 was correctly
+  excluded.
+- **Kill order:** the first kill was at 23:26:54, inside the traffic interval, so the order was reported as
+  undetermined and traffic was **not** claimed as a cause.
+- **Memory:** metrics never sampled above 36% of the limit, about one sample every 19 s. This was reported as
+  a sampling limit that neither confirms nor contradicts the kills.
+- **Diagnosis:** memory exhaustion, 70%. Nothing was retained because the recorder was not running then.
+
+Memory metrics alone cannot show this incident's memory climb: cAdvisor scrapes go sparse under load (13–42
+samples per pod in 15 minutes). The application's own memory logs, retained by the recorder, are the
+stronger evidence.
 
 ### Intended Chain
 

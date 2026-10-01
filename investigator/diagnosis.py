@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 from .evidence import EvidenceStore, Fact
 from .logparse import DEPENDENCY_SIGNATURES
+from .timeline import fact_order
 
 CATEGORY_LABELS = {
     "memory_exhaustion": "Memory exhaustion (killed at its memory limit)",
@@ -45,6 +46,7 @@ class Finding:
     contributing: list = field(default_factory=list)
     impacted: list = field(default_factory=list)
     backing: list = field(default_factory=list)       # components behind a dependency service
+    correlations: list = field(default_factory=list)  # evidence-checked links (linked / not linked / unknown)
     explained_by: str = ""                            # set when this is an effect of another finding
 
     def say(self, statement: str, facts: list[Fact] | list[str]) -> None:
@@ -115,7 +117,8 @@ class View:
 
 # --------------------------------------------------------------------------- checks
 
-def check_memory(v: View, store: EvidenceStore) -> Finding:
+def check_memory(v: View, store: EvidenceStore, edges: dict | None = None) -> Finding:
+    edges = edges or {}
     f = Finding("memory_exhaustion", v.name)
     oom = v.terms_by("memory_limit")
     killed = v.terms_by("killed")
@@ -139,19 +142,92 @@ def check_memory(v: View, store: EvidenceStore) -> Finding:
     if len(oom) > 1:
         f.add(0.1, oom[1:3], "repeated memory-limit kills")
     limit = next((t.data["memory_limit"] for t in oom if t.data.get("memory_limit")), None)
-    traffic = store.find(kind="metric_traffic_change")
+    observed = next(iter(store.find(kind="metric_memory_observed", subject=f"component/{v.name}")), None)
+    if (oom or killed) and observed and not observed.data.get("crossed_high"):
+        # Metrics that never saw memory near the limit do not contradict a kill at the limit: say why they missed it.
+        f.correlations.append({
+            "kind": "memory_sampling", "linked": None, "facts": [observed.id],
+            "statement": f"Memory metrics never showed {v.name} near its limit (highest sample "
+                         f"{observed.data['peak_ratio']:.0%})" + (f", sampled about every {observed.data['spacing_s']:.0f}s"
+                                                                  if observed.data.get("spacing_s") else "")
+                         + ": the growth to the limit happened between samples, so metrics neither confirm nor "
+                           "contradict the memory-limit kills"})
+    traffic = next(iter(store.find(kind="metric_traffic_change")), None)
+    linked = False
     if traffic and (oom or killed):
-        tr = traffic[0]
-        f.contributing.append({"statement": f"Incoming traffic rose from ~{tr.data['baseline']:.0f} to ~{tr.data['peak']:.0f} "
-                               f"req/s ({tr.data['peak'] / tr.data['baseline']:.1f}x) shortly before the terminations",
-                               "facts": [tr.id]})
+        examined = {f.subject.partition("/")[2] for f in store.find(kind="component_status")}
+        corr = correlate_traffic(v, traffic, mem_logs + v.metrics_mem, oom or killed, edges, examined)
+        f.correlations.append(corr)
+        linked = corr["linked"] is True
+        if linked:
+            f.contributing.append({"statement": corr["statement"], "facts": corr["facts"]})
     shown = next((t.data.get("reason") for t in oom if t.data.get("reason")), None)
     f.root_cause = (f"{v.name} exceeded its memory limit" + (f" ({limit / 2**20:.0f}Mi)" if limit else "")
                     + " and was killed" + (f" ({shown})" if shown else "")
-                    + (f"; this followed a {traffic[0].data['peak'] / traffic[0].data['baseline']:.1f}x increase in "
-                       f"incoming traffic" if traffic else ""))
+                    + (f"; memory had been rising after a {traffic.data['peak'] / traffic.data['baseline']:.1f}x "
+                       f"increase in incoming traffic" if linked else ""))
     f.score = min(f.score, 1.0)
     return f
+
+
+def correlate_traffic(v: View, traffic: Fact, memory: list[Fact], kills: list[Fact], edges: dict,
+                      examined: set | None = None) -> dict:
+    """Is the traffic increase linked to the memory-limit kills by evidence? Only if (1) the traffic reaches the
+    killed component (the entry point is that component or calls it, per configuration), (2) the traffic rose
+    before memory evidence on that component, and (3) that memory evidence came before the first kill. Time
+    alone ("traffic rose, later something died") is reported, but not as a cause."""
+    entry = traffic.data.get("component")
+    first_kill = min(kills, key=lambda k: k.t or float("inf"))
+    base = {"kind": "traffic_memory", "facts": [traffic.id]}
+    ratio = f"{traffic.data['peak'] / traffic.data['baseline']:.1f}x"
+    path = _reaches(entry, v.name, edges, examined)
+    if path is False:
+        return {**base, "linked": False, "statement": f"Traffic at {entry} rose {ratio}, but {entry} does not call "
+                                                      f"{v.name} (per its configuration): not linked to its kills"}
+    if path is None:
+        return {**base, "linked": None, "statement": f"Traffic at {entry} rose {ratio}, but whether that traffic "
+                                                     f"reaches {v.name} is unknown ({entry}'s configuration was not "
+                                                     f"examined)"}
+    order_kill = fact_order(traffic, first_kill)
+    if order_kill is False:
+        return {**base, "linked": False, "facts": [traffic.id, first_kill.id],
+                "statement": f"Traffic rose {ratio} only after the first kill ({first_kill.id}): it did not start it"}
+    if order_kill is None:
+        return {**base, "linked": None, "facts": [traffic.id, first_kill.id],
+                "statement": f"Traffic rose {ratio}, but whether that was before the first kill cannot be told from "
+                             f"the timestamps"}
+    if not memory:
+        return {**base, "linked": None, "facts": [traffic.id, first_kill.id],
+                "statement": f"Traffic rose {ratio} before the first kill, but no memory measurement or memory warning "
+                             f"from {v.name} links the two: only the order is known"}
+    first_mem = min(memory, key=lambda m: m.t or float("inf"))
+    if fact_order(traffic, first_mem) is not True or fact_order(first_mem, first_kill) is False:
+        return {**base, "linked": None, "facts": [traffic.id, first_mem.id, first_kill.id],
+                "statement": f"Traffic rose {ratio} and {v.name} showed memory pressure, but the order traffic -> "
+                             f"memory -> kill is not established by the timestamps"}
+    return {**base, "linked": True, "facts": [traffic.id, first_mem.id, first_kill.id],
+            "statement": f"Incoming traffic at {entry} rose {ratio} (from ~{traffic.data['baseline']:.0f} to "
+                         f"~{traffic.data['peak']:.0f} req/s); after that, {v.name}'s memory approached its limit "
+                         f"({first_mem.id}), and then it was killed at the limit ({first_kill.id})"}
+
+
+def _reaches(entry: str | None, target: str, edges: dict, examined: set | None = None) -> bool | None:
+    """Does `entry` call `target`, directly or through other components (configuration-derived graph)?
+    True / False / None = unknown: "no path" is only claimed if every component on the way had its
+    configuration examined - a component that was not looked at may well call others."""
+    if entry is None:
+        return None
+    if entry == target:
+        return True
+    examined = examined if examined is not None else set(edges) | {entry}
+    seen, frontier, unknown = {entry}, {entry}, False
+    while frontier:
+        if target in frontier:
+            return True
+        unknown = unknown or any(c not in examined for c in frontier)
+        frontier = {d for c in frontier for d in edges.get(c, ())} - seen
+        seen |= frontier
+    return None if unknown else False
 
 
 def check_crash(v: View, store: EvidenceStore, dep_health: dict) -> Finding:
@@ -428,7 +504,7 @@ def diagnose(store: EvidenceStore) -> dict:
     for v in views.values():
         if not v.symptomatic() and not v.sigs:
             continue
-        findings.append(check_memory(v, store))
+        findings.append(check_memory(v, store, edges))
         findings.append(check_crash(v, store, dep_health))
         findings += check_dependencies(v, store)
         findings += check_platform(v, store)
@@ -509,6 +585,7 @@ def diagnose(store: EvidenceStore) -> dict:
         "reasoning": primary.reasoning,
         "root_cause": primary.root_cause,
         "contributing_factors": primary.contributing,
+        "correlations": primary.correlations,
         "confidence": round(confidence, 2),
         "confidence_label": "High" if confidence >= 0.75 else "Medium" if confidence >= 0.5 else "Low",
         "score": round(primary.score, 2),

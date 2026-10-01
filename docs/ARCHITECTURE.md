@@ -221,6 +221,9 @@ If timestamps are uncertain, represent uncertainty rather than inventing precisi
     stated as unrecorded earlier failures.
   - An observation aggregated since before the window is never used as the onset, because its first
     sighting may belong to an earlier episode.
+- **Metric threshold crossings.** These are timeline entries with bounded times (`investigator/metrics.py`).
+  A crossing lies between two samples, widened by the averaging window of rates. A user-facing error ratio
+  falling back below 5% supports the recovery phase.
 - **Limit.** "First change" means first in order, not relevant. Relevance is the diagnosis' job, so an
   unrelated change inside the window (e.g. another operation) is listed but not blamed.
 - **Pre-window events.** An aggregated event whose first occurrence predates the investigation window

@@ -104,7 +104,7 @@ class InvestigationPlanner:
             return
         self.examined.append(c)
         self.states[c] = rs
-        rec.record_resource_state(store, caps, rs, tr.start)
+        rec.record_resource_state(store, caps, rs, tr.start, tr.end)
         restarted = [f"{i.name}/{p.name}" for i in rs.instances for p in i.processes if p.restarts > 0]
         if restarted:
             self.decide("read previous logs of", c, f"{len(restarted)} process(es) restarted; the ended instance's "
@@ -154,6 +154,14 @@ class InvestigationPlanner:
             return
         self.decide("query", "metrics (traffic, errors, memory)",
                     f"resource exhaustion suspected ({exhaustion[0].text[:90]})")
+        entry = self.ctx.metrics_target
+        if entry and entry in self.components and entry not in self.examined:
+            # Traffic is measured at the entry point; only its configuration says whether that traffic reaches
+            # the exhausted component.
+            self.decide("examine", entry, "traffic is measured here: its configuration shows whether that traffic "
+                                          "reaches the exhausted component")
+            self.queued.add(entry)
+            self.examine(entry)
         from .metrics import metric_facts
         try:
             metric_facts(self.store, self.caps, self.ctx.incident, self.ctx.window, list(self.states.values()),
