@@ -11,7 +11,7 @@
 | Iteration 4 — Historical evidence & incident reconstruction | Complete |
 | Iteration 5 — Remediation planning | Complete |
 | Iteration 6 — Slack incident experience + human review | Complete |
-| Iteration 7 — Approved remediation execution + verification | **Next — not started** |
+| Iteration 7 — Approved remediation execution + verification | **In progress** — Milestone 1 done |
 | Iteration 8 — Second provider | Planned |
 | Iterations 9–11 — SaaS control plane, customer connector, external pilot | Planned |
 
@@ -602,6 +602,43 @@ Resolved / Not resolved
 
 Rollback follows the plan's rollback section. If verification fails, the system does not keep executing
 changes; it returns to investigation or asks for human intervention.
+
+### Agreed design (2026-10-01)
+
+Approval and execution are two separate human decisions: Approve, then Execute (no third confirmation).
+
+An Execute request passes these steps, in order:
+1. Authorization: executors default to the approvers list.
+2. An effective approval exists on the exact current plan digest.
+3. Plan age is within `max_plan_age_seconds`.
+4. The policy allows the change (`config/execution_policy.json`).
+5. An atomic claim is taken, one per (incident, digest, action).
+6. A fresh live recheck runs through the capability layer.
+7. A dry run is performed and recorded.
+8. Exactly one typed, compare-and-set change is applied.
+9. Verification evaluates the plan's own criteria over a bounded window, giving RESOLVED / NOT_RESOLVED /
+   INCONCLUSIVE.
+
+Rules:
+- **Uncertain state stops everything.** An interrupted execution is marked uncertain and is never retried; acting
+  again requires a fresh investigation and plan.
+- **Live-recheck semantics.** The live value must still equal the plan's pre-change value. If it already equals
+  the target, the action is treated as already applied or not needed and is not applied again.
+- **Rollback** is offered only after NOT_RESOLVED or INCONCLUSIVE. It is a typed action and goes through the same
+  controls.
+- **Duplicate-incident suppression.** The executed action's expected rollout or restart effects must not open
+  duplicate incidents. The suppression is scoped to that incident and action, and to the execution and
+  verification period.
+- **Demo A load is calibrated by experiment** before the live demos, and the result is recorded.
+
+### Status — IN PROGRESS (branch `feature/iter-07-approved-remediation-execution`)
+
+- Milestone 1 (execution architecture) is done:
+  - `execution_model.py`, `execution_policy.py` and `execution_store.py` (audit + idempotency claim in
+    `state/reviews.db`);
+  - `actuators/base.py` (three typed compare-and-set operations);
+  - `executor.py` (authorization, approval validity, typed change, plan age, policy, claim).
+- No cluster writer yet. Next: Milestone 2 (live recheck, dry run, typed mutation).
 
 ## Iteration 8 — Provider Abstraction + Second Provider
 

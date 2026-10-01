@@ -5,6 +5,7 @@ Provider adapters (capabilities/kubernetes.py, capabilities/prometheus.py) and p
 (kube.py, prom.py) must not be imported by them.
 """
 import ast
+import re
 from pathlib import Path
 
 PKG = Path(__file__).resolve().parent.parent / "investigator"
@@ -110,6 +111,65 @@ def test_human_review_layers_keep_their_boundaries():
     # presentation only: slack_view makes no remediation or review decisions
     src = (PKG / "slack_view.py").read_text(encoding="utf-8")
     assert "plan_remediation" not in src and ".decide(" not in src
+
+
+WRITE_CALL = re.compile(r"^(patch|replace|delete|create)_")
+ALL_MODULES = sorted(PKG.rglob("*.py"))
+
+
+def test_only_the_actuator_adapter_writes_to_the_cluster():
+    """Iteration 7: no module except the Kubernetes actuator makes a write call (patch_/replace_/delete_/create_...)."""
+    writers = {}
+    for path in ALL_MODULES:
+        calls = {n.func.attr for n in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and WRITE_CALL.match(n.func.attr)}
+        if calls:
+            writers[path.relative_to(PKG).as_posix()] = sorted(calls)
+    assert set(writers) <= {"actuators/kubernetes.py"}, writers
+
+
+def test_only_the_executor_and_the_composition_root_hold_an_actuator():
+    holders = {p.relative_to(PKG).as_posix() for p in ALL_MODULES
+               if any(i == "actuators" or i.startswith("actuators.") or ".actuators" in i for i in _imports(p))}
+    holders -= {p.relative_to(PKG).as_posix() for p in (PKG / "actuators").glob("*.py")}
+    assert holders <= {"executor.py", "providers.py"}, holders
+
+
+def test_the_actuator_interface_is_exactly_three_typed_operations():
+    import inspect
+
+    from investigator.actuators.base import Actuator
+    public = {n for n, _ in inspect.getmembers(Actuator, inspect.isfunction) if not n.startswith("_")}
+    assert public == {"set_memory_limit", "set_replicas", "set_config_value"}
+    assert Actuator.__abstractmethods__ == public
+    for name in public:                           # every write is compare-and-set and can be a dry run
+        params = list(inspect.signature(getattr(Actuator, name)).parameters)
+        assert "dry_run" in params and any(p.startswith("expected") for p in params), name
+
+
+def test_execution_reads_only_through_capabilities_and_cannot_run_commands():
+    banned = ("kube", "kubernetes", "prom", "capabilities.kubernetes", "capabilities.prometheus", "providers",
+              "subprocess", "shutil", "socket", "requests", "history_store", "slack", "slack_app", "slack_sdk")
+    for name in ("executor.py", "execution_model.py", "execution_policy.py", "execution_store.py", "recheck.py",
+                 "verification.py"):
+        if not (PKG / name).exists():
+            continue
+        bad = {i for i in _imports(PKG / name) for b in banned
+               if i == b or i.startswith(b + ".") or i.endswith("." + b) or i.split(".")[0] == b}
+        assert not bad, (name, bad)
+    assert not _imports(PKG / "execution_model.py") - {"dataclasses", "dataclasses.asdict", "dataclasses.dataclass",
+                                                       "dataclasses.field", "enum", "enum.Enum", "re"}
+
+
+def test_planner_review_and_slack_cannot_execute():
+    """They may not import the executor, the actuators or the execution store: Slack hands an Execute request to a
+    service it is given; it never holds the means to change the system."""
+    banned = ("executor", "actuators", "execution_store")
+    for name in ("remediation.py", "remediation_model.py", "review.py", "slack.py", "slack_view.py", "slack_app.py",
+                 "planner.py", "diagnosis.py", "detector.py"):
+        bad = {i for i in _imports(PKG / name) for b in banned
+               if i == b or i.startswith(b + ".") or i.endswith("." + b) or i.split(".")[0] == b}
+        assert not bad, (name, bad)
 
 
 def test_adapters_implement_the_whole_interface():

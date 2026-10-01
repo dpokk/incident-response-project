@@ -73,6 +73,11 @@ class Settings:
     history_retention_h: float = field(default_factory=lambda: _float("HISTORY_RETENTION_H", 24))
     history_max_lines_per_min: int = field(default_factory=lambda: int(_float("HISTORY_MAX_LINES_PER_MIN", 3000)))
 
+    # Execution of approved remediation (Iteration 7): environment/demo policy (allowed types, namespaces, caps,
+    # maximum plan age, executors, verification window).
+    execution_policy_path: Path = field(default_factory=lambda: Path(_env(
+        "EXECUTION_POLICY_PATH", str(ROOT / "config" / "execution_policy.json"))))
+
     state_dir: Path = ROOT / "state"
     reports_dir: Path = ROOT / "reports"
 
