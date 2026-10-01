@@ -11,6 +11,8 @@ observes into the provider-neutral HistoryStore:
     since the last poll, keeping only lines from the current run's start time onwards; when a restart is
     seen, the ended run's logs are fetched as "previous" while Kubernetes still has them
   * events, configuration (ConfigMaps; Secrets only as fingerprints) and workload definitions (polled)
+  * availability: ready endpoints per Service and ready replicas per workload, stored only when they change
+    (polled), so a dependency outage that has recovered before the investigation can still be reconstructed
 
 Known limit: lines a pod writes in its last poll interval (~5 s) before it is *deleted* (not restarted) are
 lost, because Kubernetes discards a deleted pod's logs at once.
@@ -25,6 +27,8 @@ from ..history_store import HistoryStore, fingerprint
 PROVIDER = "kubernetes"
 MAX_LOG_LOOKBACK_S = 300     # never ask for more than this much log history in one read
 BACKFILL_ATTEMPTS = 3        # polls on which an ended run's logs are fetched if they were still empty
+ENDPOINTS_KIND = "ServiceEndpoints"   # history kinds for availability (ready endpoints, ready replicas)
+STATUS_KIND = "WorkloadStatus"
 
 
 class KubernetesRecorder:
@@ -185,6 +189,14 @@ class KubernetesRecorder:
             self.store.add_version(self.ns, "Secret", name, None, {k: fingerprint(v) for k, v in values.items()})
         for w in self.workloads:
             self.store.add_version(self.ns, w["kind"], w["name"], w["name"], _definition(w))
+            # Availability over time (only changes are stored): lets a dependency outage that has since recovered
+            # be reconstructed. Replicas per workload, ready endpoints per Service.
+            self.store.add_version(self.ns, STATUS_KIND, w["name"], w["name"],
+                                   {"desired": w["replicas_desired"], "ready": w["replicas_ready"]})
+        for s in self.kube.services(self.ns):
+            ep = self.kube.endpoints(self.ns, s["name"]) or {"ready": [], "not_ready": []}
+            self.store.add_version(self.ns, ENDPOINTS_KIND, s["name"], None,
+                                   {"ready": len(ep["ready"]), "not_ready": len(ep["not_ready"])})
         self.last_line = {k: v for k, v in self.last_line.items() if k[0] in live}
         self._last_poll_t = self.clock()
         if self.session is not None:

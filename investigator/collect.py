@@ -70,6 +70,9 @@ def collect(caps: Capabilities, incident: dict, start: float, end: float, entry:
     record_changes(store, caps, tr)
     for c in components:
         record_configuration_history(store, caps, c, tr)
+        for ref in caps.get_dependencies(c) or []:
+            if ref.port:
+                record_availability_history(store, caps, c, ref.host, ref.port, tr)
     record_coverage(store, caps, tr)
 
     if entry:
@@ -364,6 +367,64 @@ def record_configuration_history(store: EvidenceStore, caps: Capabilities, compo
                   f"{c.source}: {what}, {when}", origin="retained", observed_at=c.observed_at, component=component, source_object=c.source,
                   item=c.item, before=None if c.sensitive else c.before, after=None if c.sensitive else c.after,
                   sensitive=c.sensitive, **kw)
+
+
+AVAILABILITY_LOOKBACK_S = 600   # an outage may have begun before the window: look this far back for its start
+
+
+def record_availability_history(store: EvidenceStore, caps: Capabilities, consumer: str, host: str, port,
+                                tr: TimeRange) -> None:
+    """Recorded availability of what serves a dependency: outages (no ready endpoints / replicas) and their end,
+    with the bounds the recording allows. This is what makes a dependency outage that has since recovered
+    visible after the fact. Facts only - whether it explains the consumer's errors is diagnosis' decision."""
+    from .timeline import fmt_moment, moment
+    changes = caps.get_availability_history(host, port, TimeRange(tr.start - AVAILABILITY_LOOKBACK_S, tr.end)) or []
+    if not changes:
+        return
+    src, subj = f"{caps.resources.name}.history", f"dependency/{host}:{port}"
+    services = sorted((c for c in changes if c.kind == "service"), key=lambda c: c.t_latest)
+    components = sorted((c for c in changes if c.kind == "component"), key=lambda c: c.t_latest)
+    track = services or components
+    backing = components[0].name if components else None
+    outages, cur = [], None
+    for c in track:
+        if c.ready == 0 and cur is None:
+            cur = {"start": c, "end": None}
+        elif c.ready > 0 and cur is not None:
+            cur["end"] = c
+            outages.append(cur)
+            cur = None
+    if cur is not None:
+        outages.append(cur)
+    what = f"{track[0].kind} {track[0].name}" + (f" (backed by {backing})" if backing and services else "")
+    if not outages:
+        store.add(src, subj, "availability_steady",
+                  f"Recorded history: {what} stayed available ({track[-1].ready} ready) throughout the recorded range",
+                  t_basis="unknown", origin="retained", consumer=consumer, service=track[0].name, component=backing)
+        return
+    for o in outages:
+        s, e = o["start"], o["end"]
+        start_m = moment((s.t_earliest, s.t_latest), "bounded" if s.t_earliest is not None else "observed")
+        end_m = moment((e.t_earliest, e.t_latest), "bounded") if e else None
+        scaled = next((c for c in components if c.ready == 0 and c.total == 0
+                       and c.t_latest <= (e.t_latest if e else float("inf"))), None)
+        text = (f"Recorded history: {what} had no ready "
+                f"{'endpoints' if track[0].kind == 'service' else 'replicas'} from {fmt_moment(start_m)} "
+                + (f"until {fmt_moment(end_m)}" if e else "until at least the end of the recording")
+                + (f"; {scaled.name} was scaled to 0 replicas" if scaled else ""))
+        store.add(src, subj, "availability_outage", text, t=s.t_latest,
+                  t_basis="bounded" if s.t_earliest is not None else "observed", t_earliest=s.t_earliest,
+                  t_latest=s.t_latest, origin="retained", observed_at=s.observed_at, consumer=consumer,
+                  service=track[0].name, component=backing or track[0].name, ongoing=e is None,
+                  start_earliest=s.t_earliest, start_latest=s.t_latest,
+                  end_earliest=e.t_earliest if e else None, end_latest=e.t_latest if e else None,
+                  scaled_to_zero=bool(scaled))
+        if e:
+            store.add(src, subj, "availability_restored",
+                      f"Recorded history: {what} had {e.ready} ready again by {fmt_moment(end_m)}",
+                      t=e.t_latest, t_basis="bounded", t_earliest=e.t_earliest, t_latest=e.t_latest,
+                      origin="retained", observed_at=e.observed_at, consumer=consumer, service=track[0].name,
+                      component=backing or track[0].name, ready=e.ready)
 
 
 def _val(v) -> str:

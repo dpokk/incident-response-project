@@ -13,7 +13,8 @@ from .timeline import fmt_moment, reconstruct
 
 TIMELINE_KINDS = {"detection_signal", "process_terminated", "event", "log_signature", "log_exception",
                   "change", "config_changed", "metric_traffic_change", "metric_error_ratio", "metric_memory_high",
-                  "log_tail_before_exit", "configuration_change", "past_instance", "metric_error_ratio_recovered"}
+                  "log_tail_before_exit", "configuration_change", "past_instance", "metric_error_ratio_recovered",
+                  "availability_outage", "availability_restored"}
 COVERAGE_KINDS = ("evidence_coverage", "evidence_gap")
 
 

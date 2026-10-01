@@ -127,6 +127,15 @@ def _dependencies(store: EvidenceStore, comp: str, dx: dict, limitations: list) 
         backing = store.find(kind="backing_component", subject=subj)
         name = backing[0].data["component"] if backing else ref.data["host"]
         missing = store.find(kind="service_lookup", subject=subj, found=False)
+        outage = next(iter(store.find(kind="availability_outage", subject=subj)), None)
+        if outage:
+            now = ("healthy at investigation" if (probe and probe.data.get("tcp") == "ok")
+                   or (eps and eps.data.get("ready", 0) > 0) else "still unavailable at investigation")
+            out.append({"component": name, "endpoint": endpoint, "state": "unavailable during the incident",
+                        "facts": [outage.id] + [x.id for x in (probe, eps) if x],
+                        "statement": f"{name} ({endpoint}): unavailable during the incident (recorded history: "
+                                     f"{outage.text.split(': ', 1)[-1]}); {now}"})
+            continue
         if missing:
             state, facts = "does not exist", [missing[0].id] + [x.id for x in (probe,) if x]
         elif (probe and probe.data.get("tcp") == "ok") or (not probe and eps and eps.data.get("ready", 0) > 0):
@@ -190,9 +199,17 @@ def _users_assessed(store: EvidenceStore, limitations: list, err) -> dict:
                 "statement": f"Users were affected ({f.text[:120]}), but how many requests failed could not be "
                              f"quantified from the available evidence"}
     if probes:
-        return {"affected": False, "quantified": False, "facts": [probes[0].id],
-                "statement": f"A synthetic user request succeeded ({probes[0].text[:100]}); request-level impact was "
-                             f"not measured"}
+        # A live probe describes the moment of collection, not the incident: say when it was observed.
+        impacted_errors = [f for f in store.find(kind="log_signature") if f.data.get("signature") == "upstream_failure"]
+        stmt = (f"A synthetic user request succeeded at investigation time ({hms(probes[0].collected_at)}); whether user "
+                f"requests failed during the incident was not measured")
+        if impacted_errors:
+            stmt += (f" (the entry path logged {sum(f.data.get('count', 0) for f in impacted_errors)} upstream failures "
+                     f"during the window, so users may have been affected)")
+            limitations.append("User impact during the incident could not be quantified: no request metrics were "
+                               "queried, and the live probe only shows the state at investigation time")
+        return {"affected": None if impacted_errors else False, "quantified": False,
+                "facts": [probes[0].id] + [f.id for f in impacted_errors[:1]], "statement": stmt}
     limitations.append("User impact is unknown: no synthetic request and no request metrics")
     return {"affected": None, "quantified": False, "facts": [], "statement": "User impact unknown"}
 
