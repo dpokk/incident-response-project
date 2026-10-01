@@ -133,8 +133,10 @@ def analyze(records: list[dict]) -> dict:
             host, port = extract_target(rec, text)
             key = (kind, host, port)
             s = sigs.setdefault(key, {"signature": kind, "target_host": host, "target_port": port, "count": 0,
-                                      "first": rec["_t"], "last": rec["_t"], "sample": text[:400], "level": level})
+                                      "first": rec["_t"], "last": rec["_t"], "sample": text[:400], "level": level,
+                                      "occurrences": []})
             s["count"] += weight
+            s["occurrences"].append((rec["_t"], weight, text[:400]))
             s["first"] = min(filter(None, [s["first"], rec["_t"]]), default=None)
             s["last"] = max(filter(None, [s["last"], rec["_t"]]), default=None)
         if level in ("error", "critical", "fatal"):

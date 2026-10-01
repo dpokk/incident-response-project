@@ -147,7 +147,16 @@ class InvestigationPlanner:
                       if (f.kind == "process_terminated" and f.data.get("cause") in ("memory_limit", "killed"))
                       or (f.kind == "log_signature" and f.data.get("signature") == "memory_pressure")]
         if not exhaustion:
-            self.decide("skip", "metrics", "no sign of resource exhaustion")
+            self.decide("skip", "metrics", "no sign of resource exhaustion: memory metrics are not needed")
+            users = self.user_facing()
+            if users and self.caps.metrics is not None and self.ctx.metrics_target:
+                self.decide("query", "request metrics (traffic, errors)",
+                            f"users are affected ({users[0].text[:80]}): measure how much")
+                from .metrics import metric_facts
+                try:
+                    metric_facts(self.store, self.caps, self.ctx.incident, self.ctx.window, [], self.ctx.metrics_target)
+                except Exception as exc:  # noqa: BLE001 - metrics are optional
+                    self.store.step("metrics", f"skipped: {exc}")
             return
         if self.caps.metrics is None:
             self.decide("skip", "metrics", "resource exhaustion suspected but no metrics provider is configured")
@@ -170,6 +179,14 @@ class InvestigationPlanner:
             self.store.step("metrics", f"skipped: {exc}")
 
     # -- evidence evaluation -------------------------------------------------------------
+    def user_facing(self) -> list:
+        """Evidence that users' requests are failing: a failed synthetic request or a user-facing error signal."""
+        probes = [f for f in self.store.find(kind="entry_probe")
+                  if (f.data.get("status") or 0) >= 500 or f.data.get("status") == 0]
+        signals = [f for f in self.store.find(kind="detection_signal")
+                   if f.data.get("signal") in ("entry_probe_failure", "http_5xx_ratio")]
+        return probes + signals
+
     def failing(self, c: str) -> bool:
         """Does component c show a failure of its own (not just a symptom seen elsewhere)?"""
         subj = f"component/{c}"

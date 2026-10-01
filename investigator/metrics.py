@@ -54,12 +54,16 @@ def episodes(points: list, pred, sustained: int = 1) -> list[tuple]:
 
 def episode_for(eps: list, tr: TimeRange) -> tuple:
     """The episode that overlaps the investigated window (the earliest such), and the earlier ones."""
+    overlapping, earlier = split_episodes(eps, tr)
+    return (overlapping[0] if overlapping else None), earlier
+
+
+def split_episodes(eps: list, tr: TimeRange) -> tuple[list, list]:
+    """(episodes overlapping the window, episodes that ended before it)."""
     def end_t(ep):
         return ep[1][1][0] if ep[1] else float("inf")
-    overlapping = [ep for ep in eps if ep[0][1][0] <= tr.end and end_t(ep) >= tr.start]
-    chosen = overlapping[0] if overlapping else None
-    earlier = [ep for ep in eps if end_t(ep) < tr.start]
-    return chosen, earlier
+    return ([ep for ep in eps if ep[0][1][0] <= tr.end and end_t(ep) >= tr.start],
+            [ep for ep in eps if end_t(ep) < tr.start])
 
 
 def _when(cross: tuple, window_s: float = 0) -> dict:
@@ -132,20 +136,42 @@ def _errors(store, caps, src, entry, wide, tr) -> None:
     if not err:
         return
     q = series[0].labels.get("query")
-    chosen, earlier = episode_for(episodes(err, lambda v: v >= ERROR_THRESHOLD, sustained=2), tr)
-    if chosen is None:
-        return
-    up, down = chosen
-    seg = [p for p in err if p[0] >= up[1][0] and (down is None or p[0] <= down[1][0])]
-    peak_t, peak = max(seg, key=lambda p: p[1])
-    store.add(src, f"service/{entry}", "metric_error_ratio",
-              f"HTTP 5xx ratio at {entry} exceeded {ERROR_THRESHOLD:.0%} (peak {peak:.0%} at {_hms(peak_t)})"
-              + _earlier(earlier), **_when(up, series[0].labels.get("window_s") or 0), peak=peak, peak_t=peak_t, component=entry, query=q,
-              earlier_episodes=len(earlier))
-    if down is not None and down[0] is not None:
-        store.add(src, f"service/{entry}", "metric_error_ratio_recovered",
-                  f"HTTP 5xx ratio at {entry} fell back below {ERROR_THRESHOLD:.0%} after its peak",
-                  **_when(down, series[0].labels.get("window_s") or 0), component=entry, query=q)
+    window_s = series[0].labels.get("window_s") or 0
+    overlapping, earlier = split_episodes(episodes(err, lambda v: v >= ERROR_THRESHOLD, sustained=2), tr)
+    # Each episode in the window is its own fact: a window can hold more than one incident, and which episode
+    # belongs to which failure is decided later from the timing, not assumed here.
+    for n, (up, down) in enumerate(overlapping, 1):
+        seg = [p for p in err if p[0] >= up[1][0] and (down is None or p[0] <= down[1][0])]
+        peak_t, peak = max(seg, key=lambda p: p[1])
+        est = _failed_requests(caps, entry, wide, seg)
+        label = f" (episode {n} of {len(overlapping)} in the window)" if len(overlapping) > 1 else ""
+        store.add(src, f"service/{entry}", "metric_error_ratio",
+                  f"HTTP 5xx ratio at {entry} exceeded {ERROR_THRESHOLD:.0%}{label} (peak {peak:.0%} at {_hms(peak_t)})"
+                  + (f"; about {est['failed']:,.0f} of {est['total']:,.0f} requests failed while it was above "
+                     f"(estimated from {est['points']} samples)" if est else "")
+                  + (_earlier(earlier) if n == 1 else ""), **_when(up, window_s), peak=peak, peak_t=peak_t,
+                  component=entry, query=q, earlier_episodes=len(earlier), ongoing=down is None,
+                  episode_end=down[1][0] if down else None, episode=n, **({"estimate": est} if est else {}))
+        if down is not None and down[0] is not None:
+            store.add(src, f"service/{entry}", "metric_error_ratio_recovered",
+                      f"HTTP 5xx ratio at {entry} fell back below {ERROR_THRESHOLD:.0%} after its peak{label}",
+                      **_when(down, window_s), component=entry, query=q, episode=n)
+
+
+def _failed_requests(caps, entry, wide, seg) -> dict | None:
+    """Failed requests during the error episode = sum of (request rate x error ratio x sample spacing), only
+    where both series have a sample at the same time. An estimate: rates are averages, and samples are apart."""
+    series = caps.get_metrics("request_rate", wide, entry) or []
+    rate = dict(series[0].points) if series else {}
+    pairs = [(t, rate[t], r) for t, r in seg if t in rate]
+    if len(pairs) < 2:
+        return None
+    failed = total = 0.0
+    for (t0, rps, ratio), (t1, _, _) in zip(pairs, pairs[1:]):
+        failed += rps * ratio * (t1 - t0)
+        total += rps * (t1 - t0)
+    return {"failed": round(failed), "total": round(total), "points": len(pairs),
+            "from": pairs[0][0], "to": pairs[-1][0]}
 
 
 def _memory(store, caps, src, rs: ResourceState, wide) -> None:

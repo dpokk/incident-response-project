@@ -114,7 +114,7 @@ def record_resource_state(store: EvidenceStore, caps: Capabilities, rs: Resource
         store.add(f"{src}.resource_state", subj, "instance_status",
                   f"{inst.kind} {inst.name}: phase={inst.phase}, ready={inst.ready}, restarts={inst.restarts}",
                   instance=inst.name, phase=inst.phase, ready=inst.ready, restarts=inst.restarts,
-                  unschedulable=inst.unschedulable, ready_since=inst.ready_since)
+                  unschedulable=inst.unschedulable, ready_since=inst.ready_since, created=inst.created)
         for p in inst.processes:
             if p.state == "waiting" and p.waiting_reason:
                 store.add(f"{src}.resource_state", subj, "process_waiting",
@@ -247,7 +247,9 @@ def record_logs(store: EvidenceStore, caps: Capabilities, rs: ResourceState, tr:
             levels[lvl] += n
         for s in a["signatures"]:
             k = (s["signature"], s["target_host"], s["target_port"])
-            g = sigs.setdefault(k, {**s, "count": 0, "instances": set(), "generations": set(), "origins": set()})
+            g = sigs.setdefault(k, {**s, "count": 0, "instances": set(), "generations": set(), "origins": set(),
+                                    "occurrences": []})
+            g["occurrences"] += [(t, w, smp, inst_name, label, origin) for t, w, smp in s.get("occurrences", [])]
             g["count"] += s["count"]
             g["first"] = min(filter(None, [g["first"], s["first"]]), default=None)
             g["last"] = max(filter(None, [g["last"], s["last"]]), default=None)
@@ -272,15 +274,17 @@ def record_logs(store: EvidenceStore, caps: Capabilities, rs: ResourceState, tr:
             store.add("logs", subj, "log_tail_before_exit",
                       f"Last log lines of {which} in {inst_word} {inst_name}: " + " | ".join(t[:120] for t in a["tail"][-3:]),
                       t=a["last"], origin=origin, instance=inst_name, process=proc, generation=label, tail=a["tail"])
-    for s in sorted(sigs.values(), key=lambda s: -s["count"]):
+    for s in sorted((b for g in sigs.values() for b in _bursts(g)), key=lambda s: -s["count"]):
         target = f" referencing {s['target_host']}" + (f":{s['target_port']}" if s["target_port"] else "") if s["target_host"] else ""
+        part = f" [burst {s['burst']} of {s['bursts']}]" if s["bursts"] > 1 else ""
         store.add("logs", subj, "log_signature",
                   f"{rs.component} logged {s['count']} {s['signature'].replace('_', ' ')} message(s){target} "
-                  f"({hms(s['first'])}-{hms(s['last'])}), e.g. \"{s['sample'][:180]}\""
+                  f"({hms(s['first'])}-{hms(s['last'])}){part}, e.g. \"{s['sample'][:180]}\""
                   + (" [includes retained logs]" if "retained" in s["origins"] else ""),
                   t=s["first"], origin=_origin(s["origins"]), signature=s["signature"], target_host=s["target_host"],
                   target_port=s["target_port"], count=s["count"], instances=sorted(s["instances"]),
-                  generations=sorted(s["generations"]), last=s["last"], sample=s["sample"])
+                  generations=sorted(s["generations"]), last=s["last"], sample=s["sample"],
+                  burst=s["burst"], bursts=s["bursts"])
     if levels.get("error") or levels.get("critical") or levels.get("warning"):
         top = sorted(errors.values(), key=lambda e: -e["count"])[:4]
         store.add("logs", subj, "log_levels",
@@ -290,6 +294,29 @@ def record_logs(store: EvidenceStore, caps: Capabilities, rs: ResourceState, tr:
                   origin=_origin(origins), t_basis="unknown",
                   errors=levels.get("error", 0) + levels.get("critical", 0), warnings=levels.get("warning", 0),
                   top_errors=[{"message": e["message"], "count": e["count"]} for e in top])
+
+
+BURST_GAP_S = 120   # a signature silent this long, then back, is a separate burst (often a separate episode)
+
+
+def _bursts(g: dict) -> list[dict]:
+    """Split one signature's occurrences into bursts separated by silences of more than BURST_GAP_S. One window
+    can hold two incidents with the same log message; a single first/last span would merge them."""
+    occ = sorted((o for o in g["occurrences"] if o[0] is not None), key=lambda o: o[0])
+    if not occ:
+        return [{**g, "burst": 1, "bursts": 1}]
+    groups, cur = [], [occ[0]]
+    for o in occ[1:]:
+        if o[0] - cur[-1][0] > BURST_GAP_S:
+            groups.append(cur)
+            cur = []
+        cur.append(o)
+    groups.append(cur)
+    if len(groups) == 1:
+        return [{**g, "burst": 1, "bursts": 1}]
+    return [{**g, "count": sum(o[1] for o in grp), "first": grp[0][0], "last": grp[-1][0], "sample": grp[0][2],
+             "instances": {o[3] for o in grp}, "generations": {o[4] for o in grp}, "origins": {o[5] for o in grp},
+             "burst": n, "bursts": len(groups)} for n, grp in enumerate(groups, 1)]
 
 
 def _origin(origins: set) -> str:
