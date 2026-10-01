@@ -129,6 +129,12 @@ class ExecutionStore:
                                     f"({','.join('?' * len(live))})", live).fetchall()
         out = []
         for r in rows:
+            if r["status"] == Status.VERIFYING.value:
+                # The change is known to have been applied; only its verification was cut short.
+                out.append(self.update(r["execution_id"], Status.COMPLETED, outcome="INCONCLUSIVE", message=(
+                    "INCONCLUSIVE: verification was interrupted (process stopped); the change was applied, its effect "
+                    "was not established. No further change is made")))
+                continue
             out.append(self.update(r["execution_id"], Status.UNCERTAIN, message=(
                 f"interrupted while '{r['status']}': whether the system was changed must be established by a fresh "
                 f"investigation; not retried")))

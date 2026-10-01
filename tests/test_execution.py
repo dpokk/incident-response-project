@@ -14,7 +14,7 @@ import fake_cluster as fc  # noqa: E402
 from test_slack_review import APPROVER, OTHER, make_plan  # noqa: E402
 
 from investigator.actuators.base import Actuator, ChangeResult  # noqa: E402
-from investigator.execution_model import ExecutionRequest, Refusal, Status, memory_bytes  # noqa: E402
+from investigator.execution_model import ExecutionRequest, ExecutionResult, Refusal, Status, memory_bytes  # noqa: E402
 from investigator.execution_policy import ExecutionPolicy  # noqa: E402
 from investigator.execution_store import ExecutionStore  # noqa: E402
 from investigator.executor import ExecutionService  # noqa: E402
@@ -52,6 +52,9 @@ class Clock:
     def __call__(self):
         return self.t
 
+    def sleep(self, s):
+        self.t += s
+
 
 def make_service(tmp_path, world=None, approve=("256Mi",), policy=None, clock=None):
     """A registered, approved plan (action 0) and an execution service with a fake actuator."""
@@ -64,7 +67,8 @@ def make_service(tmp_path, world=None, approve=("256Mi",), policy=None, clock=No
         assert out.effective, out.message
     act = FakeActuator()
     svc = ExecutionService(review, ExecutionStore(tmp_path / "reviews.db", clock=clock),
-                           policy or ExecutionPolicy.load(POLICY_FILE), act, clock=clock, log=lambda *_: None)
+                           policy or ExecutionPolicy.load(POLICY_FILE), act, clock=clock, log=lambda *_: None,
+                           sleep=clock.sleep, entry=("frontend", "8080", "/api/orders"))
     return svc, review, digest, plan, act, clock
 
 
@@ -221,7 +225,7 @@ def test_a_claim_is_taken_once_and_a_repeat_never_runs_again(tmp_path, monkeypat
     def run(self, eid, r, ctx):
         runs.append(eid)
         self.store.update(eid, Status.COMPLETED, outcome="RESOLVED")
-        return None
+        return ExecutionResult(False, "completed", "stubbed", eid)
     monkeypatch.setattr(ExecutionService, "_run", run)
     svc.execute(req(d))
     again = svc.execute(req(d, t=NOW + 5))

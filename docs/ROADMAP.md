@@ -11,7 +11,7 @@
 | Iteration 4 — Historical evidence & incident reconstruction | Complete |
 | Iteration 5 — Remediation planning | Complete |
 | Iteration 6 — Slack incident experience + human review | Complete |
-| Iteration 7 — Approved remediation execution + verification | **In progress** — Milestones 1–2 done |
+| Iteration 7 — Approved remediation execution + verification | **In progress** — Milestones 1–3 done |
 | Iteration 8 — Second provider | Planned |
 | Iterations 9–11 — SaaS control plane, customer connector, external pilot | Planned |
 
@@ -643,7 +643,12 @@ Rules:
   - `actuators/kubernetes.py`: the only cluster writer; strategic-merge patches with a resourceVersion precondition;
   - the executor's dry run, then one compare-and-set write; partial or unknown results become `uncertain`.
   Server-side dry runs of all three operations against the live cluster were accepted, and no object changed.
-- Next: Milestone 3 (verification).
+- Milestone 3 (verification) is done:
+  - `verification.py` evaluates the plan's own criteria through capabilities: a settle period (until the target is ready, at most 60 s), then a 120 s observation window sampled at the poll interval;
+  - the outcome is RESOLVED / NOT_RESOLVED / INCONCLUSIVE: missing evidence is never success, and only kills in instances started after the change count;
+  - when verification is not RESOLVED, the executor stops and registers a typed rollback plan (`remediation.plan_rollback`) under `<incident>#rollback-<execution>`. It needs its own approval and Execute, goes through the same controls (minus the relevance check), and never chains;
+  - an interrupted verification is recorded as INCONCLUSIVE.
+- Next: Milestone 4 (Slack execution experience, duplicate-incident suppression).
 
 ## Iteration 8 — Provider Abstraction + Second Provider
 

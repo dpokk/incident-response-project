@@ -10,7 +10,9 @@
       7 live recheck           fresh reads through the capability layer (recheck.py)
       8 dry run                provider-validated, recorded
       9 apply ONE change       compare-and-set; any doubt after sending it -> uncertain
-     10 verification           the plan's own criteria over a bounded window (Milestone 3)
+     10 verification           the plan's own criteria over a bounded window -> RESOLVED / NOT_RESOLVED /
+                               INCONCLUSIVE; if not RESOLVED, a typed rollback PLAN is offered (never executed
+                               here: it needs its own approval and its own Execute request)
 
 Steps 1-5 refuse without claiming (the attempt is recorded). From step 6 on, the claim is permanent: a refusal,
 a failure or an interruption ends that action of that plan, and acting again needs a fresh investigation and plan.
@@ -19,21 +21,30 @@ Nothing here decides *what* to change - that is the plan, approved by a human; n
 import time
 
 from .actuators.base import Actuator, ChangeResult
-from .execution_model import ChangeRequest, ExecutionRequest, ExecutionResult, Refusal, Status, memory_bytes
+from .execution_model import ChangeRequest, ExecutionRequest, ExecutionResult, Outcome, Refusal, Status, memory_bytes
 from .execution_policy import ExecutionPolicy
 from .execution_store import ExecutionStore, execution_id
 from .recheck import host_of, recheck
+from .remediation import plan_rollback
+from .verification import Verifier
 
 EXECUTABLE = ("adjust_resource_limit", "scale_workload", "restore_configuration")
+ROLLBACK_MARK = "#rollback-"        # review key of a rollback plan: <incident>#rollback-<execution>
+
+
+def is_rollback(key: str) -> bool:
+    return ROLLBACK_MARK in key
 
 
 class ExecutionService:
     def __init__(self, review, store: ExecutionStore, policy: ExecutionPolicy, actuator: Actuator | None,
-                 capabilities=None, clock=time.time, log=print):
+                 capabilities=None, clock=time.time, log=print, sleep=time.sleep, poll_s: float = 5,
+                 entry: tuple | None = None):
         """`capabilities`: a callable returning a fresh read-only Capabilities object (one per recheck/verification).
         `actuator`: the cluster writer; None means execution is unavailable (checks still run and refuse)."""
         self.review, self.store, self.policy, self.actuator = review, store, policy, actuator
         self.capabilities, self.clock, self.log = capabilities, clock, log
+        self.sleep, self.poll_s, self.entry = sleep, poll_s, entry
 
     # ----------------------------------------------------------------------------- the typed change
     @staticmethod
@@ -59,7 +70,7 @@ class ExecutionService:
             return ChangeRequest(atype, target["component"], expected_replicas=int(p["current_replicas"]),
                                  target_replicas=int(new)), None, ""
         consumer = (plan.get("diagnosis") or {}).get("affected_component")
-        host = supplied.get("restore_to_host") if not action["parameters_complete"] else None
+        host = supplied.get("restore_to_host") if not action["parameters_complete"] else p.get("restore_to_host")
         value = p.get("restore_to") if action["parameters_complete"] else None
         if not (host or value) or not p.get("current_host") or not consumer:
             return None, Refusal.MISSING_PARAMETER, "the value to restore, the current host or the consumer is unknown"
@@ -106,7 +117,9 @@ class ExecutionService:
         return None, {"plan": rec, "decision": decision, "change": change, "policy": pol, "checks": checks}
 
     # ----------------------------------------------------------------------------- the request
-    def execute(self, req: ExecutionRequest) -> ExecutionResult:
+    def execute(self, req: ExecutionRequest, progress=None) -> ExecutionResult:
+        """The whole request, synchronously (callers run it off their request thread). progress(stage, data) is
+        called at each stage for presentation; it cannot influence execution."""
         existing = self.store.for_action(req.incident_id, req.plan_digest, req.action_index)
         if existing is not None:      # checked first, so a repeat never re-runs anything (also enforced by the claim)
             return self._refuse_attempt(req, self._existing(existing))
@@ -114,13 +127,20 @@ class ExecutionService:
         if refusal is not None:
             return self._refuse_attempt(req, refusal)
         change: ChangeRequest = ctx["change"]
+        ctx["require_relevance"] = not is_rollback(req.incident_id)
         claimed, record = self.store.claim(req, change.action_type, ctx["decision"], change.to_dict(),
-                                           {"allowed": True, "checks": ctx["policy"].checks})
+                                           {"allowed": True, "checks": ctx["policy"].checks},
+                                           kind="rollback" if is_rollback(req.incident_id) else "remediation")
         if not claimed:
             return self._refuse_attempt(req, self._existing(record))
         eid = record["execution_id"]
         self.store.attempt(req, "claimed", change.describe(), eid)
-        return self._run(eid, req, ctx)
+        _notify(progress, "checks_passed", {"execution_id": eid, "change": change.describe(), "checks": ctx["checks"]})
+        result = self._run(eid, req, ctx)
+        _notify(progress, "applied" if result.ok else "stopped", {"execution_id": eid, "result": result})
+        if not result.ok:
+            return result
+        return self._verify(eid, req, ctx, result, progress)
 
     def _run(self, eid: str, req: ExecutionRequest, ctx: dict) -> ExecutionResult:
         """Steps 7-9 on a claimed execution. Before the real write nothing has changed, so a refusal is final but
@@ -178,6 +198,44 @@ class ExecutionService:
         return ExecutionResult(True, Status.VERIFYING.value, f"Applied: {change.describe()}. Verifying.", eid, checks,
                                rec)
 
+    # ----------------------------------------------------------------------------- 10 verification
+    def _verify(self, eid: str, req: ExecutionRequest, ctx: dict, applied: ExecutionResult,
+                progress=None) -> ExecutionResult:
+        """Observe, then judge with the plan's own criteria. Whatever the outcome, nothing further is changed here:
+        a failed or inconclusive verification STOPS and offers a typed rollback plan for a human to review."""
+        plan = ctx["plan"]["plan"]
+        action = plan["actions"][req.action_index]
+        rec = self.store.get(eid)
+        w = self.policy.verification
+        _notify(progress, "verifying", {"execution_id": eid, "settle_max_s": w.settle_max_s, "window_s": w.bounded()})
+        try:
+            v = Verifier(self.capabilities, self.clock, self.sleep, self.poll_s, self.entry, self.log).run(
+                action.get("verification") or [], rec["applied"]["at"], w.settle_max_s, w.bounded(),
+                progress=lambda stage, data: _notify(progress, stage, {"execution_id": eid, **data}))
+            outcome, reason, vd = v.outcome, v.reason, v.to_dict()
+        except Exception as exc:  # noqa: BLE001 - the change WAS applied; only its effect is unknown
+            outcome = Outcome.INCONCLUSIVE
+            reason = f"verification could not complete ({type(exc).__name__}: {str(exc)[:200]})"
+            vd = {"outcome": outcome.value, "reason": reason, "criteria": []}
+        if outcome != Outcome.RESOLVED and not is_rollback(req.incident_id):
+            vd["rollback"] = self._offer_rollback(eid, req, plan, rec["applied"], outcome, reason)
+        message = f"{outcome.value}: {reason}"
+        rec = self.store.update(eid, Status.COMPLETED, verification=vd, outcome=outcome.value, message=message)
+        self.log(f"execution {eid}: {message}" + ("; no further change is made" if outcome != Outcome.RESOLVED else ""))
+        result = ExecutionResult(True, outcome.value, message, eid, applied.checks, rec)
+        _notify(progress, "completed", {"execution_id": eid, "result": result})
+        return result
+
+    def _offer_rollback(self, eid: str, req: ExecutionRequest, plan: dict, applied: dict, outcome: Outcome,
+                        reason: str) -> dict:
+        """Register (never execute) a rollback plan for review under its own key; it needs approval + Execute."""
+        key = f"{req.incident_id}{ROLLBACK_MARK}{eid[:8]}"
+        rp = plan_rollback(plan, req.action_index, applied, outcome.value, reason, key)
+        if rp is None:
+            return {"available": False, "reason": "the value before the change is not known"}
+        digest = self.review.register_plan(key, rp.to_dict(), self.clock())
+        return {"available": True, "incident_key": key, "digest": digest, "summary": rp.actions[0].summary}
+
     def _call(self, change: ChangeRequest, w: dict, dry_run: bool) -> ChangeResult:
         """The single dispatch from a typed change to one typed actuator operation."""
         if change.action_type == "adjust_resource_limit":
@@ -218,6 +276,16 @@ class ExecutionService:
         self.log(f"execution: {result.code} on {req.incident_id} action {req.action_index + 1} by {req.executor}: "
                  f"{result.message}")
         return result
+
+
+def _notify(progress, stage: str, data: dict) -> None:
+    """Presentation callbacks must never affect execution."""
+    if progress is None:
+        return
+    try:
+        progress(stage, data)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def request_id(req: ExecutionRequest) -> str:

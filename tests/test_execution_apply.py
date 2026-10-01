@@ -157,11 +157,11 @@ def service(tmp_path, world=None, actuator=None, approve=("256Mi",), plan_world=
 def test_a_valid_request_rechecks_dry_runs_then_applies_exactly_one_change(tmp_path):
     svc, d = service(tmp_path)
     out = svc.execute(req(d))
-    assert out.ok and out.code == "verifying"
+    assert out.ok and out.code in ("RESOLVED", "NOT_RESOLVED", "INCONCLUSIVE")    # verified (Milestone 3)
     assert [(op, dry) for op, dry, _ in svc.actuator.calls] == [("set_memory_limit", True), ("set_memory_limit", False)]
     assert svc.actuator.calls[1][2] == {"expected": 192 * MI, "new": 256 * MI}
     rec = svc.store.for_action("INC-TEST", d, 0)
-    assert rec["status"] == "verifying" and rec["recheck"]["ok"] and rec["dry_run"]["accepted"]
+    assert rec["status"] == "completed" and rec["recheck"]["ok"] and rec["dry_run"]["accepted"]
     assert rec["applied"]["accepted"] and rec["applied"]["at"] and rec["executor"] == EXECUTOR
     assert [c["check"] for c in out.checks][-1] == "dry_run"
 
