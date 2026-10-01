@@ -287,13 +287,13 @@ Generalized evidence-driven investigation
         ↓
 Capability-based / AI-assisted investigation
         ↓
-Slack-centered incident workflow
+Historical evidence + incident reconstruction
         ↓
-Remediation planning
+Remediation planning (structured plan, no execution)
         ↓
-Human-approved remediation
+Slack incident experience + human review (consumes the plan)
         ↓
-Remediation verification
+Approved remediation execution + verification
         ↓
 Provider abstraction + second provider
         ↓

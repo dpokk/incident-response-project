@@ -15,8 +15,9 @@ These documents are the source of truth for project direction. Before making sub
 
 ## Current Project State
 
-Iterations 1, 2, 3 and 4 have been completed. The next milestone is Iteration 5 (remediation planning: a typed,
-evidence-backed plan, no execution). It has not been started. See `docs/ROADMAP.md`.
+Iterations 1, 2, 3 and 4 have been completed. Iteration 5 (remediation planning: a typed, evidence-backed plan,
+no execution) is in progress. Next are Iteration 6 (Slack incident experience + human review) and Iteration 7
+(approved remediation execution + verification). See `docs/ROADMAP.md`.
 
 ### Iteration 1
 The original prototype detected a Kubernetes `OOMKilled` incident using a Python-based investigator.
@@ -134,9 +135,9 @@ Current deterministic investigator
 → capability abstraction
 → adaptive/AI-assisted investigation
 → historical evidence and incident reconstruction
-→ remediation planning
-→ human-approved remediation
-→ verification
+→ remediation planning (structured plan, no execution)
+→ Slack incident experience + human review
+→ approved remediation execution + verification
 → second provider
 → SaaS control plane + customer connector
 → external pilot

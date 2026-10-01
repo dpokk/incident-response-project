@@ -9,14 +9,17 @@
 | Stabilization after Iteration 2 | Complete |
 | Iteration 3 — Capability-based investigation | Complete |
 | Iteration 4 — Historical evidence & incident reconstruction | Complete |
-| Iteration 5 — Remediation planning | **Next — not started** |
-| Iterations 6–11 | Planned |
+| Iteration 5 — Remediation planning | **In progress** |
+| Iteration 6 — Slack incident experience + human review | Planned |
+| Iteration 7 — Approved remediation execution + verification | Planned |
+| Iteration 8 — Second provider | Planned |
+| Iterations 9–11 — SaaS control plane, customer connector, external pilot | Planned |
 
 The project is currently at:
 
 > Capability-based, evidence-driven incident investigation and reporting, proven on Kubernetes. The investigator
 > can reconstruct workload failures (OOM, crash) and a recovered dependency outage after the failure is no
-> longer visible in live state (Iteration 4 complete). Next: Iteration 5, remediation planning.
+> longer visible in live state (Iteration 4 complete). In progress: Iteration 5, remediation planning.
 
 The project is NOT currently a production SaaS platform and does NOT currently execute remediation.
 
@@ -386,74 +389,132 @@ Recorded as limitations and backlog, not Iteration 4 work:
    - missing evidence.
 10. No remediation or production-changing behaviour is introduced.
 
-## Iteration 5 — Remediation Planning
+## Iteration 5 — Remediation Planning — IN PROGRESS
+
+Defined on 2026-10-01.
+
+### Objective
+
+Build a deterministic, evidence-backed remediation planner. It consumes the existing diagnosis and evidence,
+and produces a structured `RemediationPlan` for human review that Slack, a UI or an API can consume. It answers
+"what remediation should an engineer consider?", never "execute this". Recommendations enter the report here,
+per the report contract decision.
+
+### Boundaries
+
+**Plan only.** The planner gets no capabilities object and no provider. It has no Kubernetes imports, no
+shell or subprocess, and no execution path. Nothing is modified.
+
+**The diagnosis drives the plan.** The planner never re-derives the root cause. Action eligibility comes from
+evidence predicates and the *current* state, not from scenario names. A historical failure does not
+automatically produce a current action: each action is checked against whether the condition it addresses
+still holds now.
+
+**Typed actions only.** There is no command string. "No safe action can be proposed" and "investigate further"
+are valid results; an action is never manufactured.
+
+**`RemediationPlan` is the contract.** Slack, a UI or an API consume it; Slack does not define it. There is no
+Slack implementation in this iteration.
+
+**Deterministic.** No LLM or agent.
+
+### The plan must include
+
+- current state;
+- remediation assessment;
+- proposed actions where justified;
+- rationale;
+- expected final state;
+- risks;
+- rollback;
+- verification criteria (in the existing capability vocabulary);
+- supporting evidence;
+- confidence and uncertainty;
+- requires human approval;
+- execution status (always "not executed").
+
+### Coverage
+
+The four existing incident classes:
+- memory exhaustion;
+- dependency misconfiguration;
+- dependency unavailable, both active and recovered;
+- application crash.
+
+Plus insufficient evidence and unsupported categories.
+
+### Not part of Iteration 5
+
+- Slack, of any kind.
+- Approval workflow.
+- Execution or rollback execution.
+- An LLM planner.
+- A second provider.
+- SaaS.
+- New incident classes.
+- Unrelated refactoring.
+
+### Completion criteria
+
+1. A deterministic remediation-planning layer exists.
+2. It consumes the existing diagnosis and evidence.
+3. It does not guess the root cause independently.
+4. It produces a structured `RemediationPlan`.
+5. The plan has a current state.
+6. The plan has actions where justified.
+7. The plan has a rationale.
+8. The plan has an expected final state.
+9. The plan has risks.
+10. The plan has rollback where applicable.
+11. The plan has verification criteria.
+12. Evidence and uncertainty are represented.
+13. Actions are typed and constrained.
+14. Insufficient evidence produces no fabricated remediation.
+15. Historical and current state are distinguished.
+16. The four incident classes are covered.
+17. The plan is serializable and fit for Slack, UI or API.
+18. There is no Slack coupling.
+19. Nothing is executed.
+20. No resource is modified.
+21. All Iteration 1–4 tests pass.
+22. The new tests pass.
+23. The docs are accurate.
+24. No out-of-scope work.
+
+## Iteration 6 — Slack Incident Experience + Human Review
 
 ### Goal
 
-Given a diagnosed incident, generate a proposed remediation plan. Recommendations are introduced here, not
-in diagnosis reports (report contract decision).
+Make Slack the human interface to an investigated incident, using the Iteration 5 `RemediationPlan` contract
+without changing the planner:
+- render the diagnosis, impact, timeline and the proposed plan;
+- let an engineer review it and approve or reject it, authenticated and recorded.
 
-The plan must include:
-- Current state
-- Root cause
-- Proposed actions
-- Expected final state
-- Risks
-- Verification criteria
-- Rollback approach
+The approval decision is recorded. It does not execute anything; that is Iteration 7.
 
-The system must NOT execute the plan automatically.
-
-## Iteration 6 — Human-Approved Remediation
+## Iteration 7 — Approved Remediation Execution + Verification
 
 ### Goal
 
-Allow an engineer to explicitly approve a proposed remediation.
-
-Workflow:
+Execute only **approved, typed** actions behind a policy check, then verify that the expected final state was
+reached.
 
 ```text
-Diagnosis
-   ↓
-Plan
-   ↓
-Engineer reviews
-   ↓
-Approve / reject
+Approved plan
    ↓
 Policy check
    ↓
-Execute approved typed actions
-```
-
-Start with a small, safe set of Kubernetes actions.
-
-Potential initial actions:
-- Restart deployment
-- Scale deployment
-- Rollback deployment
-
-Avoid arbitrary shell execution.
-
-## Iteration 7 — Remediation Verification
-
-### Goal
-
-Verify that remediation produced the expected final state.
-
-Workflow:
-
-```text
-Execute
+Execute approved typed action (small, safe set; no arbitrary shell)
    ↓
 Observe
    ↓
-Compare actual state vs expected state
+Compare actual state with the plan's verification criteria
    ↓
 Resolved / Not resolved
 ```
 
-If verification fails, the system should not blindly continue executing changes. It should return to investigation or request human intervention.
+Rollback follows the plan's rollback section. If verification fails, the system does not keep executing
+changes; it returns to investigation or asks for human intervention.
 
 ## Iteration 8 — Provider Abstraction + Second Provider
 
