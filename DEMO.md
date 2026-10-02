@@ -148,4 +148,4 @@ Nothing in the page is simulated:
 | `demo/slack_ai.py` | The agent's Slack messages |
 | `demo/web/index.html` | The console |
 
-The `investigator/` package is unchanged from the main project.
+The `investigator/` package matches the main project except for one addition: the `rollback_release` action (planner rule, recheck, `set_image` actuator, policy entry, Slack labels).
