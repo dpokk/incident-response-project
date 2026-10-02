@@ -70,11 +70,17 @@ automation until an engineer acknowledges (circuit breaker).
 
 Measured live:
 
-| Incident | Gate | Result |
+The gate threshold is 85%.
+
+| Incident | Rules | Result |
 |---|---|---|
-| Database down | all 9 checks passed | auto-scaled 0 → 1, RESOLVED, no human click |
-| Memory exhaustion | 8/9: rule confidence 85% < 90% | went to Slack for a human |
-| Sustained overload | rules 49%, the plan has no eligible memory action | went to a human |
+| Database down | 97% | auto-scaled 0 → 1, RESOLVED, no human click |
+| Memory limit set too low | 97% | auto-raised 32Mi → 64Mi, RESOLVED on attempt 1, no human click |
+| Memory exhaustion (spike) | 70–85%, varies with timing | Slack approval; the spike also ends by itself |
+| Application crash | 90% | agent verified the exact line; no typed action fits, so manual steps |
+| Broken release (missing image) | 63%, agent led | agent named the pull failure and gave the rollback command |
+| Backend scaled to zero | no pattern, agent led | agent found it (scale to 2); not executable, because the rules' plan has no action |
+| Sustained overload | 49% | the gate refuses; a human decides |
 
 The retry, revert, Stop and lock paths are covered by `tests/test_demo_remediation_agent.py`.
 
