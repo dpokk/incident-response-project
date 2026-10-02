@@ -47,7 +47,7 @@ def recheck(caps, change: ChangeRequest, now: float, lookback_s: float, require_
     """`require_relevance`: also require that the condition the action addresses still holds (False for a rollback,
     whose purpose is to restore the previous value)."""
     fn = {"adjust_resource_limit": _memory_limit, "scale_workload": _replicas,
-          "restore_configuration": _configuration}[change.action_type]
+          "restore_configuration": _configuration, "rollback_release": _image}[change.action_type]
     try:
         return fn(caps, change, TimeRange(now - lookback_s, now), require_relevance)
     except Exception as exc:  # noqa: BLE001 - an unreadable state never leads to a change
@@ -149,6 +149,49 @@ def _replicas(caps, c: ChangeRequest, tr: TimeRange, require_relevance: bool) ->
                                       f"expected ({state.ready} ready)")
     return RecheckResult(True, None, "live state matches the plan", list(checks), obs,
                          {"component": c.component, "expected": state.desired, "new": c.target_replicas})
+
+
+# --------------------------------------------------------------------------- rollback_release
+
+def _image(caps, c: ChangeRequest, tr: TimeRange, require_relevance: bool) -> RecheckResult:
+    """Component and process exist; the definition's image == the plan's current (bad) image; the condition still
+    holds: an instance of the process cannot obtain its image, or is not ready (skipped for a revert)."""
+    checks, obs = _Checks(), {}
+    state = caps.get_resource_state(c.component, tr)
+    if state is None:
+        if _absent(caps, c.component):
+            checks.add("component_exists", False, f"{c.component} no longer exists")
+            return _refuse(Refusal.STATE_CHANGED, f"{c.component} no longer exists: fresh investigation required.",
+                           checks, obs)
+        raise RuntimeError("resource state unavailable")
+    checks.add("component_exists", True, f"{state.kind} {c.component} exists")
+    live = (state.images or {}).get(c.process)
+    obs.update(image=live, desired=state.desired, ready=state.ready)
+    if live is None:
+        checks.add("process_exists", False, f"process {c.process} is no longer in {c.component}")
+        return _refuse(Refusal.STATE_CHANGED, f"{c.component} no longer runs {c.process}: fresh investigation "
+                       f"required.", checks, obs)
+    if live == c.target_image:
+        checks.add("current_value", False, f"{c.process} already runs {live} (the approved target)")
+        return _refuse(Refusal.NOT_NEEDED, f"{c.component} already runs {live}: already applied, not applied again.",
+                       checks, obs)
+    if live != c.expected_image:
+        checks.add("current_value", False, f"image is {live}, the plan expected {c.expected_image}")
+        return _refuse(Refusal.STATE_CHANGED, f"{c.component} now runs {live}, not the {c.expected_image} the plan was "
+                       f"based on: fresh investigation required.", checks, obs)
+    checks.add("current_value", True, f"image is still {live}, as the plan expected")
+    if require_relevance:
+        pulling = any(p.waiting_cause == "image_unavailable" for i in state.instances for p in i.processes
+                      if p.name == c.process)
+        failing = state.desired > 0 and (state.ready < state.desired or any(not i.ready for i in state.instances))
+        if not checks.add("still_relevant", pulling or failing,
+                          f"{c.component}: {state.ready}/{state.desired} ready"
+                          + (", an instance cannot obtain its image" if pulling else "")):
+            return _refuse(Refusal.NOT_NEEDED, f"{c.component} is healthy on {live}: the condition no longer holds; "
+                           f"fresh investigation required.", checks, obs)
+    return RecheckResult(True, None, "live state matches the plan", list(checks), obs,
+                         {"component": c.component, "process": c.process, "expected_image": live,
+                          "new_image": c.target_image})
 
 
 # --------------------------------------------------------------------------- restore_configuration

@@ -28,7 +28,7 @@ from .recheck import host_of, recheck
 from .remediation import plan_rollback
 from .verification import Verifier
 
-EXECUTABLE = ("adjust_resource_limit", "scale_workload", "restore_configuration")
+EXECUTABLE = ("adjust_resource_limit", "scale_workload", "restore_configuration", "rollback_release")
 ROLLBACK_MARK = "#rollback-"        # review key of a rollback plan: <incident>#rollback-<execution>
 
 
@@ -73,6 +73,12 @@ class ExecutionService:
                 return None, Refusal.MISSING_PARAMETER, "the approved replica count or the current count is unknown"
             return ChangeRequest(atype, target["component"], expected_replicas=int(p["current_replicas"]),
                                  target_replicas=int(new)), None, ""
+        if atype == "rollback_release":
+            cur, prev = p.get("current_image"), p.get("previous_image")
+            if not cur or not prev or not target.get("process") or not action["parameters_complete"]:
+                return None, Refusal.MISSING_PARAMETER, "the current or the previous (recorded) image is unknown"
+            return ChangeRequest(atype, target["component"], process=target["process"], expected_image=cur,
+                                 target_image=prev), None, ""
         consumer = (plan.get("diagnosis") or {}).get("affected_component")
         host = supplied.get("restore_to_host") if not action["parameters_complete"] else p.get("restore_to_host")
         value = p.get("restore_to") if action["parameters_complete"] else None
@@ -254,6 +260,9 @@ class ExecutionService:
                                                   dry_run=dry_run)
         if change.action_type == "scale_workload":
             return self.actuator.set_replicas(w["component"], w["expected"], w["new"], dry_run=dry_run)
+        if change.action_type == "rollback_release":
+            return self.actuator.set_image(w["component"], w["process"], w["expected_image"], w["new_image"],
+                                           dry_run=dry_run)
         if change.action_type == "restore_configuration":
             return self.actuator.set_config_value(w["source"], w["item"], w["expected_value"], w["new_value"],
                                                   w["restart_component"], dry_run=dry_run)

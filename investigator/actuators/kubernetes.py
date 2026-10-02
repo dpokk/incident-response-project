@@ -94,6 +94,30 @@ class KubernetesActuator(Actuator):
             res.error = _err(exc)
         return res
 
+    # ----------------------------------------------------------------------------- image (roll back a release)
+    def set_image(self, component, process, expected_image, new_image, dry_run) -> ChangeResult:
+        target = f"Deployment {self.ns}/{component} container {process}"
+        res = ChangeResult(False, dry_run, "set_image", target)
+        try:
+            d = self.kube.apps.read_namespaced_deployment(component, self.ns)
+            c = next((c for c in d.spec.template.spec.containers if c.name == process), None)
+            if c is None:
+                res.error = f"container {process} not found"
+                return res
+            res.before = c.image
+            if c.image != expected_image:
+                res.error = f"compare-and-set: live image {c.image} is not the expected {expected_image}"
+                return res
+            body = {"metadata": {"resourceVersion": d.metadata.resource_version},
+                    "spec": {"template": {"spec": {"containers": [{"name": process, "image": new_image}]}}}}
+            out = self.kube.apps.patch_namespaced_deployment(component, self.ns, body, **self._kw(dry_run))
+            res.after = next(c.image for c in out.spec.template.spec.containers if c.name == process)
+            res.detail.append(f"PATCH {target} image={new_image}" + (" (dry run)" if dry_run else ""))
+            res.accepted, res.changed = True, not dry_run
+        except Exception as exc:  # noqa: BLE001
+            res.error = _err(exc)
+        return res
+
     # ----------------------------------------------------------------------------- configuration value + restart
     def set_config_value(self, source, item, expected_value, new_value, restart_component, dry_run) -> ChangeResult:
         kind, _, name = source.partition("/")

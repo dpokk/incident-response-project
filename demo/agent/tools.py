@@ -19,7 +19,8 @@ HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9.\-]{0,251}[a-z0-9])?$")
 CATEGORIES = ["memory_exhaustion", "application_crash", "dependency_misconfiguration", "dependency_unavailable",
               "dependency_authentication",
               "image_pull_failure", "container_config_error", "unschedulable", "health_check_failure", "other"]
-FIX_ACTIONS = ["adjust_resource_limit", "scale_workload", "restore_configuration", "investigate_only"]
+FIX_ACTIONS = ["adjust_resource_limit", "scale_workload", "restore_configuration", "rollback_release",
+               "investigate_only"]
 MAX_ACTIVE_PROBES = 3
 
 

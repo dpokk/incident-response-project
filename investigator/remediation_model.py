@@ -34,6 +34,7 @@ class ActionType(str, Enum):
     ADJUST_RESOURCE_LIMIT = "adjust_resource_limit"
     SCALE_WORKLOAD = "scale_workload"
     RESTORE_CONFIGURATION = "restore_configuration"
+    ROLLBACK_RELEASE = "rollback_release"          # put a process back on its previous (recorded) image
     INVESTIGATE_FURTHER = "investigate_further"    # never executable: tells a human what to examine and why
 
 

@@ -3,7 +3,8 @@ validated report, the deterministic plan, or the execution record; nothing is wr
 from investigator.slack_view import _context, _section
 
 FIX_TEXT = {"adjust_resource_limit": "Adjust memory limit", "scale_workload": "Scale workload",
-            "restore_configuration": "Restore configuration", "investigate_only": "Investigate further (no change)"}
+            "restore_configuration": "Restore configuration", "rollback_release": "Roll back release",
+            "investigate_only": "Investigate further (no change)"}
 
 
 def started(inc: dict, model: str | None) -> dict:

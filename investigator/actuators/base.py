@@ -42,6 +42,12 @@ class Actuator(ABC):
         """Set a component's desired replica count."""
 
     @abstractmethod
+    def set_image(self, component: str, process: str, expected_image: str, new_image: str,
+                  dry_run: bool) -> ChangeResult:
+        """Set one process's image in a component's definition (roll back a release; the provider rolls the
+        instances)."""
+
+    @abstractmethod
     def set_config_value(self, source: str, item: str, expected_value: str, new_value: str, restart_component: str,
                          dry_run: bool) -> ChangeResult:
         """Set one configuration item, then restart the component that reads it at start-up, so the value takes

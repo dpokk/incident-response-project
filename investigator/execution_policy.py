@@ -34,7 +34,8 @@ class VerificationWindow:
 
 @dataclass(frozen=True)
 class ExecutionPolicy:
-    allowed_action_types: frozenset = frozenset({"adjust_resource_limit", "scale_workload", "restore_configuration"})
+    allowed_action_types: frozenset = frozenset({"adjust_resource_limit", "scale_workload", "restore_configuration",
+                                                 "rollback_release"})
     allowed_namespaces: frozenset = frozenset({"shop"})
     max_memory_bytes: float = 2**30
     max_replicas: int = 3

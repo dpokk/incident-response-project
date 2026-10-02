@@ -18,14 +18,15 @@ EXEC_TEXT = {"claimed": ":gear: executing — safety checks running", "applying"
              "apply_failed": ":no_entry: the change was rejected by the cluster", "uncertain": ":warning: execution "
              "state uncertain — not retried; fresh investigation required"}
 CHECK_MARK = {True: ":white_check_mark:", False: ":x:", None: ":grey_question:"}
-CHANGE_TYPES = {"adjust_resource_limit", "scale_workload", "restore_configuration"}
+CHANGE_TYPES = {"adjust_resource_limit", "scale_workload", "restore_configuration", "rollback_release"}
 STATUS_ICON = {"awaiting_review": ":hourglass_flowing_sand:", "approved": ":white_check_mark:", "rejected": ":x:",
                "investigate_first": ":mag:", "acknowledged": ":ballot_box_with_check:", "superseded": ":no_entry_sign:"}
 STATUS_TEXT = {"awaiting_review": "awaiting review", "approved": "approved (decision recorded, not executed)",
                "rejected": "rejected", "investigate_first": "investigate first (no change approved)",
                "acknowledged": "acknowledged", "superseded": "superseded by a newer plan: this decision no longer applies"}
 TYPE_TEXT = {"adjust_resource_limit": "Adjust resource limit", "scale_workload": "Scale workload",
-             "restore_configuration": "Restore configuration", "investigate_further": "Investigate further"}
+             "restore_configuration": "Restore configuration", "rollback_release": "Roll back release",
+             "investigate_further": "Investigate further"}
 ASSESSMENT_TEXT = {"action_proposed": "Action proposed", "no_immediate_action": "No immediate action needed",
                    "investigate_further": "Investigate further", "no_safe_action": "No safe action available"}
 PARAMETER_HINT = {"adjust_resource_limit": ("New memory limit", "e.g. 256Mi or 1Gi"),
@@ -319,6 +320,8 @@ def _describe(atype: str, c: dict) -> str:
                 f"`{_mi(c.get('target_bytes'))}`")
     if atype == "scale_workload":
         return f"replicas of `{c.get('component')}` `{c.get('expected_replicas')}` → `{c.get('target_replicas')}`"
+    if atype == "rollback_release":
+        return f"image of `{c.get('component')}` `{c.get('expected_image')}` → `{c.get('target_image')}`"
     return (f"host in `{c.get('item')}` (`{c.get('source')}`) `{c.get('expected_host')}` → "
             f"`{c.get('target_host') or 'recorded previous value'}`, then restart `{c.get('component')}`")
 

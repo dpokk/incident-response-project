@@ -26,7 +26,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-CHANGE_TYPES = {"adjust_resource_limit", "scale_workload", "restore_configuration"}
+CHANGE_TYPES = {"adjust_resource_limit", "scale_workload", "restore_configuration", "rollback_release"}
 DECISIONS_FOR_CHANGE = {"approved", "rejected", "investigate_first"}
 DECISIONS_FOR_INVESTIGATION = {"acknowledged"}
 

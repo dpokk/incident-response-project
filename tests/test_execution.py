@@ -44,6 +44,9 @@ class FakeActuator(Actuator):
     def set_config_value(self, source, item, expected_value, new_value, restart_component, dry_run):
         return self._r("set_config_value", dry_run, item=item, new=new_value)
 
+    def set_image(self, component, process, expected_image, new_image, dry_run):
+        return self._r("set_image", dry_run, component=component, new=new_image)
+
 
 class Clock:
     def __init__(self, t=NOW):
@@ -80,7 +83,8 @@ def req(digest, who=EXECUTOR, index=0, t=NOW):
 
 def test_the_policy_file_loads_with_the_agreed_defaults():
     p = ExecutionPolicy.load(POLICY_FILE)
-    assert p.allowed_action_types == {"adjust_resource_limit", "scale_workload", "restore_configuration"}
+    assert p.allowed_action_types == {"adjust_resource_limit", "scale_workload", "restore_configuration",
+                                      "rollback_release"}
     assert p.allowed_namespaces == {"shop"} and p.max_memory_bytes == 2**30 and p.max_replicas == 3
     assert p.max_plan_age_s == 900 and p.executors({APPROVER}) == {APPROVER}
     assert (p.verification.settle_max_s, p.verification.window_s, p.verification.settle_stable_samples) == (120, 120, 3)

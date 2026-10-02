@@ -1,6 +1,6 @@
 {
   "_comment": "Demo copy of config/execution_policy.json. Identical limits; only the verification observation window is the policy minimum (60 s) so a live demo does not wait 4 minutes. Settling still requires 3 consecutive ready samples.",
-  "allowed_action_types": ["adjust_resource_limit", "scale_workload", "restore_configuration"],
+  "allowed_action_types": ["adjust_resource_limit", "scale_workload", "restore_configuration", "rollback_release"],
   "allowed_namespaces": ["shop"],
   "max_memory_limit": "1Gi",
   "max_replicas": 3,

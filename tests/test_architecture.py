@@ -135,12 +135,12 @@ def test_only_the_executor_and_the_composition_root_hold_an_actuator():
     assert holders <= {"executor.py", "providers.py"}, holders
 
 
-def test_the_actuator_interface_is_exactly_three_typed_operations():
+def test_the_actuator_interface_is_exactly_four_typed_operations():
     import inspect
 
     from investigator.actuators.base import Actuator
     public = {n for n, _ in inspect.getmembers(Actuator, inspect.isfunction) if not n.startswith("_")}
-    assert public == {"set_memory_limit", "set_replicas", "set_config_value"}
+    assert public == {"set_memory_limit", "set_replicas", "set_config_value", "set_image"}
     assert Actuator.__abstractmethods__ == public
     for name in public:                           # every write is compare-and-set and can be a dry run
         params = list(inspect.signature(getattr(Actuator, name)).parameters)

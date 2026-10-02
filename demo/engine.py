@@ -63,7 +63,8 @@ INCIDENTS = {
                           "because the order stays pending the pods crash-loop. No typed action fixes bad data."},
     "bad-image": {"title": "Broken release (missing image)", "script": "scripts/inject/bad-image.ps1",
                   "what": "A release points the backend at an image tag that does not exist. The new pod cannot pull "
-                          "it and the rollout stalls while the old pods keep serving. An engineer must roll back."},
+                          "it and the rollout stalls while the old pods keep serving. The plan proposes rolling back to the "
+                          "previous image, read from recorded history (Approve + Execute in Slack)."},
     "overload": {"title": "Sustained overload (automation refuses)", "script": "scripts/inject/overload.ps1",
                  "what": "800 req/s for 15 minutes: the backend is OOM-killed again and again, and a higher memory limit "
                          "would only delay it. In our runs the rule engine is not confident (under 50%) and its plan "

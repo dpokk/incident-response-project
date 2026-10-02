@@ -66,7 +66,8 @@ def first_value(proposal: dict):
         return par.get("value")
     p = proposal.get("parameters") or {}
     return {"adjust_resource_limit": p.get("proposed_limit"),
-            "scale_workload": p.get("target_replicas")}.get(proposal.get("action_type"))
+            "scale_workload": p.get("target_replicas"),
+            "rollback_release": p.get("previous_image")}.get(proposal.get("action_type"))
 
 
 def ladder(policy: AutoPolicy, proposal: dict, max_memory_bytes: float) -> list:

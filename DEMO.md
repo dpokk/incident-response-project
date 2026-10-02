@@ -78,7 +78,7 @@ The gate threshold is 85%.
 | Memory limit set too low | 97% | auto-raised 32Mi → 64Mi, RESOLVED on attempt 1, no human click |
 | Memory exhaustion (spike) | 70–85%, varies with timing | Slack approval; the spike also ends by itself |
 | Application crash | 90% | agent verified the exact line; no typed action fits, so manual steps |
-| Broken release (missing image) | 63%, agent led | agent named the pull failure and gave the rollback command |
+| Broken release (missing image) | 90% (63% once, agent led) | plans `rollback_release` app:0.3 → app:0.2 from recorded history; human Approve + Execute |
 | Backend scaled to zero | no pattern, agent led | agent found it (scale to 2); not executable, because the rules' plan has no action |
 | Sustained overload | 49% | the gate refuses; a human decides |
 

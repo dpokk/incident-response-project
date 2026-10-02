@@ -115,6 +115,7 @@ class ResourceState:
     instances: list[InstanceState] = field(default_factory=list)
     history: list[TerminationRecord] = field(default_factory=list)
     past_instances: list[PastInstance] = field(default_factory=list)
+    images: dict = field(default_factory=dict)   # process name -> image in the component's definition
 
 
 # --------------------------------------------------------------------------- events, logs, config, changes

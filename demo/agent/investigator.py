@@ -22,7 +22,9 @@ Investigate like a senior SRE:
 - Name the precise cause: which component, which setting or resource, what changed and when, and why it breaks.
 - Finish by calling submit_report exactly once. The suggested fix must be one of: adjust_resource_limit (memory
   limit, parameter like 512Mi), scale_workload (replica count), restore_configuration (hostname to restore in the
-  consumer's configuration), or investigate_only when no safe typed fix fits - then give concrete manual_steps."""
+  consumer's configuration), rollback_release (put a component back on its previous image when a release broke it;
+  parameter = the previous image, from configuration history), or investigate_only when no safe typed fix fits -
+  then give concrete manual_steps."""
 
 MODE_BRIEF = {
     "verify": ("A deterministic rule engine has already diagnosed this incident with high confidence: {rule}.\n"

@@ -24,7 +24,7 @@ from investigator.remediation_model import (ActionType, Check, ProposedAction, R
 from investigator.remediation_model import _plain
 from dataclasses import asdict
 
-SUPPORTED = ("scale_workload", "adjust_resource_limit")
+SUPPORTED = ("scale_workload", "adjust_resource_limit", "rollback_release")
 MAX_REPLICAS = 50
 
 
@@ -34,7 +34,7 @@ def build(rule_plan: dict, ai_report: dict, caps, components: list[str], now: fl
     fix = (ai_report or {}).get("suggested_fix") or {}
     atype = fix.get("action")
     if atype not in SUPPORTED:
-        return None, f"the agent's fix ({atype}) is not a scale or memory change"
+        return None, f"the agent's fix ({atype}) is not a scale, memory or release-rollback change"
     v = ai_report.get("validation") or {}
     if not v.get("ok") or not v.get("findings") or v.get("supported_findings") != v.get("findings"):
         return None, "the agent's report did not pass evidence validation"
@@ -67,6 +67,29 @@ def build(rule_plan: dict, ai_report: dict, caps, components: list[str], now: fl
             expected_final_state=[f"{comp} has {target} ready replica(s)"],
             risks=[Statement(f"If {comp} was scaled to {current} on purpose, this undoes that decision")],
             rollback=Rollback("restore_previous_value", f"Scale {comp} back to {current}", {"replicas": current}),
+            verification=_verification(comp, entry_app))
+    elif atype == "rollback_release":
+        images = state.images or {}
+        process = comp if comp in images else (next(iter(images)) if len(images) == 1 else None)
+        current = images.get(process) if process else None
+        if not current:
+            return None, f"the current image of {comp} could not be read"
+        item = f"containers[{process}].image"
+        hist = [c for c in (caps.get_configuration_history(comp, TimeRange(now - 6 * 3600, now)) or [])
+                if c.item == item and c.after == current and c.before and c.before != current]
+        if not hist:
+            return None, f"recorded history has no previous image of {comp} (the model's value is never used)"
+        previous = max(hist, key=lambda c: c.t or c.t_latest or 0).before
+        action = ProposedAction(
+            type=ActionType.ROLLBACK_RELEASE, target={"component": comp, "process": process},
+            parameters={"current_image": current, "previous_image": previous}, parameters_complete=True,
+            urgency=Urgency.IMMEDIATE, summary=f"Roll back {comp} from {current} to the previous release {previous} "
+                                               f"(proposed by the Investigator Agent)",
+            rationale=why + [Statement(f"Recorded history: {item} changed from {previous} to {current}")],
+            preconditions=[f"{comp} still runs {current}"],
+            expected_final_state=[f"{comp} runs {previous} and all instances are ready"],
+            risks=[Statement(f"Changes shipped in {current} are withdrawn until it is fixed and released again")],
+            rollback=Rollback("restore_previous_value", f"Set the image back to {current}", {"image": current}),
             verification=_verification(comp, entry_app))
     else:
         limits = state.limits or {}

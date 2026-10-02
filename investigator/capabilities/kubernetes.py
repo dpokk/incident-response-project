@@ -168,7 +168,8 @@ class KubernetesAdapter(ResourceProvider):
             component=w["name"], kind=w["kind"], scope=w["namespace"], desired=w["replicas_desired"],
             ready=w["replicas_ready"], available=w["replicas_available"],
             limits={c["name"]: c["limits"] for c in w["containers"]},
-            instances=[_instance(p) for p in pods], history=history, past_instances=past)
+            instances=[_instance(p) for p in pods], history=history, past_instances=past,
+            images={c["name"]: c.get("image") for c in w["containers"]})
 
     def _retained_runs(self, component: str, time_range: TimeRange) -> set[tuple]:
         return {(g["instance"], g["process"], g["generation"])

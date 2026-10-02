@@ -71,6 +71,8 @@ class ChangeRequest:
     expected_host: str | None = None    # the host the plan saw (the faulty one)
     target_host: str | None = None      # host to restore (engineer-supplied) ...
     target_value: str | None = None     # ... or the whole recorded previous value
+    expected_image: str | None = None   # rollback_release: the image the definition runs now (the bad release)
+    target_image: str | None = None     # ... and the previous image, from recorded history
 
     def describe(self) -> str:
         if self.action_type == "adjust_resource_limit":
@@ -78,6 +80,8 @@ class ChangeRequest:
                     f"{mib(self.target_bytes)}")
         if self.action_type == "scale_workload":
             return f"replicas of {self.component}: {self.expected_replicas} -> {self.target_replicas}"
+        if self.action_type == "rollback_release":
+            return f"image of {self.component}/{self.process}: {self.expected_image} -> {self.target_image}"
         return (f"{self.item} in {self.source}: host '{self.expected_host}' -> "
                 f"'{self.target_host or '(recorded previous value)'}', then restart {self.component}")
 

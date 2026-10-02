@@ -288,6 +288,37 @@ def _restore_configuration(s: Situation) -> ProposedAction | None:
                                             f"dependency")] + _verify_component(s.affected) + _verify_entry(s))
 
 
+def _rollback_release(s: Situation) -> ProposedAction | None:
+    """Eligible when a process of the affected component cannot obtain its image now AND recorded history has the
+    image it ran before (the change that introduced the current image). Values come only from that history."""
+    comp = s.affected
+    pulling = [w for w in s.find("process_waiting", f"component/{comp}") if w.data.get("cause") == "image_unavailable"]
+    if not comp or not pulling:
+        return None
+    process = pulling[0].data.get("process")
+    item = f"containers[{process}].image"
+    changes = sorted((c for c in s.find("configuration_change", f"component/{comp}")
+                      if c.data.get("item") == item and c.data.get("before") and c.data.get("after")),
+                     key=lambda c: c.data.get("t") or 0)
+    if not changes:
+        return None
+    last = changes[-1]
+    current, previous = last.data["after"], last.data["before"]
+    if current == previous:
+        return None
+    return ProposedAction(
+        type=ActionType.ROLLBACK_RELEASE, target={"component": comp, "process": process},
+        parameters={"current_image": current, "previous_image": previous}, parameters_complete=True,
+        urgency=Urgency.IMMEDIATE, summary=f"Roll back {comp} from {current} to the previous release {previous}",
+        rationale=[Statement(f"{comp} cannot obtain its image now: {pulling[0].text}", [pulling[0].id]),
+                   Statement(f"Recorded history: {item} changed from {previous} to {current}", [last.id])],
+        preconditions=[f"{comp} still runs {current}", f"Nobody intends {current} to stay (e.g. a fix in progress)"],
+        expected_final_state=[f"{comp} runs {previous} and all instances are ready"],
+        risks=[Statement(f"Changes shipped in {current} are withdrawn until it is fixed and released again")],
+        rollback=Rollback("restore_previous_value", f"Set the image back to {current}", {"image": current}),
+        verification=_verify_component(comp) + _verify_entry(s))
+
+
 def _scale_for_load(s: Situation) -> ProposedAction | None:
     """Eligible only when the evidence *links* a load increase to the failure (correlation established)."""
     link, comp = s.linked_load(), s.root_component
@@ -380,7 +411,7 @@ def _verify_entry(s: Situation) -> list[VerificationCriterion]:
     return out
 
 
-CANDIDATES = (_resource_limit, _restore_capacity, _restore_configuration, _scale_for_load)
+CANDIDATES = (_resource_limit, _restore_capacity, _restore_configuration, _rollback_release, _scale_for_load)
 
 
 # --------------------------------------------------------------------------- the plan
@@ -472,6 +503,16 @@ def plan_rollback(plan: dict, action_index: int, applied: dict, outcome: str, re
             risks=[Statement(f"With {prev} replica(s), the original failure is expected to recur")],
             rollback=Rollback("restore_previous_value", f"Scale {comp} to {cur} again", {"replicas": cur}),
             verification=_verify_component(comp) if prev > 0 else [])
+    elif t == ActionType.ROLLBACK_RELEASE:
+        action = ProposedAction(
+            type=t, target=dict(a["target"]), parameters={"current_image": after, "previous_image": before},
+            parameters_complete=True, urgency=Urgency.IMMEDIATE,
+            summary=f"Undo the rollback of {comp}: from {after} back to {before}",
+            rationale=why, preconditions=[f"{comp} still runs {after}"],
+            expected_final_state=[f"{comp} runs {before} again"],
+            risks=[Statement(f"{before} is the release diagnosed as broken: the failure is expected to recur")],
+            rollback=Rollback("restore_previous_value", f"Set the image to {after} again", {"image": after}),
+            verification=[])
     elif t == ActionType.RESTORE_CONFIGURATION:
         item, source = a["target"].get("config_item"), a["target"].get("source")
         action = ProposedAction(

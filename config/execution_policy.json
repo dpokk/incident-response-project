@@ -1,6 +1,6 @@
 {
   "_comment": "Iteration 7 execution policy for the local demo environment. Configurable, not hard-coded safety rules. Action types use the RemediationPlan vocabulary (AdjustResourceLimit = adjust_resource_limit, ...). allowed_executors: \"approvers\" (= SLACK_APPROVERS) or a list of Slack user IDs.",
-  "allowed_action_types": ["adjust_resource_limit", "scale_workload", "restore_configuration"],
+  "allowed_action_types": ["adjust_resource_limit", "scale_workload", "restore_configuration", "rollback_release"],
   "allowed_namespaces": ["shop"],
   "max_memory_limit": "1Gi",
   "max_replicas": 3,
