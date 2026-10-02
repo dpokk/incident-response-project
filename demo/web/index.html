@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Incident Response Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: an operations console. Left column = the live system (status, lab); right = the incident story.
+   Colour encodes state only: green healthy, amber degraded/working, red failing, blue = the agent (AI). */
+:root {
+  --bg: #f3f5f7; --panel: #ffffff; --fg: #17202a; --muted: #5d6b79; --rule: #dde3e9; --soft: #eef2f5;
+  --ok: #1f7a46; --ok-bg: #e2f3e8; --warn: #a15c00; --warn-bg: #fbf0dc; --bad: #b4261f; --bad-bg: #fbe5e3;
+  --ai: #2955c4; --ai-bg: #e7edfb; --accent: #17202a;
+  --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif; --mono: "JetBrains Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root {
+  --bg: #0f1418; --panel: #161d23; --fg: #e4eaef; --muted: #91a0ad; --rule: #26313a; --soft: #1c252c;
+  --ok: #5fd08e; --ok-bg: #16301f; --warn: #f0b356; --warn-bg: #33270f; --bad: #ff7b72; --bad-bg: #3a1b19;
+  --ai: #8eaaf5; --ai-bg: #1b2541; --accent: #e4eaef; color-scheme: dark } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 var(--sans); }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; padding: 14px 20px;
+  background: var(--panel); border-bottom: 1px solid var(--rule); position: sticky; top: 0; z-index: 5; }
+header h1 { font-size: 18px; margin: 0; font-weight: 700; letter-spacing: -.01em; }
+.sub { color: var(--muted); font-size: 12.5px; }
+.spacer { flex: 1; }
+button { font: 600 13px var(--sans); border-radius: 6px; border: 1px solid var(--rule); background: var(--panel);
+  color: var(--fg); padding: 7px 14px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--muted); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+button.approve { background: var(--ok); color: #fff; border-color: var(--ok); }
+button.reject { color: var(--bad); border-color: var(--bad); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--ai); outline-offset: 2px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font: 600 12px var(--sans); padding: 3px 10px;
+  border-radius: 999px; background: var(--soft); color: var(--muted); white-space: nowrap; }
+.pill.ok { background: var(--ok-bg); color: var(--ok); } .pill.warn { background: var(--warn-bg); color: var(--warn); }
+.pill.bad { background: var(--bad-bg); color: var(--bad); } .pill.ai { background: var(--ai-bg); color: var(--ai); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
+.dot.pulse { animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .dot.pulse { animation: none; } }
+main { display: grid; grid-template-columns: minmax(330px, 420px) 1fr; gap: 16px; padding: 16px 20px 40px; }
+@media (max-width: 980px) { main { grid-template-columns: 1fr; } }
+.col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; min-width: 0; }
+.panel > h2 { margin: 0; padding: 11px 16px; font-size: 11.5px; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--muted); border-bottom: 1px solid var(--rule); display: flex; align-items: center; gap: 10px; }
+.panel > h2 .right { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; }
+.body { padding: 12px 16px; }
+.health { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--rule); }
+.health .big { font-size: 20px; font-weight: 700; }
+.comp { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; align-items: center; padding: 9px 0;
+  border-bottom: 1px dashed var(--rule); }
+.comp:last-child { border-bottom: 0; }
+.comp .name { font-weight: 600; }
+.comp .meta { color: var(--muted); font-size: 12.5px; text-align: right; }
+.pods { grid-column: 2 / 4; display: flex; flex-wrap: wrap; gap: 4px 12px; font: 12px var(--mono); color: var(--muted); }
+.pods span.bad { color: var(--bad); } .pods span.warn { color: var(--warn); }
+.kv { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-size: 13px; margin-top: 10px; }
+.kv .v { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.lab { display: flex; flex-direction: column; gap: 10px; }
+.card { border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; display: grid; gap: 6px; }
+.card .t { font-weight: 600; } .card .d { color: var(--muted); font-size: 12.5px; }
+.card .row { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
+.card code { font: 11.5px var(--mono); color: var(--muted); }
+.logs { height: 290px; overflow: auto; font: 12px/1.55 var(--mono); padding: 8px 12px; background: var(--soft);
+  border-radius: 0 0 10px 10px; }
+.logline { display: grid; grid-template-columns: 64px 74px 1fr; gap: 8px; white-space: pre-wrap; word-break: break-word; }
+.logline .ts { color: var(--muted); } .logline.error { color: var(--bad); } .logline.warning { color: var(--warn); }
+.logline .app { font-weight: 500; }
+.filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.filters label { font: 500 11.5px var(--sans); color: var(--muted); display: flex; gap: 4px; align-items: center; }
+.empty { color: var(--muted); padding: 18px 16px; }
+.incident-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 14px 16px;
+  border-bottom: 1px solid var(--rule); }
+.incident-head .id { font: 600 15px var(--mono); }
+.stage { padding: 12px 16px; border-bottom: 1px solid var(--rule); }
+.stage:last-child { border-bottom: 0; }
+.stage h3 { margin: 0 0 8px; font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
+.stage h3 .n { font: 600 11px var(--mono); color: var(--muted); }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.steps li { display: grid; grid-template-columns: 20px 1fr; gap: 6px; align-items: start; }
+.steps li .ic { text-align: center; }
+.steps .why { color: var(--muted); font-size: 12px; }
+.steps code, .mono { font: 12px var(--mono); }
+.agent { border-left: 3px solid var(--ai); background: var(--ai-bg); border-radius: 0 8px 8px 0; padding: 10px 12px; }
+.agent .note { white-space: pre-wrap; font-size: 12.5px; color: var(--fg); background: var(--panel);
+  border-radius: 6px; padding: 8px 10px; margin: 4px 0 2px; max-height: 160px; overflow: auto; }
+.report { display: grid; gap: 10px; }
+.report .rc { font-size: 15px; font-weight: 600; }
+.ev { font: 11.5px var(--mono); color: var(--muted); }
+.fix { border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; background: var(--soft); }
+.approval { border: 2px solid var(--warn); border-radius: 10px; padding: 12px 14px; display: grid; gap: 10px; }
+.approval input { font: 13px var(--mono); padding: 6px 8px; border: 1px solid var(--rule); border-radius: 6px;
+  background: var(--panel); color: var(--fg); width: 160px; }
+.approval .btns { display: flex; gap: 10px; flex-wrap: wrap; }
+.banner { margin: 0; padding: 14px 16px; font-size: 17px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+.banner.ok { background: var(--ok-bg); color: var(--ok); } .banner.bad { background: var(--bad-bg); color: var(--bad); }
+.banner.warn { background: var(--warn-bg); color: var(--warn); }
+.feed { font-size: 12.5px; display: grid; gap: 3px; max-height: 170px; overflow: auto; }
+.feed .ts { color: var(--muted); font: 11.5px var(--mono); margin-right: 6px; }
+.ops { font: 11.5px/1.5 var(--mono); max-height: 170px; overflow: auto; color: var(--muted); }
+.ops .error { color: var(--bad); } .ops .warning { color: var(--warn); }
+.muted { color: var(--muted); }
+details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+.err { color: var(--bad); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Incident Response Console</h1>
+    <div class="sub" id="sub">Kubernetes shop · Investigator Agent · human-approved remediation</div>
+  </div>
+  <span class="pill" id="phase">loading…</span>
+  <div class="spacer"></div>
+  <span class="pill" id="model-pill" title="Investigator Agent model"></span>
+  <span class="pill" id="slack-pill"></span>
+  <button class="primary" id="btn-start">Start services</button>
+  <button id="btn-reset" title="Run scripts/restore.ps1 and return to monitoring">Reset to healthy</button>
+</header>
+
+<main>
+  <div class="col">
+    <section class="panel" aria-labelledby="h-status">
+      <h2 id="h-status">System status <span class="right" id="status-time"></span></h2>
+      <div class="health"><span class="dot" id="health-dot"></span><div><div class="big" id="health-text">Not started</div>
+        <div class="sub" id="health-sub">Press “Start services” to connect to the cluster.</div></div></div>
+      <div class="body"><div id="components"></div>
+        <div class="kv" id="kv"></div></div>
+    </section>
+
+    <section class="panel" aria-labelledby="h-lab">
+      <h2 id="h-lab">Incident lab <span class="right">real failures, injected into Kubernetes</span></h2>
+      <div class="body lab" id="lab"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="h-slack">
+      <h2 id="h-slack">Slack activity</h2>
+      <div class="body feed" id="slack-feed"><span class="muted">No messages yet.</span></div>
+    </section>
+
+    <section class="panel" aria-labelledby="h-ops">
+      <h2 id="h-ops">Operations</h2>
+      <div class="body ops" id="ops"></div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section class="panel" aria-labelledby="h-logs">
+      <h2 id="h-logs">Live logs <span class="right filters" id="filters"></span></h2>
+      <div class="logs" id="logs" role="log" aria-live="off"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="h-inc">
+      <h2 id="h-inc">Incident</h2>
+      <div id="incident"><div class="empty">No incident. Trigger one from the Incident lab; detection is automatic.</div></div>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/<@([A-Z0-9]+)>/g, "@$1").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const hms = (t) => t ? new Date(t * 1000).toLocaleTimeString([], {hour12: false}) : "";
+const PHASE = {stopped: ["Stopped", ""], monitoring: ["Monitoring", "ok"], detected: ["Incident detected", "bad"],
+  investigating: ["Investigating", "warn"], agent: ["Agent investigating", "ai"], awaiting_approval: ["Awaiting approval", "warn"],
+  investigated: ["Investigated (no executable fix)", "warn"], remediating: ["Remediating", "warn"],
+  resolved: ["Resolved", "ok"], not_resolved: ["Not resolved", "bad"], rejected: ["Rejected", "bad"], failed: ["Failed", "bad"]};
+let S = {phase: "stopped", busy: null, config: {}, incidents: [], hidden: new Set()};
+let I = null;   // the current incident view model, built only from events
+
+function resetIncident() {
+  I = {id: null, signals: [], ruleSteps: [], rule: null, agent: {model: null, steps: [], result: null, error: null, thinking: false},
+       proposal: null, decision: null, remediation: [], lastRem: null, outcome: null, slack: [], phase: null, detected_at: null};
+}
+
+// ------------------------------------------------------------------ status
+function renderPhase() {
+  const [label, cls] = PHASE[S.phase] || [S.phase, ""];
+  $("#phase").className = "pill " + cls; $("#phase").textContent = label + (S.busy ? " · " + S.busy : "");
+  $("#btn-start").disabled = S.phase !== "stopped" || !!S.busy;
+  $("#btn-start").textContent = S.busy === "start" ? "Starting…" : (S.phase === "stopped" ? "Start services" : "Running");
+  $("#btn-reset").disabled = S.phase === "stopped" || !!S.busy || ["detected","investigating","agent","remediating"].includes(S.phase);
+  renderLab();
+}
+function renderConfig() {
+  const c = S.config;
+  $("#model-pill").className = "pill " + (c.model ? "ai" : "warn");
+  $("#model-pill").textContent = c.model ? "Agent: " + c.model : "Agent: no model configured";
+  $("#slack-pill").className = "pill " + (c.slack ? "ok" : "warn");
+  $("#slack-pill").textContent = c.slack ? (c.slack_threaded ? "Slack connected" : "Slack (webhook)") : "Slack off";
+  $("#sub").textContent = `namespace ${c.namespace || "?"} · entry ${c.entry || "?"} · approving as Slack user ${c.approver || "?"}`;
+}
+function renderSystem(sys) {
+  if (!sys) return;
+  const comps = sys.components || [];
+  const cls = (s) => s === "healthy" ? "ok" : s === "degraded" ? "warn" : "bad";
+  const healthy = !sys.unhealthy && comps.every(c => c.status === "healthy");
+  $("#health-dot").className = "dot " + (healthy ? "ok" : "bad pulse");
+  $("#health-text").textContent = healthy ? "Healthy" : "Unhealthy";
+  $("#health-sub").textContent = healthy ? "All components ready, user requests succeeding."
+    : (sys.signals && sys.signals.length ? sys.signals[0] : "Symptoms present (see components and logs)");
+  $("#status-time").textContent = "sampled " + hms(sys.t);
+  $("#components").innerHTML = comps.map(c => `
+    <div class="comp"><span class="dot ${cls(c.status)}"></span>
+      <span class="name">${esc(c.name)}</span>
+      <span class="meta">${esc(c.status)}${c.note ? " (" + esc(c.note) + ")" : ""} · ${c.ready}/${c.desired} ready</span>
+      <div class="pods">${c.instances.map(i => `<span class="${i.ready ? "" : (i.waiting ? "bad" : "warn")}">${esc(i.name.slice(-5))} ${i.ready ? "ready" : (i.waiting ? esc(i.waiting) : esc(i.phase || "not ready"))} · ${i.restarts} restarts${i.last_termination ? " · last: " + esc(i.last_termination) : ""}${i.memory_limit ? " · mem " + esc(i.memory_limit) : ""}</span>`).join("") || "<span>no pods</span>"}</div>
+    </div>`).join("");
+  const t = sys.traffic || {}, p = sys.probe || {};
+  const errs = Object.entries(sys.errors || {}).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`).join(", ") || "none";
+  $("#kv").innerHTML = `
+    <span>Synthetic user requests</span><span class="v">${p.ok}/${p.total} ok${p.last_status ? " · HTTP " + p.last_status : ""}</span>
+    <span>Traffic at ${esc(S.config.entry ? S.config.entry.split("/")[0] : "entry")}</span><span class="v">${t.request_rate == null ? "n/a" : t.request_rate.toFixed(1) + " req/s"}</span>
+    <span>HTTP 5xx ratio</span><span class="v">${t.error_ratio == null ? "n/a" : (t.error_ratio * 100).toFixed(1) + " %"}</span>
+    <span>Error log lines (last poll)</span><span class="v">${esc(errs)}</span>`;
+}
+
+// ------------------------------------------------------------------ lab
+function renderLab() {
+  const can = S.phase === "monitoring" && !S.busy;
+  $("#lab").innerHTML = (S.incidents || []).map(x => `
+    <div class="card"><div class="row"><span class="t">${esc(x.title)}</span>
+      <button data-trigger="${esc(x.id)}" ${can ? "" : "disabled"}>${S.busy === "trigger:" + x.id ? "Triggering…" : "Trigger"}</button></div>
+      <div class="d">${esc(x.what)}</div><code>${esc(x.script)}</code></div>`).join("");
+}
+
+// ------------------------------------------------------------------ logs
+const LOG_MAX = 400;
+function addLogs(lines) {
+  const box = $("#logs"), atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  for (const l of lines) {
+    if (!S.apps.has(l.app)) { S.apps.add(l.app); renderFilters(); }
+    const div = document.createElement("div");
+    div.className = "logline " + (l.level === "error" || l.level === "critical" ? "error" : l.level === "warning" ? "warning" : "");
+    div.dataset.app = l.app;
+    if (S.hidden.has(l.app)) div.hidden = true;
+    div.innerHTML = `<span class="ts">${hms(l.t)}</span><span class="app">${esc(l.app)}</span><span>${esc(l.text)}</span>`;
+    box.appendChild(div);
+  }
+  while (box.children.length > LOG_MAX) box.removeChild(box.firstChild);
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+S.apps = new Set();
+function renderFilters() {
+  $("#filters").innerHTML = [...S.apps].sort().map(a => `<label><input type="checkbox" data-app="${esc(a)}" ${S.hidden.has(a) ? "" : "checked"}> ${esc(a)}</label>`).join("");
+}
+$("#filters").addEventListener("change", (e) => {
+  const a = e.target.dataset.app; if (!a) return;
+  e.target.checked ? S.hidden.delete(a) : S.hidden.add(a);
+  document.querySelectorAll(".logline").forEach(d => { d.hidden = S.hidden.has(d.dataset.app); });
+});
+
+// ------------------------------------------------------------------ incident view
+function renderIncident() {
+  const el = $("#incident");
+  if (!I || !I.id) { el.innerHTML = `<div class="empty">No incident. Trigger one from the Incident lab; detection is automatic.</div>`; return; }
+  const ph = PHASE[I.phase || S.phase] || ["", ""];
+  let h = `<div class="incident-head"><span class="id">${esc(I.id)}</span><span class="pill ${ph[1]}">${esc(ph[0])}</span>
+    <span class="sub">detected ${hms(I.detected_at)}</span></div>`;
+  if (I.outcome) {
+    const ok = I.outcome.code === "RESOLVED";
+    h += `<p class="banner ${ok ? "ok" : "bad"}">${ok ? "🟢 INCIDENT RESOLVED" : "🔴 " + esc(I.outcome.code)}<span class="sub" style="font-weight:500">${esc(I.outcome.message || "")}</span></p>`;
+  } else if (I.decision && I.decision.decision === "rejected") {
+    h += `<p class="banner bad">⛔ Remediation rejected — no change was made</p>`;
+  }
+  // 1 detection
+  h += `<div class="stage"><h3><span class="n">1</span> Detection</h3><ul class="steps">${I.signals.map(s => `<li><span class="ic">🔴</span><span>${esc(s)}</span></li>`).join("")}</ul>
+    ${I.investigate_in_s && !I.rule && !I.ruleSteps.length ? `<div class="sub">Collecting symptoms for ${I.investigate_in_s} s before investigating…</div>` : ""}</div>`;
+  // 2 rule engine
+  if (I.ruleSteps.length || I.rule) {
+    const decisions = I.ruleSteps.filter(s => s.kind === "decision"), calls = I.ruleSteps.filter(s => s.kind === "call");
+    h += `<div class="stage"><h3><span class="n">2</span> Evidence collection (deterministic rule engine)
+      <span class="pill">${decisions.length} decisions · ${calls.length} capability calls</span></h3>
+      <ul class="steps">${decisions.slice(-8).map(s => `<li><span class="ic">→</span><span>${esc(s.text)}<div class="why">${esc(s.reason)}</div></span></li>`).join("")}</ul>
+      <details><summary>All capability calls (${calls.length})</summary><ul class="steps">${calls.map(c => `<li><span class="ic">${c.status === "ok" ? "✓" : "✗"}</span><span><code>${esc(c.capability)}</code> ${esc((c.args || []).join(", "))} <span class="why">· ${esc(c.summary)} · ${c.ms} ms</span></span></li>`).join("")}</ul></details>
+      ${I.rule ? `<div style="margin-top:8px"><b>Rule engine:</b> ${esc(I.rule.label)} in <code>${esc(I.rule.affected)}</code> · ${esc(I.rule.confidence)} confidence (${Math.round((I.rule.confidence_value || 0) * 100)}%) · ${I.rule.facts} facts</div>` : `<div class="sub">⏳ collecting…</div>`}</div>`;
+  }
+  // 3 agent
+  const A = I.agent;
+  if (A.model || A.error || A.steps.length) {
+    h += `<div class="stage"><h3><span class="n">3</span> 🔍 Investigator Agent <span class="pill ai">${esc(A.model || "")}</span></h3><div class="agent"><ul class="steps">`;
+    for (const s of A.steps) {
+      if (s.type === "call") h += `<li><span class="ic">${s.result ? (s.result.ok ? "✓" : "✗") : "⏳"}</span><span><code>${esc(s.tool)}</code>${Object.keys(s.args || {}).length ? " <span class='mono'>" + esc(JSON.stringify(s.args)) + "</span>" : ""}
+        ${s.purpose ? `<div class="why">${esc(s.purpose)}</div>` : ""}${s.result ? `<div>${s.result.evidence_id ? `<span class="ev">${esc(s.result.evidence_id)}</span> ` : ""}${esc(s.result.summary)}</div>` : ""}</span></li>`;
+      else if (s.type === "note") h += `<li><span class="ic">💭</span><span><div class="note">${esc(s.text)}</div></span></li>`;
+    }
+    if (A.thinking) h += `<li><span class="ic">⏳</span><span class="muted">Reasoning…</span></li>`;
+    if (A.error) h += `<li><span class="ic">⚠️</span><span class="err">${esc(A.error)}</span></li>`;
+    h += `</ul></div></div>`;
+  }
+  // 4 report
+  if (A.result) {
+    const r = A.result, ag = r.agreement || {}, v = r.validation || {};
+    h += `<div class="stage"><h3><span class="n">4</span> Investigation complete</h3><div class="report">
+      <div><div class="sub">Root cause · ${esc(r.confidence)} confidence · <code>${esc(r.category)}</code> in <code>${esc(r.root_cause_component)}</code></div><div class="rc">${esc(r.root_cause)}</div>
+        ${r.summary ? `<div>${esc(r.summary)}</div>` : ""}</div>
+      <div><b>Findings</b><ul class="steps">${r.findings.map(f => `<li><span class="ic">${f.supported ? "✓" : "⚠️"}</span><span>${esc(f.statement)}
+        <div class="ev">${f.evidence.map(e => esc(e.id) + ": " + esc(e.text)).join("<br>") || "no valid evidence cited"}${f.invalid_citations.length ? "<br><span class='err'>rejected citations: " + esc(f.invalid_citations.join(", ")) + "</span>" : ""}</div></span></li>`).join("")}</ul></div>
+      <div class="fix"><b>Suggested remediation:</b> ${esc(r.suggested_fix.action)} → <code>${esc(r.suggested_fix.target)}</code>${r.suggested_fix.parameter_value ? " = <code>" + esc(r.suggested_fix.parameter_value) + "</code>" : ""}<div>${esc(r.suggested_fix.description)}</div></div>
+      <div class="sub">${ag.category && ag.component ? "✓ Agrees with the rule engine" : "≠ Rule engine said: " + esc(ag.rule_label) + " in " + esc(ag.rule_component)}
+        · evidence check: ${v.supported_findings}/${v.findings} findings supported${v.problems && v.problems.length ? " · " + esc(v.problems.join("; ")) : ""}
+        · ${r.tool_calls} tool calls · ${r.seconds} s${r.usage ? " · " + (r.usage.prompt_tokens + r.usage.completion_tokens) + " tokens" : ""}</div>
+    </div></div>`;
+  } else if (A.error && I.rule) {
+    h += `<div class="stage"><h3><span class="n">4</span> Findings (rule engine; the agent produced no report)</h3>
+      <div class="rc">${esc(I.rule.root_cause)}</div><ul class="steps">${(I.rule.evidence || []).map(e => `<li><span class="ic">•</span><span><span class="ev">${esc(e.id)}</span> ${esc(e.text)}</span></li>`).join("")}</ul></div>`;
+  }
+  // 5 approval
+  const P = I.proposal;
+  if (P) {
+    h += `<div class="stage"><h3><span class="n">5</span> Remediation request — human approval</h3>`;
+    if (!P.executable) h += `<div class="err">No executable remediation: ${esc(P.reason)}</div>${(P.investigate || []).map(q => `<div class="sub">• ${esc(q)}</div>`).join("")}`;
+    else {
+      const par = P.parameter;
+      const pending = (I.phase || S.phase) === "awaiting_approval" && !I.decision;
+      h += `<div class="approval"><div><b>Proposed action:</b> ${esc(P.summary)}
+          <div class="sub">typed action <code>${esc(P.action_type)}</code> · target <code>${esc(JSON.stringify(P.target))}</code> · source: ${P.source === "agent" ? "Investigator Agent, mapped to the deterministic plan" : "rule engine"}</div></div>
+        ${par ? `<div><label for="param"><b>${esc(par.name)}</b> (${esc(par.description)}) </label>
+          <input id="param" value="${esc(par.value || "")}" ${pending ? "" : "disabled"}> ${par.value ? `<span class="sub">suggested by the agent — edit if you disagree</span>` : ""}${par.error ? `<div class="err">${esc(par.error)}</div>` : ""}</div>` : ""}
+        <details><summary>Risks, verification and rollback (from the plan)</summary>
+          <div class="sub"><b>Risks:</b> ${P.risks.map(esc).join(" · ")}</div>
+          <div class="sub"><b>Verification:</b> ${P.verification.map(esc).join(" · ")}</div>
+          <div class="sub"><b>Rollback:</b> ${esc(P.rollback)}</div></details>
+        ${pending ? `<div class="btns"><button class="reject" id="btn-reject">REJECT</button><button class="approve" id="btn-approve">APPROVE</button></div>
+          <div class="sub">Approving records your decision and starts the deterministic remediation: policy check → live recheck → dry run → one typed change → validation.</div>`
+          : (I.decision ? `<div><b>${I.decision.decision === "approved" ? "✓ Approved" : "⛔ Rejected"}</b> by ${esc(I.decision.by)}${I.decision.via ? " (in Slack)" : ""} at ${hms(I.decision.at)}</div>` : "")}
+        <div class="err" id="approve-err"></div></div>`;
+    }
+    h += `</div>`;
+  }
+  // 6 remediation + 7 validation
+  if (I.remediation.length) {
+    const L = I.lastRem || {}, rec = L.record || {};
+    h += `<div class="stage"><h3><span class="n">6</span> Deterministic remediation</h3><ul class="steps">`;
+    h += `<li><span class="ic">✓</span><span>Human approval received</span></li>`;
+    for (const c of (L.checks || [])) h += `<li><span class="ic">${c.ok ? "✓" : "✗"}</span><span>${esc(c.detail || c.check)}</span></li>`;
+    if (rec.dry_run) h += `<li><span class="ic">${rec.dry_run.accepted ? "✓" : "✗"}</span><span>Dry run ${rec.dry_run.accepted ? "accepted by the cluster" : "rejected: " + esc(rec.dry_run.error)}</span></li>`;
+    if (rec.applied && rec.applied.accepted) h += `<li><span class="ic">✓</span><span>Change applied at ${hms(rec.applied.at)}: <code>${esc(rec.applied.before)}</code> → <code>${esc(rec.applied.after)}</code>
+      <div class="ev">${(rec.applied.detail || []).map(esc).join("<br>")}</div></span></li>`;
+    if (rec.status === "refused" || rec.status === "apply_failed" || rec.status === "uncertain") h += `<li><span class="ic">✗</span><span class="err">${esc(rec.message)}</span></li>`;
+    h += `</ul></div>`;
+    const ver = rec.verification;
+    if (L.window || ver) {
+      h += `<div class="stage"><h3><span class="n">7</span> Deterministic validation</h3>`;
+      if (!ver || !ver.criteria) h += `<div class="sub">⏳ ${L.settle ? "Observing for " + L.window.window_s + " s (settled after " + Math.round(L.settle.ended_at - L.settle.started_at) + " s)…" : "Waiting for the change to settle (pods ready on 3 consecutive samples, ≤ " + (L.window ? L.window.settle_max_s : "?") + " s)…"}</div>`;
+      else h += `<ul class="steps">${ver.criteria.map(c => `<li><span class="ic">${c.status === "pass" ? "✓" : c.status === "fail" ? "✗" : "?"}</span><span>${esc(c.statement)} <span class="why">· ${esc((c.evidence || []).slice(-1)[0] || "")} (${c.passed}/${c.samples} samples)</span></span></li>`).join("")}</ul>
+        <div class="sub">Settled after ${Math.round(ver.settle.ended_at - ver.settle.started_at)} s, observed ${Math.round(ver.window.ended_at - ver.window.started_at)} s · ${esc(ver.reason)}</div>`;
+      h += `</div>`;
+    }
+  }
+  el.innerHTML = h;
+  const ap = $("#btn-approve"), rj = $("#btn-reject");
+  if (ap) ap.onclick = async () => { ap.disabled = rj.disabled = true;
+    const r = await post("/api/approve", {value: ($("#param") || {}).value || null});
+    if (!r.ok) { $("#approve-err").textContent = r.error; ap.disabled = rj.disabled = false; } };
+  if (rj) rj.onclick = async () => { ap.disabled = rj.disabled = true; const r = await post("/api/reject", {});
+    if (!r.ok) { $("#approve-err").textContent = r.error; ap.disabled = rj.disabled = false; } };
+}
+
+function addSlack(text, t, ok) {
+  if (!text) return;
+  const f = $("#slack-feed"); if (f.querySelector(".muted")) f.innerHTML = "";
+  const d = document.createElement("div");
+  d.innerHTML = `<span class="ts">${hms(t)}</span>${ok === false ? "✗ " : "✓ "}${esc(text)}`;
+  f.appendChild(d); f.scrollTop = f.scrollHeight;
+}
+function addOp(o) {
+  const box = $("#ops"), d = document.createElement("div");
+  d.className = o.level; d.textContent = `${hms(o.t)} ${o.text}`; box.appendChild(d);
+  while (box.children.length > 200) box.removeChild(box.firstChild);
+  box.scrollTop = box.scrollHeight;
+}
+
+// ------------------------------------------------------------------ events
+function onEvent(ev) {
+  const d = ev.data || {};
+  switch (ev.type) {
+    case "system": renderSystem(d); return;
+    case "log": addLogs(d.lines || []); return;
+    case "op": addOp(d); return;
+    case "busy": S.busy = d.busy; renderPhase(); return;
+    case "phase": S.phase = d.phase; if (I) I.phase = d.phase; renderPhase(); break;
+    case "incident_cleared": resetIncident(); break;
+    case "incident": resetIncident(); I.id = d.id; I.detected_at = d.detected_at; I.signals = d.signals; I.investigate_in_s = d.investigate_in_s; I.phase = "detected"; break;
+    case "signals": I.signals = d.signals; break;
+    case "rule_step": I.ruleSteps.push(d); break;
+    case "rule_result": I.rule = d; break;
+    case "agent_start": I.agent.model = d.model; break;
+    case "agent_thinking": I.agent.thinking = true; break;
+    case "agent_note": I.agent.thinking = false; I.agent.steps.push({type: "note", text: d.text}); break;
+    case "agent_tool_call": I.agent.thinking = false; I.agent.steps.push({type: "call", n: d.n, tool: d.tool, args: d.args, purpose: d.purpose}); break;
+    case "agent_tool_result": { const s = [...I.agent.steps].reverse().find(x => x.type === "call" && x.n === d.n); if (s) s.result = d; break; }
+    case "agent_report": I.agent.thinking = false; break;
+    case "agent_result": I.agent.result = d; I.agent.thinking = false; break;
+    case "agent_error": I.agent.error = d.error; I.agent.thinking = false; break;
+    case "proposal": I.proposal = d; break;
+    case "decision": I.decision = d; break;
+    case "remediation": I.remediation.push(d); I.lastRem = {...(I.lastRem || {}), ...Object.fromEntries(Object.entries(d).filter(([, v]) => v != null))}; break;
+    case "outcome": I.outcome = d; if (d.record) I.lastRem = {...(I.lastRem || {}), record: d.record}; break;
+    case "slack": addSlack(d.text, ev.t, d.ok); return;
+    default: return;
+  }
+  renderIncident();
+}
+
+async function post(url, body) {
+  try { const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})}); return await r.json(); }
+  catch (e) { return {ok: false, error: String(e)}; }
+}
+$("#btn-start").onclick = () => post("/api/start");
+$("#btn-reset").onclick = () => post("/api/reset");
+$("#lab").addEventListener("click", async (e) => {
+  const k = e.target.dataset.trigger; if (!k) return;
+  e.target.disabled = true; const r = await post(`/api/incidents/${k}/trigger`);
+  if (!r.ok) addOp({t: Date.now() / 1000, text: r.error, level: "error"});
+});
+
+(async function boot() {
+  resetIncident();
+  const snap = await (await fetch("/api/snapshot")).json();
+  S.phase = snap.phase; S.busy = snap.busy; S.config = snap.config; S.incidents = snap.incidents;
+  renderConfig(); renderPhase(); renderSystem(snap.system); addLogs(snap.logs || []); (snap.ops || []).forEach(addOp);
+  renderIncident();
+  const es = new EventSource("/api/events");
+  es.onmessage = (m) => { try { onEvent(JSON.parse(m.data)); } catch (err) { console.error(err); } };
+})();
+</script>
+</body>
+</html>
