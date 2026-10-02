@@ -2,13 +2,15 @@
 Slack, human approval, deterministic execution and verification - and publishes every real step to the page.
 
 Lifecycle (one incident at a time):
-    stopped → monitoring → detected → investigating → agent → awaiting_approval
-            → remediating → resolved | not_resolved | rejected | failed → (reset) → monitoring
+    stopped → monitoring → detected → investigating → agent → awaiting_approval (in Slack)
+            → approved (Execute pending in Slack) → remediating → resolved | not_resolved | rejected | failed
+            → (reset) → monitoring
+
+The engineer approves and executes in Slack (the existing Iteration 6/7 buttons); the page only mirrors it.
 
 Every component used here already exists in the investigator (Iterations 2-7). This module only wires them together
 and reports what they do. Nothing shown on the page is simulated.
 """
-import os
 import subprocess
 import threading
 import time
@@ -16,11 +18,9 @@ import traceback
 from pathlib import Path
 
 from investigator import pipeline, slack
-from investigator import slack_view as view
 from investigator.context import IncidentContext
 from investigator.detector import Detector
 from investigator.evidence import EvidenceStore
-from investigator.execution_model import ExecutionRequest
 from investigator.planner import plan_and_collect
 from investigator.review import PARAMETER_SPECS, InvalidParameter, ReviewService
 
@@ -76,7 +76,6 @@ class Engine:
         self.busy: str | None = None                  # a running operation (start / trigger / reset)
         self.cooldown_until = 0.0
         self.lock = threading.RLock()
-        self.console_user = os.getenv("DEMO_CONSOLE_APPROVER") or next(iter(sorted(settings.slack_approvers)), "")
         self.model = ChatModel.from_env()
         self._monitor: threading.Thread | None = None
 
@@ -87,7 +86,7 @@ class Engine:
                 "incidents": [{"id": k, **v} for k, v in INCIDENTS.items()],
                 "config": {"model": self.model.name if self.model else None,
                            "slack": self.transport.configured, "slack_threaded": self.transport.threaded,
-                           "approver": self.console_user, "namespace": self.s.namespace,
+                           "approvers": sorted(self.s.slack_approvers), "namespace": self.s.namespace,
                            "entry": f"{self.s.entry_service}{self.s.entry_path.split('?')[0]}"}}
 
     def _emit(self, type_: str, data: dict, keep: bool = True) -> None:
@@ -122,8 +121,7 @@ class Engine:
                 self._run(["minikube", "start", "-p", self.s.kube_context], "minikube")
             self._op("Connecting to Kubernetes and Prometheus …")
             self.providers = providers_mod.connect(self.s, log=lambda m: self._op(str(m).strip()))
-            approvers = set(self.s.slack_approvers) | ({self.console_user} if self.console_user else set())
-            self.review = ReviewService(self.s.reviews_path, approvers)
+            self.review = ReviewService(self.s.reviews_path, self.s.slack_approvers)
             self.execution = pipeline.execution_service(self.s, self.providers, self.review)
             self.providers.new_resources().start_background_recording()
             self._op("Evidence history recorder started")
@@ -183,7 +181,7 @@ class Engine:
                                "traffic": traffic(self.providers.metrics, self.s.entry_app, sample["t"])}
                 self._emit("system", self.system, keep=False)
                 self._detect(sample)
-                self._watch_slack_side()
+                self._mirror_slack()
             except Exception as exc:  # noqa: BLE001 - keep monitoring through API hiccups
                 self._op(f"status sample failed: {type(exc).__name__}: {exc}", "warning")
             time.sleep(self.s.poll_interval_s)
@@ -319,111 +317,60 @@ class Engine:
                 "verification": [v["statement"] for v in a["verification"]],
                 "rollback": (a.get("rollback") or {}).get("statement")}
 
-    # ----------------------------------------------------------------------------- human decision
-    def approve(self, value: str | None) -> dict:
-        with self.lock:
-            inc = self.incident
-            if self.phase != "awaiting_approval" or not inc:
-                return {"ok": False, "error": f"nothing awaiting approval (phase: {self.phase})"}
-            p = inc["proposal"]
-            supplied = ((value or "").strip() or None) if p.get("parameter") else None
-            out = self.review.decide(inc["id"], inc["digest"], p["plan_index"], "approved", self.console_user,
-                                     supplied=supplied)
-            if not out.effective:
-                return {"ok": False, "error": out.message}
-            self._phase("remediating")
-        self._emit("decision", {"decision": "approved", "by": self.console_user, "value": supplied,
-                                "at": time.time()})
-        self._slack_decision(inc, out.record)
-        threading.Thread(target=self._execute, args=(inc,), daemon=True, name="execute").start()
-        return {"ok": True}
-
-    def reject(self) -> dict:
-        with self.lock:
-            inc = self.incident
-            if self.phase != "awaiting_approval" or not inc:
-                return {"ok": False, "error": f"nothing awaiting approval (phase: {self.phase})"}
-            out = self.review.decide(inc["id"], inc["digest"], inc["proposal"]["plan_index"], "rejected",
-                                     self.console_user)
-            if not out.effective:
-                return {"ok": False, "error": out.message}
-            self._phase("rejected")
-        self._emit("decision", {"decision": "rejected", "by": self.console_user, "at": time.time()})
-        self._slack_decision(inc, out.record)
-        self._slack_note(inc, view.notice(":no_entry_sign: Remediation *rejected* by the human reviewer. No change "
-                                          "was made to the system."))
-        return {"ok": True}
-
-    def _execute(self, inc: dict) -> None:
-        p = inc["proposal"]
-        req = ExecutionRequest(inc["id"], inc["digest"], p["plan_index"], self.console_user, time.time())
-        plan = self.review.plan(inc["id"], inc["digest"])["plan"]
-        state = {"checks": None, "window": None}
-
-        def progress(stage: str, data: dict) -> None:
-            eid = data.get("execution_id")
-            if stage == "checks_passed":
-                state["checks"] = data.get("checks")
-            elif stage in ("applied", "stopped") and data.get("result") is not None:
-                state["checks"] = data["result"].checks or state["checks"]
-            elif stage == "verifying":
-                state["window"] = data
-            rec = self.execution.store.get(eid) if eid else None
-            self._emit("remediation", {"stage": stage, "checks": state["checks"], "record": _public(rec),
-                                       "window": state["window"], "settle": data.get("settle")})
-            if eid and self.transport.threaded:
-                slack.publish_execution(self.transport, self.registry, inc["id"], eid, view.execution_message(
-                    plan, p["plan_index"], self.console_user, "checks" if stage == "checks_passed" else stage,
-                    state["checks"], rec, state["window"]))
-                if stage in ("checks_passed", "stopped", "completed"):
-                    slack.refresh_plan(self.transport, self.registry, self.review, inc["id"], inc["digest"],
-                                       time.time(), execution=self.execution)
-                    slack.refresh_root(self.transport, self.registry, self.review, inc["id"], self.execution)
-
-        try:
-            result = self.execution.execute(req, progress)
-        except Exception as exc:  # noqa: BLE001
-            self._op(f"Execution error: {type(exc).__name__}: {exc}", "error")
-            self._phase("failed", error=str(exc))
-            return
-        outcome = result.code
-        self._emit("outcome", {"code": outcome, "message": result.message, "record": _public(result.record)})
-        if outcome == "RESOLVED":
-            self._phase("resolved")
-            self._slack_note(inc, slack_ai.resolved(inc, result.record))
-        elif outcome in ("NOT_RESOLVED", "INCONCLUSIVE"):
-            self._phase("not_resolved", outcome=outcome)
-            self._slack_note(inc, slack_ai.not_resolved(inc, result.record))
-        else:
-            self._phase("failed", error=result.message)
-
-    def _watch_slack_side(self) -> None:
-        """Reflect decisions made with the Slack buttons (the same review/execution services) in the page."""
+    # ----------------------------------------------------------------------------- human decision (in Slack)
+    def _mirror_slack(self) -> None:
+        """Approval and execution happen in Slack (Iteration 6/7 buttons). The page mirrors the shared review and
+        execution records - whoever clicked - so it always shows what really happened."""
         inc = self.incident
-        if not inc or not inc.get("digest") or self.phase not in ("awaiting_approval", "remediating"):
+        if not inc or not inc.get("digest") or self.phase in ("resolved", "not_resolved", "rejected", "failed"):
             return
         idx = (inc.get("proposal") or {}).get("plan_index")
         if idx is None:
             return
         d = self.review.effective_decision(inc["id"], inc["digest"], idx)
-        if d and d["reviewer"] != self.console_user and not inc.get("slack_decision"):
-            inc["slack_decision"] = d["decision"]
-            self._emit("decision", {"decision": d["decision"], "by": d["reviewer"], "via": "slack",
-                                    "value": (d.get("supplied_parameters") or {}), "at": d["at"]})
-            if d["decision"] == "rejected":
+        if d and inc.get("mirror_decision") != d["id"]:
+            inc["mirror_decision"] = d["id"]
+            self._emit("decision", {"decision": d["decision"], "by": d["reviewer"], "at": d["at"],
+                                    "value": d.get("supplied_parameters") or {}})
+            if d["decision"] == "approved":
+                self._phase("approved")
+            elif d["decision"] == "rejected":
                 self._phase("rejected")
+            else:
+                self._phase("rejected", reason=f"sent back: {d['decision']}")
+        attempts = [a for a in self.execution.store.attempts(inc["id"]) if a["plan_digest"] == inc["digest"]
+                    and a["action_index"] == idx]
+        if attempts and inc.get("mirror_attempt") != attempts[-1]["id"]:
+            inc["mirror_attempt"] = attempts[-1]["id"]
+            a = attempts[-1]
+            if a["code"] != "claimed":
+                self._emit("execute_refused", {"by": a["executor"], "code": a["code"], "message": a["message"],
+                                               "at": a["at"]})
         rec = self.execution.store.for_action(inc["id"], inc["digest"], idx)
-        if rec and rec["executor"] != self.console_user:
-            key = (rec["status"], rec.get("outcome"))
-            if inc.get("slack_exec") != key:
-                inc["slack_exec"] = key
-                if self.phase == "awaiting_approval":
-                    self._phase("remediating")
-                self._emit("remediation", {"stage": rec["status"], "record": _public(rec), "via": "slack"})
-                if rec["status"] == "completed":
-                    self._emit("outcome", {"code": rec["outcome"], "message": rec.get("message"),
-                                           "record": _public(rec)})
-                    self._phase("resolved" if rec["outcome"] == "RESOLVED" else "not_resolved")
+        if not rec:
+            return
+        key = (rec["status"], rec.get("outcome"), bool(rec.get("dry_run")), bool(rec.get("applied")),
+               bool(rec.get("verification")))
+        if inc.get("mirror_exec") == key:
+            return
+        inc["mirror_exec"] = key
+        checks = ([{**c, "check": "policy:" + c["check"]} for c in (rec.get("policy") or {}).get("checks", [])]
+                  + [{**c, "check": "recheck:" + c["check"]} for c in (rec.get("recheck") or {}).get("checks", [])])
+        if self.phase in ("awaiting_approval", "approved"):
+            self._phase("remediating")
+        self._emit("remediation", {"stage": rec["status"], "checks": checks, "record": _public(rec),
+                                   "requested_at": rec.get("requested_at"),
+                                   "window": {"settle_max_s": self.execution.policy.verification.settle_max_s,
+                                              "window_s": self.execution.policy.verification.bounded()}})
+        if rec["status"] == "completed":
+            self._emit("outcome", {"code": rec["outcome"], "message": rec.get("message"), "record": _public(rec)})
+            if rec["outcome"] == "RESOLVED":
+                self._phase("resolved")
+                self._slack_note(inc, slack_ai.resolved(inc, rec))
+            else:
+                self._phase("not_resolved", outcome=rec["outcome"])
+        elif rec["status"] in ("refused", "apply_failed", "uncertain"):
+            self._phase("failed", error=rec.get("message"))
 
     # ----------------------------------------------------------------------------- operator actions
     def trigger(self, key: str) -> dict:
@@ -495,21 +442,19 @@ class Engine:
                                          self.s.namespace, time.time(), execution=self.execution)
         self._emit("slack", {"text": "Rule-based investigation and the remediation plan (with Approve / Execute "
                                      "buttons) posted to the thread", "ok": ok})
-
-    def _slack_decision(self, inc: dict, record: dict) -> None:
-        if not self.transport.configured:
-            return
-        plan = self.review.plan(inc["id"], inc["digest"])["plan"]
-        slack.refresh_plan(self.transport, self.registry, self.review, inc["id"], inc["digest"], time.time(),
-                           execution=self.execution)
-        slack.publish_decision(self.transport, self.registry, record, plan)
-        slack.refresh_root(self.transport, self.registry, self.review, inc["id"], self.execution)
-        self._emit("slack", {"text": f"Decision '{record['decision']}' posted to the thread"})
+        entry = self.registry.get(inc["id"])
+        if entry.get("channel") and entry.get("root_ts"):
+            link = self.transport._api("chat.getPermalink", {"channel": entry["channel"],
+                                                              "message_ts": entry["root_ts"]})
+            if link.get("ok"):
+                inc["slack_url"] = link["permalink"]
+                self._emit("slack_link", {"url": link["permalink"]})
 
 
 INCIDENT_EVENTS = {"phase", "incident", "signals", "rule_start", "rule_step", "rule_result", "agent_start",
                    "agent_thinking", "agent_note", "agent_tool_call", "agent_tool_result", "agent_report",
-                   "agent_result", "agent_error", "proposal", "decision", "remediation", "outcome", "slack"}
+                   "agent_result", "agent_error", "proposal", "decision", "remediation", "outcome", "slack",
+                   "slack_link", "execute_refused"}
 
 
 def _public(rec: dict | None) -> dict | None:

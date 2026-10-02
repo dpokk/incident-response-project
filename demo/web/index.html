@@ -115,7 +115,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
 <header>
   <div>
     <h1>Incident Response Console</h1>
-    <div class="sub" id="sub">Kubernetes shop · Investigator Agent · human-approved remediation</div>
+    <div class="sub" id="sub">Kubernetes shop · Investigator Agent · remediation approved by an engineer in Slack</div>
   </div>
   <span class="pill" id="phase">loading…</span>
   <div class="spacer"></div>
@@ -169,7 +169,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/<@([A-Z0-9]+)>/g, "@$1").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const hms = (t) => t ? new Date(t * 1000).toLocaleTimeString([], {hour12: false}) : "";
 const PHASE = {stopped: ["Stopped", ""], monitoring: ["Monitoring", "ok"], detected: ["Incident detected", "bad"],
-  investigating: ["Investigating", "warn"], agent: ["Agent investigating", "ai"], awaiting_approval: ["Awaiting approval", "warn"],
+  investigating: ["Investigating", "warn"], agent: ["Agent investigating", "ai"], awaiting_approval: ["Waiting for approval in Slack", "warn"], approved: ["Approved — waiting for Execute in Slack", "warn"],
   investigated: ["Investigated (no executable fix)", "warn"], remediating: ["Remediating", "warn"],
   resolved: ["Resolved", "ok"], not_resolved: ["Not resolved", "bad"], rejected: ["Rejected", "bad"], failed: ["Failed", "bad"]};
 let S = {phase: "stopped", busy: null, config: {}, incidents: [], hidden: new Set()};
@@ -195,7 +195,7 @@ function renderConfig() {
   $("#model-pill").textContent = c.model ? "Agent: " + c.model : "Agent: no model configured";
   $("#slack-pill").className = "pill " + (c.slack ? "ok" : "warn");
   $("#slack-pill").textContent = c.slack ? (c.slack_threaded ? "Slack connected" : "Slack (webhook)") : "Slack off";
-  $("#sub").textContent = `namespace ${c.namespace || "?"} · entry ${c.entry || "?"} · approving as Slack user ${c.approver || "?"}`;
+  $("#sub").textContent = `namespace ${c.namespace || "?"} · entry ${c.entry || "?"} · approvers (Slack): ${(c.approvers || []).join(", ") || "none configured"}`;
 }
 function renderSystem(sys) {
   if (!sys) return;
@@ -312,26 +312,33 @@ function renderIncident() {
     h += `<div class="stage"><h3><span class="n">4</span> Findings (rule engine; the agent produced no report)</h3>
       <div class="rc">${esc(I.rule.root_cause)}</div><ul class="steps">${(I.rule.evidence || []).map(e => `<li><span class="ic">•</span><span><span class="ev">${esc(e.id)}</span> ${esc(e.text)}</span></li>`).join("")}</ul></div>`;
   }
-  // 5 approval
+  // 5 approval - happens in Slack; this only mirrors the shared review / execution records
   const P = I.proposal;
   if (P) {
-    h += `<div class="stage"><h3><span class="n">5</span> Remediation request — human approval</h3>`;
+    const slackLink = I.slack_url ? ` <a href="${esc(I.slack_url)}" target="_blank" rel="noopener">Open the Slack thread ↗</a>` : "";
+    h += `<div class="stage"><h3><span class="n">5</span> Human approval — in Slack${slackLink ? "" : ""}</h3>`;
     if (!P.executable) h += `<div class="err">No executable remediation: ${esc(P.reason)}</div>${(P.investigate || []).map(q => `<div class="sub">• ${esc(q)}</div>`).join("")}`;
     else {
-      const par = P.parameter;
-      const pending = (I.phase || S.phase) === "awaiting_approval" && !I.decision;
+      const par = P.parameter, d = I.decision, rec = (I.lastRem || {}).record;
+      const approved = d && d.decision === "approved", declined = d && d.decision !== "approved";
       h += `<div class="approval"><div><b>Proposed action:</b> ${esc(P.summary)}
-          <div class="sub">typed action <code>${esc(P.action_type)}</code> · target <code>${esc(JSON.stringify(P.target))}</code> · source: ${P.source === "agent" ? "Investigator Agent, mapped to the deterministic plan" : "rule engine"}</div></div>
-        ${par ? `<div><label for="param"><b>${esc(par.name)}</b> (${esc(par.description)}) </label>
-          <input id="param" value="${esc(par.value || "")}" ${pending ? "" : "disabled"}> ${par.value ? `<span class="sub">suggested by the agent — edit if you disagree</span>` : ""}${par.error ? `<div class="err">${esc(par.error)}</div>` : ""}</div>` : ""}
+          <div class="sub">typed action <code>${esc(P.action_type)}</code> · target <code>${esc(JSON.stringify(P.target))}</code> · ${P.source === "agent" ? "suggested by the Investigator Agent, mapped to the deterministic plan" : "from the rule engine"}</div>
+          ${par && par.value ? `<div class="sub">The agent suggests <b>${esc(par.name)} = <code>${esc(par.value)}</code></b>; the engineer types the value in Slack.</div>` : ""}
+          ${par && par.error ? `<div class="err">${esc(par.error)}</div>` : ""}</div>
+        <ul class="steps">
+          <li><span class="ic">${d ? (approved ? "✓" : "⛔") : "⏳"}</span><span>${!d ? "Waiting for an approver in Slack (Approve / Reject on the plan message)"
+            : (approved ? "Approved" : esc(d.decision.replace("_", " "))) + " by " + esc(d.by) + " at " + hms(d.at)
+              + (d.value && Object.keys(d.value).length ? " · " + Object.entries(d.value).map(([k, v]) => esc(k) + " = <code>" + esc(v) + "</code>").join(", ") : "")}</span></li>
+          ${approved ? `<li><span class="ic">${rec ? "✓" : "⏳"}</span><span>${rec ? "Execute clicked by " + esc(rec.executor) + " — the deterministic remediation started" : "Waiting for Execute in Slack (a separate click after approval)"}</span></li>` : ""}
+          ${(I.refusals || []).map(r => `<li><span class="ic">⛔</span><span class="err">Execute refused (${esc(r.code)}): ${esc(r.message)}</span></li>`).join("")}
+        </ul>
+        ${slackLink ? `<div>${slackLink}</div>` : ""}
         <details><summary>Risks, verification and rollback (from the plan)</summary>
           <div class="sub"><b>Risks:</b> ${P.risks.map(esc).join(" · ")}</div>
           <div class="sub"><b>Verification:</b> ${P.verification.map(esc).join(" · ")}</div>
           <div class="sub"><b>Rollback:</b> ${esc(P.rollback)}</div></details>
-        ${pending ? `<div class="btns"><button class="reject" id="btn-reject">REJECT</button><button class="approve" id="btn-approve">APPROVE</button></div>
-          <div class="sub">Approving records your decision and starts the deterministic remediation: policy check → live recheck → dry run → one typed change → validation.</div>`
-          : (I.decision ? `<div><b>${I.decision.decision === "approved" ? "✓ Approved" : "⛔ Rejected"}</b> by ${esc(I.decision.by)}${I.decision.via ? " (in Slack)" : ""} at ${hms(I.decision.at)}</div>` : "")}
-        <div class="err" id="approve-err"></div></div>`;
+        ${declined ? "" : `<div class="sub">Nothing changes until an engineer approves and executes in Slack. Then: policy check → live recheck → dry run → one typed change → validation.</div>`}
+      </div>`;
     }
     h += `</div>`;
   }
@@ -339,7 +346,8 @@ function renderIncident() {
   if (I.remediation.length) {
     const L = I.lastRem || {}, rec = L.record || {};
     h += `<div class="stage"><h3><span class="n">6</span> Deterministic remediation</h3><ul class="steps">`;
-    h += `<li><span class="ic">✓</span><span>Human approval received</span></li>`;
+    h += `<li><span class="ic">✓</span><span>Human approval received in Slack${I.decision ? " (" + esc(I.decision.by) + ")" : ""}</span></li>`;
+    if (rec.executor) h += `<li><span class="ic">✓</span><span>Execute requested in Slack by ${esc(rec.executor)}</span></li>`;
     for (const c of (L.checks || [])) h += `<li><span class="ic">${c.ok ? "✓" : "✗"}</span><span>${esc(c.detail || c.check)}</span></li>`;
     if (rec.dry_run) h += `<li><span class="ic">${rec.dry_run.accepted ? "✓" : "✗"}</span><span>Dry run ${rec.dry_run.accepted ? "accepted by the cluster" : "rejected: " + esc(rec.dry_run.error)}</span></li>`;
     if (rec.applied && rec.applied.accepted) h += `<li><span class="ic">✓</span><span>Change applied at ${hms(rec.applied.at)}: <code>${esc(rec.applied.before)}</code> → <code>${esc(rec.applied.after)}</code>
@@ -356,12 +364,6 @@ function renderIncident() {
     }
   }
   el.innerHTML = h;
-  const ap = $("#btn-approve"), rj = $("#btn-reject");
-  if (ap) ap.onclick = async () => { ap.disabled = rj.disabled = true;
-    const r = await post("/api/approve", {value: ($("#param") || {}).value || null});
-    if (!r.ok) { $("#approve-err").textContent = r.error; ap.disabled = rj.disabled = false; } };
-  if (rj) rj.onclick = async () => { ap.disabled = rj.disabled = true; const r = await post("/api/reject", {});
-    if (!r.ok) { $("#approve-err").textContent = r.error; ap.disabled = rj.disabled = false; } };
 }
 
 function addSlack(text, t, ok) {
@@ -405,6 +407,8 @@ function onEvent(ev) {
     case "remediation": I.remediation.push(d); I.lastRem = {...(I.lastRem || {}), ...Object.fromEntries(Object.entries(d).filter(([, v]) => v != null))}; break;
     case "outcome": I.outcome = d; if (d.record) I.lastRem = {...(I.lastRem || {}), record: d.record}; break;
     case "slack": addSlack(d.text, ev.t, d.ok); return;
+    case "slack_link": I.slack_url = d.url; break;
+    case "execute_refused": (I.refusals = I.refusals || []).push(d); break;
     default: return;
   }
   renderIncident();

@@ -47,10 +47,11 @@ def report(inc: dict, ai: dict, proposal: dict, rule: dict) -> dict:
         par = proposal.get("parameter") or {}
         blocks.append(_section(":raised_hand: *Human approval required.* Proposed action: "
                                f"{proposal['summary']}"
-                               + (f" — {par['name']} = `{par['value']}` (suggested by the agent)" if par.get("value")
+                               + (f" — the agent suggests {par['name']} = `{par['value']}`" if par.get("value")
                                   else "")
-                               + "\nApprove in the incident console, or with the plan's buttons below. "
-                                 "Nothing changes until a human approves."))
+                               + "\nUse the plan's buttons below: *Approve*"
+                               + (" (type the value you choose)" if par else "")
+                               + ", then *Execute*. Nothing changes until a human approves and executes."))
     else:
         blocks.append(_section(f":no_entry: No executable remediation: {proposal.get('reason')}."))
     return {"text": f"Investigator Agent report for {inc['id']}", "blocks": blocks[:50]}

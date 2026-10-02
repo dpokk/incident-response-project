@@ -5,13 +5,8 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel
 
 WEB = Path(__file__).resolve().parent / "web"
-
-
-class Approval(BaseModel):
-    value: str | None = None
 
 
 def create_app(engine, bus) -> FastAPI:
@@ -52,14 +47,6 @@ def create_app(engine, bus) -> FastAPI:
     @app.post("/api/incidents/{key}/trigger")
     def trigger(key: str):
         return engine.trigger(key)
-
-    @app.post("/api/approve")
-    def approve(body: Approval):
-        return engine.approve(body.value)
-
-    @app.post("/api/reject")
-    def reject():
-        return engine.reject()
 
     @app.post("/api/reset")
     def reset():

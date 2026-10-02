@@ -38,8 +38,9 @@ python -m demo            # opens http://127.0.0.1:8800
    - then the **Investigator Agent**'s tool calls, each with its purpose and result.
 6. **Read the report.** It shows the root cause, the evidence-checked findings, the suggested fix, and whether the
    agent agrees with the rule engine. The same report is posted to the Slack thread.
-7. **Approve or Reject.** Approve runs the deterministic remediation and then validation. The Slack plan buttons work
-   too.
+7. **Approve in Slack, then Execute in Slack.** The console takes no decisions. It mirrors them from the shared
+   review and execution records, with a link to the Slack thread. Execute runs the deterministic remediation and then
+   validation, shown live in both places.
 8. **🟢 RESOLVED** appears in the page and in Slack.
 9. **Reset to healthy** before the next incident.
 
@@ -56,7 +57,6 @@ Nothing in the page is simulated:
 | Variable | Default | Meaning |
 |---|---|---|
 | `DEMO_AGENT_MODEL` | `nvidia/nemotron-3-super-120b-a12b` | Model on the NVIDIA NIM endpoint (native tool calling) |
-| `DEMO_CONSOLE_APPROVER` | the first `SLACK_APPROVERS` id | Identity recorded for approvals made in the console |
 | `INVESTIGATE_DELAY_S` | `20` | Symptom-collection time before investigating |
 | `EXECUTION_POLICY_PATH` | `demo/execution_policy.json` | The same limits as the main project, with a 60 s observation window |
 | `DEMO_PORT` | `8800` | Web port |
