@@ -14,7 +14,7 @@ def started(inc: dict, model: str | None) -> dict:
     return {"text": f"Investigator Agent started on {inc['id']}", "blocks": [_section(text)]}
 
 
-def report(inc: dict, ai: dict, proposal: dict, rule: dict) -> dict:
+def report(inc: dict, ai: dict, proposal: dict, rule: dict, gate: dict | None = None) -> dict:
     blocks = [{"type": "header", "text": {"type": "plain_text", "text": f"Investigator Agent report — {inc['id']}"}}]
     rt = inc.get("route") or {}
     if rt:
@@ -48,8 +48,18 @@ def report(inc: dict, ai: dict, proposal: dict, rule: dict) -> dict:
              f"Rule engine said: {agree.get('rule_label')} in {agree.get('rule_component')}")
             + f" · {ai.get('tool_calls')} tool calls in {ai.get('seconds')} s · model `{ai.get('model')}`"
             + ("" if r["validation"]["ok"] else " · validation: " + "; ".join(r["validation"]["problems"][:2]))))
-    if proposal.get("executable"):
+    if proposal.get("executable") and (gate or {}).get("eligible"):
         par = proposal.get("parameter") or {}
+        blocks.append(_section(":robot_face: *Policy gate passed: the Remediation Agent executes this automatically* "
+                               f"(no human click needed). Proposed action: {proposal['summary']}"
+                               + (f" — {par['name']} = `{par['value']}`" if par.get("value") else "")
+                               + "\nIt uses the same checks as an engineer's Execute. An engineer can press *Stop* "
+                                 "on its message at any time."))
+    elif proposal.get("executable"):
+        par = proposal.get("parameter") or {}
+        failed = [c["detail"] for c in (gate or {}).get("checks", []) if not c["ok"]]
+        if failed:
+            blocks.append(_context(":raised_hand: Not automated: " + "; ".join(failed[:3])))
         blocks.append(_section(":raised_hand: *Human approval required.* Proposed action: "
                                f"{proposal['summary']}"
                                + (f" — the agent suggests {par['name']} = `{par['value']}`" if par.get("value")
@@ -78,3 +88,104 @@ def not_resolved(inc: dict, record: dict) -> dict:
     return {"text": f"{inc['id']} not resolved", "blocks": [_section(
         f":red_circle: *{(record or {}).get('outcome')}* — {inc['id']}\n{v.get('reason', '')[:500]}\n"
         f"No further change was made.")]}
+
+
+# --------------------------------------------------------------------------- the Remediation Agent
+
+OUTCOME_ICON = {"RESOLVED": ":large_green_circle:", "NOT_RESOLVED": ":red_circle:", "INCONCLUSIVE": ":white_circle:"}
+
+
+def _btn(text: str, action_id: str, value: str, style: str | None = None) -> dict:
+    b = {"type": "button", "text": {"type": "plain_text", "text": text}, "action_id": action_id, "value": value}
+    return {**b, "style": style} if style else b
+
+
+def auto_start(inc: dict, ladder: list, proposal: dict, gate: dict) -> dict:
+    checks = "\n".join(f":white_check_mark: {c['detail']}" for c in gate.get("checks", []))
+    steps = " → ".join(f"`{v}`" for v in ladder)
+    text = (f":robot_face: *Remediation Agent — auto-approved* {inc['id']}\n"
+            f"*Action:* {proposal['summary']}\n*Attempts (policy ladder):* {steps}"
+            + (" — the next one only if the previous was not verified as resolved" if len(ladder) > 1 else "")
+            + "\nIf no attempt is verified as resolved, every change is reverted and an engineer must take over.")
+    return {"text": f"Remediation Agent auto-approved {inc['id']}", "blocks": [
+        _section(text), _section("*Why it may act alone (every check passed):*\n" + checks),
+        {"type": "actions", "elements": [_btn("Stop automatic remediation", "auto:stop", inc["id"], "danger")]},
+        _context("Stop: no further attempt and no revert; you take over the incident.")]}
+
+
+def auto_attempt(inc: dict, att: dict) -> dict:
+    rec = att.get("record") or {}
+    lines = [f":gear: *Remediation Agent — attempt {att['n']} of {att['of']}*: value `{att['value']}`"]
+    stage = att.get("stage")
+    if stage == "approved":
+        lines.append("Approval recorded by the Remediation Agent; executing with the standard checks …")
+    elif stage in ("checks_passed", "applied"):
+        lines.append("Policy ✓ · claim ✓ · live recheck, dry run and the change follow …" if stage == "checks_passed"
+                     else f"Live recheck ✓ · dry run ✓ · applied `{(rec.get('applied') or {}).get('before')}` → "
+                          f"`{(rec.get('applied') or {}).get('after')}` · verifying with the plan's criteria …")
+    elif stage == "done":
+        if att.get("after"):
+            lines.append(f"Applied `{att.get('before')}` → `{att.get('after')}`")
+        v = att.get("verification") or {}
+        if att.get("outcome"):
+            crit = "\n".join(f"{'✓' if c['status'] == 'pass' else '✗' if c['status'] == 'fail' else '?'} "
+                             f"{c['statement']} — _{(c.get('evidence') or '')[:140]}_" for c in v.get("criteria", [])[:6])
+            lines.append(f"{OUTCOME_ICON.get(att['outcome'], '')} *{att['outcome']}* — {(v.get('reason') or '')[:300]}"
+                         + (f"\n{crit}" if crit else ""))
+        else:
+            lines.append(f":no_entry: Stopped: {(att.get('message') or '')[:400]}")
+    elif stage == "stopped":
+        lines.append(f":no_entry: Stopped: {(rec.get('message') or '')[:400]}")
+    return {"text": f"Remediation Agent attempt {att['n']}: {att.get('outcome') or stage}",
+            "blocks": [_section("\n".join(lines))]}
+
+
+def auto_revert(inc: dict, info: dict) -> dict:
+    if info.get("stage") == "started":
+        text = (f":rewind: *Remediation Agent — reverting* `{info.get('from')}` → `{info.get('to')}` (the value before "
+                f"the first attempt; policy: always revert a remediation that did not work) …")
+    elif info.get("ok"):
+        text = (f":rewind: *Reverted* `{info.get('before')}` → `{info.get('after')}`. The system is back in the state "
+                f"the investigation described.")
+    else:
+        text = f":warning: *Revert not completed:* {(info.get('message') or '')[:400]}"
+    return {"text": "Remediation Agent revert", "blocks": [_section(text)]}
+
+
+def auto_handover(inc: dict, out: dict) -> dict:
+    tried = "\n".join(f"{a['n']}. `{a['value']}` → *{a.get('outcome') or a.get('code')}*" for a in out["attempts"])
+    rv = out.get("revert")
+    rv_text = ("" if not rv else f"\n*Revert:* `{rv.get('before')}` → `{rv.get('after')}`" if rv.get("ok")
+               else f"\n*Revert:* not completed — {(rv.get('message') or '')[:200]}")
+    blocks = [_section(f":red_circle: *Automatic remediation did not work — an engineer must fix this manually.*\n"
+                       f"{inc['id']} · {out.get('reason')}\n*Attempts:*\n{tried or '_none_'}{rv_text}")]
+    if out.get("stopped_by"):
+        blocks.append(_context(f"Stopped by <@{out['stopped_by']}>, who owns the incident now."))
+    else:
+        blocks += [_section(f"`{out.get('component')}` is now *locked* against automatic remediation until an "
+                            f"engineer acknowledges."),
+                   {"type": "actions", "elements": [_btn("Acknowledge — I will fix it manually", "auto:ack", inc["id"],
+                                                         "primary")]}]
+    return {"text": f"{inc['id']}: automatic remediation failed; engineer action required", "blocks": blocks}
+
+
+def auto_resolved(inc: dict, out: dict) -> dict:
+    a = out["resolved_by"]
+    crit = "\n".join(f":white_check_mark: {c['statement']}" for c in (a.get("verification") or {}).get("criteria", [])[:6])
+    return {"text": f"{inc['id']} resolved automatically", "blocks": [_section(
+        f":large_green_circle: *INCIDENT RESOLVED automatically* — {inc['id']}\nThe Remediation Agent applied "
+        f"`{a.get('before')}` → `{a.get('after')}` (attempt {a['n']} of {a['of']}) and the deterministic validation "
+        f"passed:\n{crit}")]}
+
+
+def auto_stopped(inc: dict, user: str) -> dict:
+    return {"text": "Automatic remediation stopped", "blocks": [_section(
+        f":octagonal_sign: <@{user}> stopped automatic remediation of {inc['id']}. The current step finishes; no "
+        f"further attempt and no revert will be made. <@{user}> owns the incident.")]}
+
+
+def auto_acknowledged(inc: dict, user: str, components: list) -> dict:
+    return {"text": "Handover acknowledged", "blocks": [_section(
+        f":white_check_mark: <@{user}> acknowledged {inc['id']} and is fixing it manually."
+        + (f" Automatic remediation is re-enabled for {', '.join('`' + c + '`' for c in components)}." if components
+           else ""))]}

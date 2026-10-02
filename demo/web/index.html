@@ -113,6 +113,34 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
 .route.lead { border-color: var(--ai); background: var(--ai-bg); }
 .route.verify { background: var(--soft); }
 .fix ol, .approval ol { margin: 6px 0 0; padding-left: 20px; }
+/* hand-off strip: who is on the incident right now */
+.actors { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; padding: 12px 16px; }
+@media (max-width: 1250px) { .actors { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .actors { grid-template-columns: 1fr; } }
+.actor { border: 1px solid var(--rule); border-radius: 8px; padding: 9px 10px; display: grid; gap: 4px; align-content: start;
+  transition: border-color .2s, background .2s; }
+.actor .who { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.actor .kind { font: 500 10.5px var(--sans); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.actor .what { font-size: 12px; color: var(--muted); min-height: 2.6em; }
+.actor .state { font: 600 11px var(--sans); }
+.actor.working { border-color: var(--warn); background: var(--warn-bg); } .actor.working .state { color: var(--warn); }
+.actor.working.ai { border-color: var(--ai); background: var(--ai-bg); } .actor.working.ai .state { color: var(--ai); }
+.actor.waiting { border-color: var(--bad); } .actor.waiting .state { color: var(--bad); }
+.actor.done .state, .actor.offline .state { color: var(--ok); }
+.actor.offline { opacity: .8; } .actor.idle { opacity: .6; }
+.handoffs { border-top: 1px solid var(--rule); padding: 8px 16px 12px; font-size: 12.5px; display: grid; gap: 2px;
+  max-height: 150px; overflow: auto; }
+.handoffs .ts { font: 11.5px var(--mono); color: var(--muted); margin-right: 6px; }
+.switch { display: inline-flex; align-items: center; gap: 8px; font: 600 12.5px var(--sans); cursor: pointer;
+  border: 1px solid var(--rule); border-radius: 999px; padding: 4px 12px 4px 6px; background: var(--panel); color: var(--fg); }
+.switch .knob { width: 30px; height: 17px; border-radius: 999px; background: var(--rule); position: relative; transition: background .2s; }
+.switch .knob::after { content: ""; position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%;
+  background: #fff; transition: left .2s; }
+.switch.on .knob { background: var(--ok); } .switch.on .knob::after { left: 15px; }
+.autobox { border: 2px solid var(--ok); border-radius: 10px; padding: 12px 14px; display: grid; gap: 10px; }
+.autobox.failed { border-color: var(--bad); }
+.attempt { border: 1px solid var(--rule); border-radius: 8px; padding: 8px 10px; }
+.attempt .h { font-weight: 600; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 </style>
 </head>
 <body>
@@ -123,6 +151,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   </div>
   <span class="pill" id="phase">loading…</span>
   <div class="spacer"></div>
+  <button class="switch" id="auto-switch" role="switch" aria-checked="false" title="When on, the deterministic Remediation Agent may fix known, high-confidence incidents without a human click (scale and memory only)"><span class="knob"></span><span id="auto-label">Automatic remediation</span></button>
   <span class="pill" id="model-pill" title="Investigator Agent model"></span>
   <span class="pill" id="slack-pill"></span>
   <button class="primary" id="btn-start">Start services</button>
@@ -156,6 +185,12 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
   </div>
 
   <div class="col">
+    <section class="panel" aria-labelledby="h-actors">
+      <h2 id="h-actors">On the incident <span class="right" id="actors-sub">who is working right now</span></h2>
+      <div class="actors" id="actors"></div>
+      <div class="handoffs" id="handoffs" hidden></div>
+    </section>
+
     <section class="panel" aria-labelledby="h-logs">
       <h2 id="h-logs">Live logs <span class="right filters" id="filters"></span></h2>
       <div class="logs" id="logs" role="log" aria-live="off"></div>
@@ -175,13 +210,48 @@ const hms = (t) => t ? new Date(t * 1000).toLocaleTimeString([], {hour12: false}
 const PHASE = {stopped: ["Stopped", ""], monitoring: ["Monitoring", "ok"], detected: ["Incident detected", "bad"],
   investigating: ["Investigating", "warn"], agent: ["Agent investigating", "ai"], awaiting_approval: ["Waiting for approval in Slack", "warn"], approved: ["Approved — waiting for Execute in Slack", "warn"],
   investigated: ["Investigated — manual fix needed", "warn"], remediating: ["Remediating", "warn"],
-  resolved: ["Resolved", "ok"], not_resolved: ["Not resolved", "bad"], rejected: ["Rejected", "bad"], failed: ["Failed", "bad"]};
+  resolved: ["Resolved", "ok"], not_resolved: ["Not resolved", "bad"], rejected: ["Rejected", "bad"], failed: ["Failed", "bad"],
+  auto_remediating: ["Remediation Agent fixing it (automatic)", "warn"], handed_over: ["Handed over: engineer must fix it", "bad"],
+  acknowledged: ["Engineer owns the fix", "warn"]};
 let S = {phase: "stopped", busy: null, config: {}, incidents: [], hidden: new Set()};
 let I = null;   // the current incident view model, built only from events
 
 function resetIncident() {
   I = {id: null, signals: [], ruleSteps: [], rule: null, agent: {model: null, steps: [], result: null, error: null, thinking: false},
-       proposal: null, decision: null, remediation: [], lastRem: null, outcome: null, slack: [], phase: null, detected_at: null};
+       proposal: null, decision: null, remediation: [], lastRem: null, outcome: null, slack: [], phase: null, detected_at: null,
+       actors: {}, actorLog: [], gate: null, auto: null};
+}
+
+// ------------------------------------------------------------------ who is on the incident
+const ACTORS = [
+  ["detector", "Detector", "deterministic · always on"],
+  ["rules", "Rule engine", "deterministic · read-only"],
+  ["investigator", "Investigator Agent", "LLM · read-only tools"],
+  ["remediation", "Remediation Agent", "deterministic · executes via policy"],
+  ["engineer", "Engineer", "human · in Slack"]];
+const STATE_TEXT = {working: "● working", done: "✓ done", offline: "○ offline — finished", standby: "standby",
+  waiting: "⏳ action needed", idle: "idle"};
+function defaultActor(name) {
+  const auto = (S.config.auto || {}).enabled, on = S.phase !== "stopped";
+  return {detector: {state: on ? "working" : "idle", text: on ? "watching the system every 5 s" : "not started"},
+    rules: {state: "idle", text: "starts when an incident opens"},
+    investigator: {state: "idle", text: "offline until the rule engine hands over"},
+    remediation: {state: "idle", text: auto ? "automatic mode: acts only if the policy gate passes" : "manual mode: runs only after an engineer's Approve + Execute"},
+    engineer: {state: "idle", text: "notified in Slack when needed"}}[name];
+}
+function renderActors() {
+  const A = (I && I.actors) || {};
+  $("#actors").innerHTML = ACTORS.map(([k, label, kind]) => {
+    const a = A[k] || defaultActor(k);
+    const ai = k === "investigator" ? " ai" : "";
+    return `<div class="actor ${a.state}${ai}"><div class="who">${a.state === "working" ? `<span class="dot pulse ${k === "investigator" ? "" : "warn"}" style="${k === "investigator" ? "background:var(--ai)" : ""}"></span>` : ""}${esc(label)}</div>
+      <div class="kind">${esc(kind)}</div><div class="state">${esc(STATE_TEXT[a.state] || a.state)}</div><div class="what">${esc(a.text)}</div></div>`;
+  }).join("");
+  const log = (I && I.actorLog) || [], box = $("#handoffs");
+  box.hidden = !log.length;
+  const names = Object.fromEntries(ACTORS.map(([k, l]) => [k, l]));
+  box.innerHTML = log.map(e => `<div><span class="ts">${hms(e.t)}</span><b>${esc(names[e.name] || e.name)}</b> — ${esc(STATE_TEXT[e.state] || e.state)}: ${esc(e.text)}</div>`).join("");
+  box.scrollTop = box.scrollHeight;
 }
 
 // ------------------------------------------------------------------ status
@@ -190,8 +260,8 @@ function renderPhase() {
   $("#phase").className = "pill " + cls; $("#phase").textContent = label + (S.busy ? " · " + S.busy : "");
   $("#btn-start").disabled = S.phase !== "stopped" || !!S.busy;
   $("#btn-start").textContent = S.busy === "start" ? "Starting…" : (S.phase === "stopped" ? "Start services" : "Running");
-  $("#btn-reset").disabled = S.phase === "stopped" || !!S.busy || ["detected","investigating","agent","remediating"].includes(S.phase);
-  renderLab();
+  $("#btn-reset").disabled = S.phase === "stopped" || !!S.busy || ["detected","investigating","agent","remediating","auto_remediating"].includes(S.phase);
+  renderLab(); renderActors();
 }
 function renderConfig() {
   const c = S.config;
@@ -200,6 +270,11 @@ function renderConfig() {
   $("#slack-pill").className = "pill " + (c.slack ? "ok" : "warn");
   $("#slack-pill").textContent = c.slack ? (c.slack_threaded ? "Slack connected" : "Slack (webhook)") : "Slack off";
   $("#sub").textContent = `namespace ${c.namespace || "?"} · entry ${c.entry || "?"} · approvers (Slack): ${(c.approvers || []).join(", ") || "none configured"}`;
+  const au = c.auto || {}, sw = $("#auto-switch");
+  sw.classList.toggle("on", !!au.enabled); sw.setAttribute("aria-checked", au.enabled ? "true" : "false");
+  $("#auto-label").textContent = (au.enabled ? "Automatic remediation: ON" : "Automatic remediation: OFF")
+    + ((au.locked || []).length ? ` · locked: ${au.locked.join(", ")}` : "");
+  renderActors();
 }
 function renderSystem(sys) {
   if (!sys) return;
@@ -268,7 +343,12 @@ function renderIncident() {
   const ph = PHASE[I.phase || S.phase] || ["", ""];
   let h = `<div class="incident-head"><span class="id">${esc(I.id)}</span><span class="pill ${ph[1]}">${esc(ph[0])}</span>
     <span class="sub">detected ${hms(I.detected_at)}</span></div>`;
-  if (I.outcome) {
+  const AD = I.auto && I.auto.done;
+  if (AD) {
+    if (AD.result === "resolved") h += `<p class="banner ok">🟢 RESOLVED automatically<span class="sub" style="font-weight:500">by the Remediation Agent on attempt ${AD.resolved_by.n} of ${AD.resolved_by.of} — no human click was needed</span></p>`;
+    else if (AD.stopped_by) h += `<p class="banner warn">🛑 Stopped by ${esc(AD.stopped_by)}<span class="sub" style="font-weight:500">no further automatic change; the engineer owns the incident</span></p>`;
+    else h += `<p class="banner ${I.auto.ack ? "warn" : "bad"}">${I.auto.ack ? "🧑‍🔧 Engineer " + esc(I.auto.ack.by) + " acknowledged and is fixing it manually" : "🔴 Automatic remediation did not work — an engineer must fix this"}<span class="sub" style="font-weight:500">${esc(AD.reason || "")}</span></p>`;
+  } else if (I.outcome) {
     const ok = I.outcome.code === "RESOLVED";
     h += `<p class="banner ${ok ? "ok" : "bad"}">${ok ? "🟢 INCIDENT RESOLVED" : "🔴 " + esc(I.outcome.code)}<span class="sub" style="font-weight:500">${esc(I.outcome.message || "")}</span></p>`;
   } else if (I.decision && I.decision.decision === "rejected") {
@@ -320,10 +400,13 @@ function renderIncident() {
       <div class="rc">${esc(I.rule.root_cause)}</div><ul class="steps">${(I.rule.evidence || []).map(e => `<li><span class="ic">•</span><span><span class="ev">${esc(e.id)}</span> ${esc(e.text)}</span></li>`).join("")}</ul></div>`;
   }
   // 5 approval - happens in Slack; this only mirrors the shared review / execution records
-  const P = I.proposal;
-  if (P) {
+  const P = I.proposal, G = I.gate;
+  if (P && G && G.eligible) {
+    h += renderAuto(P, G);
+  } else if (P) {
     const slackLink = I.slack_url ? ` <a href="${esc(I.slack_url)}" target="_blank" rel="noopener">Open the Slack thread ↗</a>` : "";
-    h += `<div class="stage"><h3><span class="n">5</span> Human approval — in Slack${slackLink ? "" : ""}</h3>`;
+    h += `<div class="stage"><h3><span class="n">5</span> Human approval — in Slack</h3>`;
+    if (G) h += `<details style="margin-bottom:8px"><summary>Why a human is needed: the Remediation Agent's policy gate did not pass (${G.checks.filter(c => !c.ok).length} check(s) failed)</summary>${gateList(G)}</details>`;
     if (!P.executable) h += `<div class="approval"><div><b>No automatic remediation.</b> ${esc(P.reason)}.</div>
         ${(P.manual_steps || []).length ? `<div><b>Manual steps recommended by the agent:</b><ol>${P.manual_steps.map(s => "<li>" + esc(s) + "</li>").join("")}</ol></div>` : ""}
         ${(P.investigate || []).map(q => `<div class="sub">• ${esc(q)}</div>`).join("")}
@@ -376,6 +459,59 @@ function renderIncident() {
   el.innerHTML = h;
 }
 
+function gateList(G) {
+  return `<ul class="steps">${G.checks.map(c => `<li><span class="ic">${c.ok ? "✓" : "✗"}</span><span${c.ok ? "" : ' class="err"'}>${esc(c.detail)}</span></li>`).join("")}</ul>`;
+}
+const STAGE_TEXT = {approved: "approved by the Remediation Agent — executing", checks_passed: "authorization ✓ · approval ✓ · plan age ✓ · policy ✓ · claimed",
+  applied: "live recheck ✓ · dry run ✓ · change applied — verifying", verifying: "verifying with the plan's criteria",
+  settling: "waiting for the change to settle", observing: "observing", stopped: "stopped", completed: "verified", done: "finished"};
+function renderAttempt(a, total) {
+  const oc = a.outcome, cls = oc === "RESOLVED" ? "ok" : oc ? "bad" : a.stage === "done" || a.stage === "stopped" ? "bad" : "warn";
+  const label = oc || (a.stage === "done" || a.stage === "stopped" ? (a.code || "stopped") : STAGE_TEXT[a.stage] || a.stage);
+  const v = a.verification;
+  return `<div class="attempt"><div class="h">${a.n === "revert" ? "↩ Revert" : "Attempt " + a.n + " of " + total} · value <code>${esc(a.value)}</code>
+      <span class="pill ${cls}">${a.stage !== "done" && a.stage !== "stopped" && !oc ? '<span class="dot pulse warn"></span>' : ""}${esc(label)}</span></div>
+    ${a.change ? `<div class="sub">change: ${esc(a.change)}</div>` : ""}
+    ${a.after ? `<div class="sub">applied <code>${esc(a.before)}</code> → <code>${esc(a.after)}</code></div>` : ""}
+    ${a.window && !v ? `<div class="sub">⏳ settle ≤ ${a.window.settle_max_s} s, then observe ${a.window.window_s} s — nothing is called resolved before that</div>` : ""}
+    ${v ? `<ul class="steps">${(v.criteria || []).map(c => `<li><span class="ic">${c.status === "pass" ? "✓" : c.status === "fail" ? "✗" : "?"}</span><span>${esc(c.statement)} <span class="why">· ${esc(c.evidence || "")}</span></span></li>`).join("")}</ul><div class="sub">${esc(v.reason || "")}</div>` : ""}
+    ${!oc && a.message && (a.stage === "done" || a.stage === "stopped") ? `<div class="err">${esc(a.message)}</div>` : ""}
+    ${a.checks ? `<details><summary>Safety checks (${a.checks.length})</summary>${gateList({checks: a.checks.map(c => ({ok: c.ok, detail: c.detail || c.check}))})}</details>` : ""}</div>`;
+}
+function renderAuto(P, G) {
+  const A = I.auto || {}, total = (A.ladder || G.ladder || []).length, done = A.done;
+  const slackLink = I.slack_url ? `<a href="${esc(I.slack_url)}" target="_blank" rel="noopener">Open the Slack thread ↗</a>` : "";
+  let h = `<div class="stage"><h3><span class="n">5</span> 🤖 Remediation Agent — automatic (no human click) <span class="pill">deterministic · no LLM</span></h3>
+    <div class="autobox ${done && done.result !== "resolved" ? "failed" : ""}">
+      <div><b>Policy gate passed</b> — the Investigator Agent is offline; the Remediation Agent takes over from here.
+        <div class="sub">Action: ${esc(P.summary)} · typed <code>${esc(P.action_type)}</code> on <code>${esc((P.target || {}).component)}</code></div>
+        <div class="sub">Attempt ladder (policy): ${(A.ladder || G.ladder || []).map(v => "<code>" + esc(v) + "</code>").join(" → ")}${total > 1 ? " — the next value only if the previous one was not verified as resolved" : ""}</div></div>
+      <details><summary>Why it may act alone (all ${G.checks.length} checks passed)</summary>${gateList(G)}</details>
+      <div class="sub">Every attempt goes through the same executor as an engineer's Execute: policy → claim → live recheck → dry run → one compare-and-set change → verification. If nothing is verified as resolved, every change is reverted and an engineer must acknowledge in Slack. An engineer can press <b>Stop</b> in Slack at any time.${slackLink ? " " + slackLink : ""}</div>
+    </div></div>`;
+  const atts = Object.values(A.attempts || {}).sort((a, b) => a.n - b.n);
+  if (atts.length || A.revert) {
+    h += `<div class="stage"><h3><span class="n">6</span> Attempts</h3><div style="display:grid;gap:8px">${atts.map(a => renderAttempt(a, total)).join("")}
+      ${A.stop ? `<div class="err">🛑 Stop pressed by ${esc(A.stop.by)} at ${hms(A.stop.at)}: no further attempt, no revert.</div>` : ""}</div></div>`;
+  }
+  if (A.revert) {
+    const r = A.revert;
+    h += `<div class="stage"><h3><span class="n">7</span> ↩ Revert (policy: always revert a fix that did not work)</h3>
+      ${r.stage !== "done" ? `<div class="sub"><span class="dot pulse warn" style="display:inline-block"></span> Reverting <code>${esc(r.from)}</code> → <code>${esc(r.to)}</code> through the executor…</div>`
+        : r.ok ? `<div>✓ Reverted <code>${esc(r.before)}</code> → <code>${esc(r.after)}</code> — back to the state the investigation described${r.outcome ? ` <span class="sub">(post-revert check: ${esc(r.outcome)}, as expected while the original cause remains)</span>` : ""}</div>`
+        : `<div class="err">Revert not completed: ${esc(r.message)}</div>`}</div>`;
+  }
+  if (done && done.result !== "resolved") {
+    h += `<div class="stage"><h3><span class="n">8</span> Handover to an engineer</h3><ul class="steps">
+      <li><span class="ic">📣</span><span>Posted to Slack: what was tried, the revert, and that the fix must be done manually</span></li>
+      ${done.stopped_by ? `<li><span class="ic">✓</span><span>${esc(done.stopped_by)} pressed Stop and owns the incident</span></li>`
+        : `<li><span class="ic">🔒</span><span><code>${esc(done.component)}</code> is locked against automatic remediation until acknowledged</span></li>
+           <li><span class="ic">${I.auto.ack ? "✓" : "⏳"}</span><span>${I.auto.ack ? "Acknowledged by " + esc(I.auto.ack.by) + " at " + hms(I.auto.ack.at) + " — automatic remediation re-enabled for " + esc(I.auto.ack.components.join(", ")) : "Waiting for an engineer to press Acknowledge in Slack"}</span></li>`}
+    </ul></div>`;
+  }
+  return h;
+}
+
 function addSlack(text, t, ok) {
   if (!text) return;
   const f = $("#slack-feed"); if (f.querySelector(".muted")) f.innerHTML = "";
@@ -420,6 +556,23 @@ function onEvent(ev) {
     case "slack_link": I.slack_url = d.url; break;
     case "route": I.route = d; break;
     case "execute_refused": (I.refusals = I.refusals || []).push(d); break;
+    case "actor": I.actors[d.name] = d; I.actorLog.push(d); renderActors(); break;
+    case "auto_config": S.config.auto = d; renderConfig(); return;
+    case "auto_gate": I.gate = d; break;
+    case "auto_start": I.auto = {ladder: d.ladder, attempts: {}, revert: null, done: null}; break;
+    case "auto_attempt": { const A = I.auto || (I.auto = {attempts: {}}); A.attempts[d.n] = {...(A.attempts[d.n] || {}), ...d}; break; }
+    case "auto_progress": {
+      if (!I.auto) break;
+      if (d.attempt === "revert") { I.auto.revert = {...(I.auto.revert || {}), progress: d.stage}; break; }
+      const a = I.auto.attempts[d.attempt] = {...(I.auto.attempts[d.attempt] || {n: d.attempt})};
+      if (!["done"].includes(a.stage)) a.stage = d.stage;
+      if (d.change) a.change = d.change; if (d.checks) a.checks = d.checks;
+      if (d.stage === "verifying") a.window = {settle_max_s: d.settle_max_s, window_s: d.window_s};
+      break; }
+    case "auto_revert": if (I.auto) I.auto.revert = {...(I.auto.revert || {}), ...d}; break;
+    case "auto_done": if (I.auto) I.auto.done = d; break;
+    case "auto_stop": if (I.auto) I.auto.stop = d; break;
+    case "auto_ack": if (I.auto) I.auto.ack = d; break;
     default: return;
   }
   renderIncident();
@@ -431,6 +584,10 @@ async function post(url, body) {
 }
 $("#btn-start").onclick = () => post("/api/start");
 $("#btn-reset").onclick = () => post("/api/reset");
+$("#auto-switch").onclick = async () => {
+  const r = await post("/api/auto", {enabled: !(S.config.auto || {}).enabled});
+  if (r.ok) { S.config.auto = {enabled: r.enabled, min_rule_confidence: r.min_rule_confidence, actions: r.actions, locked: r.locked}; renderConfig(); }
+};
 $("#lab").addEventListener("click", async (e) => {
   const k = e.target.dataset.trigger; if (!k) return;
   e.target.disabled = true; const r = await post(`/api/incidents/${k}/trigger`);

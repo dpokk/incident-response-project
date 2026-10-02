@@ -33,6 +33,51 @@ Safeguards in every route:
   execute it.
 - If the model fails, the rule engine's findings stand.
 
+## The Remediation Agent (graduated autonomy)
+
+A deterministic agent (no LLM), in `demo/remediation_agent.py`. When its policy gate passes, it replaces the
+engineer's two Slack clicks. It drives the **same** executor an engineer would.
+
+**Gate** (`demo/remediation_agent_policy.json`). Every check must pass:
+- automatic remediation is switched on (the header switch);
+- known pattern (the rules led);
+- rule confidence ≥ 90%;
+- the Investigator Agent agrees;
+- every finding is evidence-checked;
+- the action is `scale_workload` or `adjust_resource_limit`;
+- a validated value exists;
+- the component isn't locked.
+
+**Attempts** follow a policy ladder:
+- memory: the agent's value, then ×1.5 (rounded to 64Mi, capped at 1Gi), at most 3 attempts;
+- replicas: one attempt (more replicas is not a fix, and is unsafe for a database).
+
+The next value is tried only after verification says NOT_RESOLVED or INCONCLUSIVE. A refused or failed attempt stops.
+An uncertain state is never retried or reverted.
+
+**Always revert:** if nothing was verified as resolved, the value from before the first attempt is restored (through
+the executor). Then Slack shows what was tried and an **Acknowledge** button. The component stays locked against
+automation until an engineer acknowledges (circuit breaker).
+
+**Stop** (Slack, while it runs): no further attempt and no revert; the engineer who pressed it owns the incident.
+
+**Console:** the "On the incident" strip shows who is working at each moment and every hand-off:
+- Detector;
+- Rule engine;
+- Investigator Agent (working → offline when it submits its report);
+- Remediation Agent;
+- Engineer.
+
+Measured live:
+
+| Incident | Gate | Result |
+|---|---|---|
+| Database down | all 9 checks passed | auto-scaled 0 → 1, RESOLVED, no human click |
+| Memory exhaustion | 8/9: rule confidence 85% < 90% | went to Slack for a human |
+| Sustained overload | rules 49%, the plan has no eligible memory action | went to a human |
+
+The retry, revert, Stop and lock paths are covered by `tests/test_demo_remediation_agent.py`.
+
 ## Run it
 
 Prerequisites:

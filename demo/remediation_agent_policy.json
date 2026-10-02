@@ -1,0 +1,10 @@
+{
+  "_comment": "When the Remediation Agent may act without a human click (demo). Every condition must hold; otherwise the incident goes to an engineer in Slack as before. The execution policy (execution_policy.json) still applies to every change it makes.",
+  "enabled": true,
+  "min_rule_confidence": 0.9,
+  "actions": {
+    "_comment": "Only these typed actions may be automated. max_attempts includes the first attempt; memory steps multiply by step_factor (rounded up to 64Mi, capped by the execution policy). Restoring configuration always needs a human.",
+    "adjust_resource_limit": {"max_attempts": 3, "step_factor": 1.5},
+    "scale_workload": {"max_attempts": 1}
+  }
+}

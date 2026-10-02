@@ -2,11 +2,16 @@
 Slack, human approval, deterministic execution and verification - and publishes every real step to the page.
 
 Lifecycle (one incident at a time):
-    stopped → monitoring → detected → investigating → agent → awaiting_approval (in Slack)
-            → approved (Execute pending in Slack) → remediating → resolved | not_resolved | rejected | failed
-            → (reset) → monitoring
+    stopped → monitoring → detected → investigating → agent →
+        policy gate passed:  auto_remediating (the Remediation Agent) → resolved | handed_over → acknowledged
+        otherwise:           awaiting_approval (in Slack) → approved (Execute pending in Slack) → remediating
+                             → resolved | not_resolved | rejected | failed
+    → (reset) → monitoring
 
-The engineer approves and executes in Slack (the existing Iteration 6/7 buttons); the page only mirrors it.
+The engineer approves and executes in Slack (the existing Iteration 6/7 buttons); the page only mirrors it. For a
+known, high-confidence incident whose fix the policy allows to automate, the deterministic Remediation Agent
+(remediation_agent.py) takes the two clicks' place and drives the same executor; an engineer can Stop it, and must
+acknowledge when it hands over.
 
 Every component used here already exists in the investigator (Iterations 2-7). This module only wires them together
 and reports what they do. Nothing shown on the page is simulated.
@@ -24,7 +29,8 @@ from investigator.evidence import EvidenceStore
 from investigator.planner import plan_and_collect
 from investigator.review import PARAMETER_SPECS, InvalidParameter, ReviewService
 
-from . import slack_ai
+from . import slack_ai, slack_listener
+from .remediation_agent import AGENT_ID, AutoPolicy, AutoStore, RemediationAgent, gate, ladder
 from .agent.investigator import InvestigatorAgent
 from .agent.llm import ChatModel
 from .agent.tools import ToolBox
@@ -44,6 +50,10 @@ INCIDENTS = {
                        "what": "A credential rotation gone wrong: the backend is switched to read its database password "
                                "from a new Secret holding a stale value. PostgreSQL stays healthy; every query is rejected. "
                                "The rule engine has no specific pattern for this one."},
+    "overload": {"title": "Sustained overload (automation refuses)", "script": "scripts/inject/overload.ps1",
+                 "what": "800 req/s for 15 minutes: the backend is OOM-killed again and again, and a higher memory limit "
+                         "would only delay it. In our runs the rule engine is not confident (under 50%) and its plan "
+                         "offers no memory change, so the Remediation Agent's gate refuses and an engineer decides."},
 }
 KNOWN_CONFIDENCE = 0.75          # rules at or above this confidence lead; below it, the agent leads
 BUDGETS = {"verify": (5, 150), "lead": (14, 300)}   # (tool calls, seconds)
@@ -63,7 +73,8 @@ def route(report: dict) -> dict:
     calls, secs = BUDGETS[mode]
     return {"mode": mode, "reason": reason, "rule_label": label, "rule_confidence": conf,
             "budget": {"tool_calls": calls, "seconds": secs}}
-TERMINAL = {"resolved", "not_resolved", "rejected", "failed"}
+TERMINAL = {"resolved", "not_resolved", "rejected", "failed", "handed_over", "acknowledged"}
+AUTO_POLICY_PATH = ROOT / "demo" / "remediation_agent_policy.json"
 
 
 class TracingStore(EvidenceStore):
@@ -100,6 +111,11 @@ class Engine:
         self.lock = threading.RLock()
         self.model = ChatModel.from_env()
         self._monitor: threading.Thread | None = None
+        self.auto_policy = AutoPolicy.load(AUTO_POLICY_PATH)
+        self.auto_enabled = self.auto_policy.enabled
+        self.auto_store: AutoStore | None = None
+        self.auto: RemediationAgent | None = None
+        self._auto_msgs: dict = {}                    # Slack (channel, ts) of the agent's evolving messages
 
     # ----------------------------------------------------------------------------- page support
     def snapshot(self) -> dict:
@@ -109,7 +125,24 @@ class Engine:
                 "config": {"model": self.model.name if self.model else None,
                            "slack": self.transport.configured, "slack_threaded": self.transport.threaded,
                            "approvers": sorted(self.s.slack_approvers), "namespace": self.s.namespace,
-                           "entry": f"{self.s.entry_service}{self.s.entry_path.split('?')[0]}"}}
+                           "entry": f"{self.s.entry_service}{self.s.entry_path.split('?')[0]}",
+                           "auto": self.auto_config()}}
+
+    def auto_config(self) -> dict:
+        return {"enabled": self.auto_enabled, "min_rule_confidence": self.auto_policy.min_rule_confidence,
+                "actions": {k: v.get("max_attempts", 1) for k, v in self.auto_policy.actions.items()},
+                "locked": sorted((self.auto_store.locked() if self.auto_store else {}).keys())}
+
+    def set_auto(self, enabled: bool) -> dict:
+        self.auto_enabled = bool(enabled)
+        self._op("Automatic remediation " + ("ON: the Remediation Agent may act on known, high-confidence incidents"
+                                             if enabled else "OFF: every remediation needs an engineer in Slack"))
+        self._emit("auto_config", self.auto_config(), keep=False)
+        return {"ok": True, **self.auto_config()}
+
+    def _actor(self, name: str, state: str, text: str) -> None:
+        """Who is working on the incident right now (the hand-off strip on the page)."""
+        self._emit("actor", {"name": name, "state": state, "text": text, "t": time.time()})
 
     def _emit(self, type_: str, data: dict, keep: bool = True) -> None:
         self.bus.publish(type_, data, keep)
@@ -143,14 +176,19 @@ class Engine:
                 self._run(["minikube", "start", "-p", self.s.kube_context], "minikube")
             self._op("Connecting to Kubernetes and Prometheus …")
             self.providers = providers_mod.connect(self.s, log=lambda m: self._op(str(m).strip()))
-            self.review = ReviewService(self.s.reviews_path, self.s.slack_approvers)
+            # The Remediation Agent is a configured approver/executor identity (never a Slack user), so its
+            # automatic decisions pass exactly the same checks as a person's and are audited the same way.
+            self.review = ReviewService(self.s.reviews_path, set(self.s.slack_approvers) | {AGENT_ID})
             self.execution = pipeline.execution_service(self.s, self.providers, self.review)
+            self.auto_store = AutoStore(self.s.state_dir / "remediation_agent.db")
+            self.auto = RemediationAgent(self.review, self.execution, self.auto_store, self._emit, self._auto_say,
+                                         log=self.log)
             self.providers.new_resources().start_background_recording()
             self._op("Evidence history recorder started")
             if self.s.slack_app_token:
                 try:
-                    from investigator import slack_app
-                    slack_app.start(self.s, self.review, log=lambda m: self._op(str(m)), execution=self.execution)
+                    slack_listener.start(self.s, self.review, self.execution, self._on_auto_click,
+                                         log=lambda m: self._op(str(m)))
                 except Exception as exc:  # noqa: BLE001 - Slack buttons are optional; the console still works
                     self._op(f"Slack listener not started: {type(exc).__name__}", "warning")
             self.tailer.running.set()
@@ -228,6 +266,8 @@ class Engine:
             self._emit("incident", {"id": inc["id"], "detected_at": inc["detected_at"],
                                     "signals": [x["text"] for x in inc["signals"]],
                                     "investigate_in_s": self.s.investigate_delay_s})
+            self._actor("detector", "done", f"opened {inc['id']} from {len(inc['signals'])} signal(s); collecting "
+                                            f"symptoms for {self.s.investigate_delay_s:.0f} s")
             threading.Thread(target=self._handle_incident, daemon=True, name="incident").start()
 
     _last_trigger: str | None = None
@@ -241,16 +281,37 @@ class Engine:
             with self.lock:
                 self._phase("investigating")
             self._slack_note(inc, slack_ai.started(inc, self.model.name if self.model else None))
+            self._actor("rules", "working", "collecting evidence through read-only capabilities")
             report, digest = self._rule_investigation(inc)
             r = route(report)
             inc["route"] = r
+            self._actor("rules", "done", f"{report.get('failure_category_label')} at "
+                                         f"{float(report.get('confidence') or 0):.0%} confidence")
             self._emit("route", r)
             ai = self._agent(inc, report, r)
             proposal = self._proposal(report, ai, r)
             inc.update({"report_id": report["id"], "digest": digest, "proposal": proposal})
             self._emit("proposal", proposal)
-            self._slack_report(inc, report, digest, ai, proposal)
-            self._phase("awaiting_approval" if proposal.get("executable") else "investigated")
+            g = gate(self.auto_policy, self.auto_enabled, r, ai, proposal, self.auto_store.locked())
+            values = ladder(self.auto_policy, proposal, self.execution.policy.max_memory_bytes) if g["eligible"] else []
+            if g["eligible"] and not values:
+                g["checks"].append({"check": "ladder", "ok": False, "detail": "no value can be tried within policy"})
+                g["eligible"] = False
+            inc["gate"] = g
+            self._emit("auto_gate", {**g, "ladder": [str(v) for v in values]})
+            self._slack_report(inc, report, digest, ai, proposal, g)
+            if g["eligible"]:
+                self._auto_remediate(inc, proposal, values, g)
+                return
+            failed = next((c["detail"] for c in g["checks"] if not c["ok"]), "")
+            if proposal.get("executable"):
+                self._actor("remediation", "standby", f"not automated: {failed}")
+                self._actor("engineer", "waiting", "Approve, then Execute, in Slack")
+                self._phase("awaiting_approval")
+            else:
+                self._actor("remediation", "standby", "no typed action fits: nothing to execute")
+                self._actor("engineer", "waiting", "manual fix (the agent's steps are in Slack)")
+                self._phase("investigated")
         except Exception as exc:  # noqa: BLE001
             self._op(f"Investigation failed: {type(exc).__name__}: {exc}", "error")
             self.log(traceback.format_exc())
@@ -285,7 +346,11 @@ class Engine:
         self._phase("agent")
         if self.model is None:
             self._emit("agent_error", {"error": "no model configured (NVIDIA_API_KEY missing)"})
+            self._actor("investigator", "offline", "no model configured: the rule engine's findings stand")
             return {"status": "unavailable", "error": "no model configured"}
+        self._actor("investigator", "working", ("verifying the rule engine" if r["mode"] == "verify" else
+                                                "leading the investigation") + f" (≤ {r['budget']['tool_calls']} "
+                                               f"read-only tool calls, {r['budget']['seconds']} s)")
         caps = self.providers.capabilities(EvidenceStore(clock=self.providers.clock))
         tb = ToolBox(caps, self.s, report, inc["detected_at"] - self.s.lookback_s, clock=self.providers.clock)
         rcc = (report.get("root_cause_component") or {}).get("name")
@@ -306,6 +371,11 @@ class Engine:
             self._emit("agent_result", {**rep, "usage": out.get("usage"), "seconds": out.get("seconds"),
                                         "turns": out.get("turns"), "tool_calls": out.get("tool_calls"),
                                         "model": out.get("model")})
+            self._actor("investigator", "offline", f"report submitted after {out.get('tool_calls')} tool calls, "
+                                                   f"{out.get('seconds')} s; it has no further role")
+        else:
+            self._actor("investigator", "offline", f"no report ({out.get('error') or out.get('status')}): the rule "
+                                                   f"engine's findings stand")
         return out
 
     def _proposal(self, report: dict, ai: dict, r: dict) -> dict:
@@ -356,7 +426,7 @@ class Engine:
         """Approval and execution happen in Slack (Iteration 6/7 buttons). The page mirrors the shared review and
         execution records - whoever clicked - so it always shows what really happened."""
         inc = self.incident
-        if not inc or not inc.get("digest") or self.phase in ("resolved", "not_resolved", "rejected", "failed"):
+        if not inc or not inc.get("digest") or inc.get("auto") or self.phase in TERMINAL:
             return
         idx = (inc.get("proposal") or {}).get("plan_index")
         if idx is None:
@@ -366,6 +436,8 @@ class Engine:
             inc["mirror_decision"] = d["id"]
             self._emit("decision", {"decision": d["decision"], "by": d["reviewer"], "at": d["at"],
                                     "value": d.get("supplied_parameters") or {}})
+            self._actor("engineer", "done" if d["decision"] != "approved" else "waiting",
+                        f"{d['decision']} in Slack" + (": Execute next" if d["decision"] == "approved" else ""))
             if d["decision"] == "approved":
                 self._phase("approved")
             elif d["decision"] == "rejected":
@@ -392,19 +464,109 @@ class Engine:
                   + [{**c, "check": "recheck:" + c["check"]} for c in (rec.get("recheck") or {}).get("checks", [])])
         if self.phase in ("awaiting_approval", "approved"):
             self._phase("remediating")
+            self._actor("engineer", "done", "approved and executed in Slack")
+            self._actor("remediation", "working", "executing the engineer's approved change (deterministic executor)")
         self._emit("remediation", {"stage": rec["status"], "checks": checks, "record": _public(rec),
                                    "requested_at": rec.get("requested_at"),
                                    "window": {"settle_max_s": self.execution.policy.verification.settle_max_s,
                                               "window_s": self.execution.policy.verification.bounded()}})
         if rec["status"] == "completed":
             self._emit("outcome", {"code": rec["outcome"], "message": rec.get("message"), "record": _public(rec)})
+            self._actor("remediation", "offline", f"verification: {rec['outcome']}")
             if rec["outcome"] == "RESOLVED":
                 self._phase("resolved")
                 self._slack_note(inc, slack_ai.resolved(inc, rec))
             else:
                 self._phase("not_resolved", outcome=rec["outcome"])
         elif rec["status"] in ("refused", "apply_failed", "uncertain"):
+            self._actor("remediation", "offline", f"stopped: {rec['status']}")
             self._phase("failed", error=rec.get("message"))
+
+    # ----------------------------------------------------------------------------- the Remediation Agent
+    def _auto_remediate(self, inc: dict, proposal: dict, values: list, g: dict) -> None:
+        inc["auto"] = True
+        self._phase("auto_remediating")
+        self._actor("remediation", "working", "policy gate passed: auto-approved; value ladder "
+                    + " → ".join(map(str, values)))
+        self._actor("engineer", "standby", "informed in Slack; can press Stop")
+        out = self.auto.run(inc, proposal, values, g)
+        inc["auto_result"] = out
+        if out["result"] == "resolved":
+            a = out["resolved_by"]
+            self._actor("remediation", "offline", f"resolved on attempt {a['n']} of {a['of']} ({a.get('before')} → "
+                                                  f"{a.get('after')}); nothing further to do")
+            self._actor("engineer", "done", "no action needed")
+            self._phase("resolved")
+        elif out.get("stopped_by"):
+            self._actor("remediation", "offline", "stopped by an engineer: no further attempt, no revert")
+            self._actor("engineer", "working", f"{out['stopped_by']} owns the incident")
+            self._phase("acknowledged")
+        else:
+            rv = out.get("revert") or {}
+            self._actor("remediation", "offline", "handed over: " + (out.get("reason") or "")
+                        + (f"; reverted to {rv.get('after')}" if rv.get("ok") else ""))
+            self._actor("engineer", "waiting", f"acknowledge in Slack and fix manually ({out.get('component')} locked)")
+            self._phase("handed_over")
+
+    def _auto_say(self, kind: str, data: dict) -> None:
+        """Render the Remediation Agent's messages into the incident's Slack thread (attempts update in place)."""
+        inc = self.incident
+        if not inc or not self.transport.configured:
+            return
+        try:
+            if kind == "attempt":
+                payload = slack_ai.auto_attempt(inc, data)
+                if data["n"] == 1 and data.get("stage") in ("approved", "done"):   # the plan message shows it too
+                    slack.refresh_plan(self.transport, self.registry, self.review, inc["id"], inc["digest"],
+                                       time.time(), execution=self.execution)
+                    slack.refresh_root(self.transport, self.registry, self.review, inc["id"], self.execution)
+                slot = (inc["id"], "attempt", data["n"])
+                if slot in self._auto_msgs and self.transport.update(*self._auto_msgs[slot], payload):
+                    return
+                res = self.transport.post(payload, thread_ts=self.registry.get(inc["id"]).get("root_ts"))
+                if res is not None:
+                    self._auto_msgs[slot] = res
+                self._emit("slack", {"text": payload["text"][:160], "ok": res is not None})
+                return
+            payload = {"start": lambda: slack_ai.auto_start(inc, data["ladder"], data["proposal"], data["gate"]),
+                       "revert": lambda: slack_ai.auto_revert(inc, data),
+                       "handover": lambda: slack_ai.auto_handover(inc, data),
+                       "resolved": lambda: slack_ai.auto_resolved(inc, data),
+                       "stopped": lambda: slack_ai.auto_stopped(inc, data["by"])}.get(kind)
+            if payload is not None:
+                self._slack_note(inc, payload())
+        except Exception as exc:  # noqa: BLE001 - Slack rendering never affects the remediation
+            self._op(f"Slack message ({kind}) failed: {type(exc).__name__}: {exc}", "warning")
+
+    def _on_auto_click(self, kind: str, incident_id: str, user: str) -> str | None:
+        """Stop / Acknowledge from Slack. Only the configured (human) approvers may use them."""
+        if user not in self.s.slack_approvers:
+            return "Only a configured approver can do this; nothing was changed."
+        inc = self.incident if self.incident and self.incident.get("id") == incident_id else None
+        if kind == "stop":
+            if self.auto and self.auto.stop(incident_id, user):
+                self._op(f"{user} pressed Stop: the Remediation Agent makes no further change on {incident_id}")
+                self._actor("engineer", "working", f"{user} pressed Stop and owns the incident")
+                return None
+            return "Automatic remediation is not running for this incident."
+        if kind == "ack":
+            comps = self.auto_store.acknowledge(incident_id, user) if self.auto_store else []
+            if not comps:
+                return "Nothing to acknowledge (already acknowledged)."
+            self.auto_store.event(incident_id, "acknowledged", user, {"components": comps})
+            self._emit("auto_ack", {"by": user, "components": comps, "at": time.time()})
+            self._emit("auto_config", self.auto_config(), keep=False)
+            note = slack_ai.auto_acknowledged(inc or {"id": incident_id}, user, comps)
+            if inc:
+                self._slack_note(inc, note)
+                self._actor("engineer", "working", f"{user} acknowledged and is fixing it manually")
+                if self.phase == "handed_over":
+                    self._phase("acknowledged")
+            elif self.transport.configured:
+                self.transport.post(note, thread_ts=self.registry.get(incident_id).get("root_ts"))
+            self._op(f"{user} acknowledged {incident_id}; automatic remediation re-enabled for {', '.join(comps)}")
+            return None
+        return None
 
     # ----------------------------------------------------------------------------- operator actions
     def trigger(self, key: str) -> dict:
@@ -429,7 +591,7 @@ class Engine:
     def reset(self) -> dict:
         if self.phase == "stopped" or self.busy:
             return {"ok": False, "error": f"cannot reset now (phase: {self.phase}, busy: {self.busy})"}
-        if self.phase in ("detected", "investigating", "agent", "remediating"):
+        if self.phase in ("detected", "investigating", "agent", "remediating", "auto_remediating"):
             return {"ok": False, "error": f"wait until the current step finishes (phase: {self.phase})"}
         self.busy = "reset"
         self._emit("busy", {"busy": self.busy}, keep=False)
@@ -469,10 +631,10 @@ class Engine:
         ok = self.transport.post(payload, thread_ts=root) is not None
         self._emit("slack", {"text": payload.get("text", "")[:160], "ok": ok})
 
-    def _slack_report(self, inc, report, digest, ai, proposal) -> None:
+    def _slack_report(self, inc, report, digest, ai, proposal, gate=None) -> None:
         if not self.transport.configured:
             return
-        self._slack_note(inc, slack_ai.report(inc, ai, proposal, report))
+        self._slack_note(inc, slack_ai.report(inc, ai, proposal, report, gate))
         ok = slack.publish_investigation(self.transport, self.registry, report, self.review, digest,
                                          self.s.namespace, time.time(), execution=self.execution)
         self._emit("slack", {"text": "Rule-based investigation and the remediation plan (with Approve / Execute "
@@ -489,7 +651,8 @@ class Engine:
 INCIDENT_EVENTS = {"phase", "incident", "signals", "rule_start", "rule_step", "rule_result", "agent_start",
                    "agent_thinking", "agent_note", "agent_tool_call", "agent_tool_result", "agent_report",
                    "agent_result", "agent_error", "proposal", "decision", "remediation", "outcome", "slack",
-                   "slack_link", "execute_refused", "route"}
+                   "slack_link", "execute_refused", "route", "actor", "auto_gate", "auto_start", "auto_attempt",
+                   "auto_progress", "auto_revert", "auto_done", "auto_stop", "auto_ack"}
 
 
 def _public(rec: dict | None) -> dict | None:

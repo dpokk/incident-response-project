@@ -52,4 +52,9 @@ def create_app(engine, bus) -> FastAPI:
     def reset():
         return engine.reset()
 
+    @app.post("/api/auto")
+    def auto(body: dict):
+        """Switch automatic remediation on/off (a setting; no incident decision is ever taken from the page)."""
+        return engine.set_auto(bool(body.get("enabled")))
+
     return app
