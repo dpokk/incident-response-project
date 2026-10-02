@@ -36,11 +36,17 @@ class ChatModel:
         body = {"model": self.model, "messages": messages, "tools": tools, "tool_choice": tool_choice,
                 "max_tokens": max_tokens, "temperature": 0.2}
         t0 = time.time()
-        try:
-            r = requests.post(f"{self.base_url}/chat/completions", json=body, timeout=self.timeout,
-                              headers={"Authorization": f"Bearer {self.api_key}"})
-        except requests.RequestException as exc:
-            raise LLMError(f"model request failed: {type(exc).__name__}") from None
+        for attempt in (1, 2):              # one retry for a transient failure (timeout, 429, 5xx), then give up
+            try:
+                r = requests.post(f"{self.base_url}/chat/completions", json=body, timeout=self.timeout,
+                                  headers={"Authorization": f"Bearer {self.api_key}"})
+            except requests.RequestException as exc:
+                if attempt == 1:
+                    continue
+                raise LLMError(f"model request failed twice: {type(exc).__name__}") from None
+            if r.status_code == 200 or attempt == 2 or not (r.status_code == 429 or r.status_code >= 500):
+                break
+            time.sleep(2)
         if r.status_code != 200:
             raise LLMError(f"model returned HTTP {r.status_code}: {r.text[:200]}")
         data = r.json()

@@ -50,6 +50,20 @@ INCIDENTS = {
                        "what": "A credential rotation gone wrong: the backend is switched to read its database password "
                                "from a new Secret holding a stale value. PostgreSQL stays healthy; every query is rejected. "
                                "The rule engine has no specific pattern for this one."},
+    "backend-down": {"title": "Backend scaled to zero", "script": "scripts/inject/backend-down.ps1",
+                     "what": "A mistaken scale-down: the backend deployment goes to 0 replicas, so the frontend has "
+                             "nothing to call. The rule engine has no pattern for a missing intermediate service, so the "
+                             "Investigator Agent leads and an engineer gets its manual steps."},
+    "memory-limit-low": {"title": "Memory limit set too low (bad deploy)", "script": "scripts/inject/memory-limit-low.ps1",
+                         "what": "A configuration deploy lowers the backend's memory limit to 32Mi; normal traffic needs "
+                                 "about 37 MB, so the new pods are OOM-killed and crash-loop. A higher limit is the real "
+                                 "fix: the Remediation Agent's memory ladder can show more than one attempt."},
+    "app-crash": {"title": "Application crash (bad data)", "script": "scripts/inject/app-crash.ps1",
+                  "what": "One order with quantity 0. The backend's invoice job divides by zero, the process dies, and "
+                          "because the order stays pending the pods crash-loop. No typed action fixes bad data."},
+    "bad-image": {"title": "Broken release (missing image)", "script": "scripts/inject/bad-image.ps1",
+                  "what": "A release points the backend at an image tag that does not exist. The new pod cannot pull "
+                          "it and the rollout stalls while the old pods keep serving. An engineer must roll back."},
     "overload": {"title": "Sustained overload (automation refuses)", "script": "scripts/inject/overload.ps1",
                  "what": "800 req/s for 15 minutes: the backend is OOM-killed again and again, and a higher memory limit "
                          "would only delay it. In our runs the rule engine is not confident (under 50%) and its plan "
@@ -116,6 +130,7 @@ class Engine:
         self.auto_store: AutoStore | None = None
         self.auto: RemediationAgent | None = None
         self._auto_msgs: dict = {}                    # Slack (channel, ts) of the agent's evolving messages
+        self.baseline_at = 0.0                        # when "Reset to healthy" last restored the baseline
 
     # ----------------------------------------------------------------------------- page support
     def snapshot(self) -> dict:
@@ -320,7 +335,7 @@ class Engine:
     def _rule_investigation(self, inc: dict) -> tuple[dict, str]:
         clock = self.providers.clock
         end = clock()
-        start = inc["detected_at"] - self.s.lookback_s
+        start = self._window_start(inc)
         self._emit("rule_start", {"window": [start, end]})
         store = TracingStore(lambda t, d: self._emit(t, d), clock)
         caps = self.providers.capabilities(store)
@@ -342,6 +357,11 @@ class Engine:
             "impact": ((r.get("impact") or {}).get("users") or {}).get("statement")})
         return r, res["digest"]
 
+    def _window_start(self, inc: dict) -> float:
+        """Evidence window start: the usual lookback, but never before the last reset - otherwise the previous
+        (already restored) incident's kills and errors would be read as evidence for this one."""
+        return max(inc["detected_at"] - self.s.lookback_s, self.baseline_at)
+
     def _agent(self, inc: dict, report: dict, r: dict) -> dict:
         self._phase("agent")
         if self.model is None:
@@ -352,7 +372,7 @@ class Engine:
                                                 "leading the investigation") + f" (≤ {r['budget']['tool_calls']} "
                                                f"read-only tool calls, {r['budget']['seconds']} s)")
         caps = self.providers.capabilities(EvidenceStore(clock=self.providers.clock))
-        tb = ToolBox(caps, self.s, report, inc["detected_at"] - self.s.lookback_s, clock=self.providers.clock)
+        tb = ToolBox(caps, self.s, report, self._window_start(inc), clock=self.providers.clock)
         rcc = (report.get("root_cause_component") or {}).get("name")
         summary = (f"{report.get('failure_category_label')} (root-cause component {rcc}; confidence "
                    f"{float(report.get('confidence') or 0):.0%}): {report.get('likely_root_cause')}")
@@ -598,16 +618,16 @@ class Engine:
 
         def run():
             try:
-                self._op("Restoring the healthy baseline (scripts/restore.ps1) …")
+                self._op("Restoring the healthy baseline (scripts/restore-extras.ps1, restore.ps1, "
+                         "restore-credentials.ps1) …")
+                self._script("scripts/restore-extras.ps1")       # first: restore.ps1 waits on the backend rollout
                 self._script("scripts/restore.ps1")
                 self._script("scripts/restore-credentials.ps1")
-                self._run(["kubectl", "--context", self.s.kube_context, "-n", self.s.namespace, "patch", "deploy/backend", "--type", "strategic", "-p",
-                           '{"spec":{"template":{"spec":{"containers":[{"name":"backend","resources":{"limits":'
-                           '{"memory":"192Mi"}}}]}}}}'], "baseline")
                 with self.lock:
                     self.incident = None
                     self.bus.clear_history(INCIDENT_EVENTS)
                     self.cooldown_until = time.time() + 60
+                    self.baseline_at = time.time()
                     self._phase("monitoring")
                 self._emit("incident_cleared", {}, keep=False)
                 self._op("Baseline restored. Detection resumes in 60 s, once the restart effects have settled.")

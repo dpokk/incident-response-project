@@ -63,3 +63,12 @@ def test_a_slack_rejection_is_shown(tmp_path, monkeypatch):
     eng.review.decide("INC-TEST", d, 0, "rejected", APPROVER)
     eng._mirror_slack()
     assert eng.phase == "rejected" and kinds(bus) == ["decision"]
+
+
+def test_the_evidence_window_never_reaches_back_past_the_last_reset(tmp_path, monkeypatch):
+    """Regression: back-to-back incidents - the previous (restored) incident's OOM kills were read as evidence."""
+    eng, _, _ = engine(tmp_path, monkeypatch)
+    inc = {"detected_at": 10_000.0}
+    assert eng._window_start(inc) == 10_000.0 - eng.s.lookback_s          # no reset yet: the usual lookback
+    eng.baseline_at = 9_900.0
+    assert eng._window_start(inc) == 9_900.0                                # bounded by the reset

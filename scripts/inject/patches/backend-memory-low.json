@@ -1,0 +1,1 @@
+{"spec":{"template":{"spec":{"containers":[{"name":"backend","resources":{"requests":{"memory":"24Mi"},"limits":{"memory":"32Mi"}}}]}}}}

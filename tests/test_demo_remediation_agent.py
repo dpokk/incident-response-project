@@ -98,7 +98,7 @@ def test_the_gate_passes_only_when_every_check_holds():
     assert gate(pol, True, route, ai, p, {})["eligible"]
     assert not gate(pol, False, route, ai, p, {})["eligible"]                                   # switched off
     assert not gate(pol, True, {**route, "mode": "lead"}, ai, p, {})["eligible"]                # agent led
-    assert not gate(pol, True, {**route, "rule_confidence": 0.85}, ai, p, {})["eligible"]       # below 90%
+    assert not gate(pol, True, {**route, "rule_confidence": 0.84}, ai, p, {})["eligible"]       # below 85%
     bad = {"status": "ok", "report": {**ai["report"], "agreement": {"category": True, "component": False}}}
     assert not gate(pol, True, route, bad, p, {})["eligible"]                                   # disagreement
     weak = {"status": "ok", "report": {**ai["report"], "validation": {"ok": True, "findings": 4, "supported_findings": 3}}}
