@@ -29,7 +29,7 @@ from investigator.evidence import EvidenceStore
 from investigator.planner import plan_and_collect
 from investigator.review import PARAMETER_SPECS, InvalidParameter, ReviewService
 
-from . import slack_ai, slack_listener
+from . import agent_plan, slack_ai, slack_listener
 from .remediation_agent import AGENT_ID, AutoPolicy, AutoStore, RemediationAgent, gate, ladder
 from .agent.investigator import InvestigatorAgent
 from .agent.llm import ChatModel
@@ -55,7 +55,7 @@ INCIDENTS = {
                              "nothing to call. The rule engine has no pattern for a missing intermediate service, so the "
                              "Investigator Agent leads and an engineer gets its manual steps."},
     "memory-limit-low": {"title": "Memory limit set too low (bad deploy)", "script": "scripts/inject/memory-limit-low.ps1",
-                         "what": "A configuration deploy lowers the backend's memory limit to 32Mi; normal traffic needs "
+                         "what": "A configuration deploy lowers the backend's memory limit to 32Mi on all pods at once; normal traffic needs "
                                  "about 37 MB, so the new pods are OOM-killed and crash-loop. A higher limit is the real "
                                  "fix: the Remediation Agent's memory ladder can show more than one attempt."},
     "app-crash": {"title": "Application crash (bad data)", "script": "scripts/inject/app-crash.ps1",
@@ -304,6 +304,7 @@ class Engine:
                                          f"{float(report.get('confidence') or 0):.0%} confidence")
             self._emit("route", r)
             ai = self._agent(inc, report, r)
+            digest = self._agent_plan(inc, report, ai, r) or digest
             proposal = self._proposal(report, ai, r)
             inc.update({"report_id": report["id"], "digest": digest, "proposal": proposal})
             self._emit("proposal", proposal)
@@ -373,6 +374,7 @@ class Engine:
                                                f"read-only tool calls, {r['budget']['seconds']} s)")
         caps = self.providers.capabilities(EvidenceStore(clock=self.providers.clock))
         tb = ToolBox(caps, self.s, report, self._window_start(inc), clock=self.providers.clock)
+        inc["components"] = list(tb.components)
         rcc = (report.get("root_cause_component") or {}).get("name")
         summary = (f"{report.get('failure_category_label')} (root-cause component {rcc}; confidence "
                    f"{float(report.get('confidence') or 0):.0%}): {report.get('likely_root_cause')}")
@@ -397,6 +399,25 @@ class Engine:
             self._actor("investigator", "offline", f"no report ({out.get('error') or out.get('status')}): the rule "
                                                    f"engine's findings stand")
         return out
+
+    def _agent_plan(self, inc: dict, report: dict, ai: dict, r: dict) -> str | None:
+        """When the agent led and proposed a typed scale/memory fix the rule engine's plan lacks, make it a reviewable
+        plan (agent_plan.py) that supersedes the rules' plan. Returns the new digest, or None."""
+        if r["mode"] != "lead" or (ai or {}).get("status") != "ok":
+            return None
+        caps = self.providers.capabilities(EvidenceStore(clock=self.providers.clock))
+        pol = self.execution.policy
+        plan, why = agent_plan.build(report["remediation_plan"], ai["report"], caps, inc.get("components") or [],
+                                     time.time(), self.s.entry_app, pol.max_replicas, pol.max_memory_bytes)
+        if plan is None:
+            self._emit("agent_plan", {"created": False, "reason": why})
+            return None
+        digest = self.review.register_plan(inc["id"], plan, time.time())
+        report["remediation_plan"] = plan
+        self._emit("agent_plan", {"created": True, "summary": plan["actions"][0]["summary"], "digest": digest})
+        self._op(f"The Investigator Agent's fix became a reviewable plan: {plan['actions'][0]['summary']} "
+                 f"(needs Approve + Execute in Slack)")
+        return digest
 
     def _proposal(self, report: dict, ai: dict, r: dict) -> dict:
         """The executable action always comes from the deterministic plan (its eligibility rules). The agent's
@@ -449,7 +470,15 @@ class Engine:
         if not inc or not inc.get("digest") or inc.get("auto") or self.phase in TERMINAL:
             return
         idx = (inc.get("proposal") or {}).get("plan_index")
-        if idx is None:
+        if idx is None:                   # nothing executable: the engineer acknowledges and fixes it manually
+            for d in self.review.decisions(inc["id"], effective_only=True):
+                if d["plan_digest"] == inc["digest"] and d["decision"] == "acknowledged" \
+                        and inc.get("mirror_decision") != d["id"]:
+                    inc["mirror_decision"] = d["id"]
+                    self._emit("decision", {"decision": "acknowledged", "by": d["reviewer"], "at": d["at"],
+                                            "value": {}})
+                    self._actor("engineer", "working", f"{d['reviewer']} acknowledged in Slack and owns the manual fix")
+                    self._phase("acknowledged")
             return
         d = self.review.effective_decision(inc["id"], inc["digest"], idx)
         if d and inc.get("mirror_decision") != d["id"]:
@@ -672,7 +701,7 @@ INCIDENT_EVENTS = {"phase", "incident", "signals", "rule_start", "rule_step", "r
                    "agent_thinking", "agent_note", "agent_tool_call", "agent_tool_result", "agent_report",
                    "agent_result", "agent_error", "proposal", "decision", "remediation", "outcome", "slack",
                    "slack_link", "execute_refused", "route", "actor", "auto_gate", "auto_start", "auto_attempt",
-                   "auto_progress", "auto_revert", "auto_done", "auto_stop", "auto_ack"}
+                   "auto_progress", "auto_revert", "auto_done", "auto_stop", "auto_ack", "agent_plan"}
 
 
 def _public(rec: dict | None) -> dict | None:

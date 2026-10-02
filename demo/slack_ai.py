@@ -60,6 +60,10 @@ def report(inc: dict, ai: dict, proposal: dict, rule: dict, gate: dict | None = 
         failed = [c["detail"] for c in (gate or {}).get("checks", []) if not c["ok"]]
         if failed:
             blocks.append(_context(":raised_hand: Not automated: " + "; ".join(failed[:3])))
+        if proposal.get("led_by") == "agent" and proposal.get("source") == "agent":
+            blocks.append(_context(":bulb: The rule engine found no established cause, so this typed action comes from "
+                                   "the Investigator Agent's evidence-checked report. The current value was read live; "
+                                   "the executor checks everything again before any change."))
         blocks.append(_section(":raised_hand: *Human approval required.* Proposed action: "
                                f"{proposal['summary']}"
                                + (f" — the agent suggests {par['name']} = `{par['value']}`" if par.get("value")
@@ -71,7 +75,9 @@ def report(inc: dict, ai: dict, proposal: dict, rule: dict, gate: dict | None = 
         steps = "\n".join(f"{i}. {s}" for i, s in enumerate(proposal.get("manual_steps") or [], 1))
         blocks.append(_section(f":no_entry: *No automatic remediation:* {proposal.get('reason')}."
                                + (f"\n*Recommended manual steps (from the agent):*\n{steps}" if steps else "")
-                               + "\nThe platform only executes typed, policy-checked actions; this one needs an engineer."))
+                               + "\nThe platform only executes typed, policy-checked actions; none fits this cause, so "
+                                 "there is nothing to approve. Press *Acknowledge* on the plan message below to take "
+                                 "ownership of the manual fix."))
     return {"text": f"Investigator Agent report for {inc['id']}", "blocks": blocks[:50]}
 
 

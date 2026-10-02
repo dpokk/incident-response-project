@@ -209,7 +209,7 @@ const esc = (s) => String(s ?? "").replace(/<@([A-Z0-9]+)>/g, "@$1").replace(/[&
 const hms = (t) => t ? new Date(t * 1000).toLocaleTimeString([], {hour12: false}) : "";
 const PHASE = {stopped: ["Stopped", ""], monitoring: ["Monitoring", "ok"], detected: ["Incident detected", "bad"],
   investigating: ["Investigating", "warn"], agent: ["Agent investigating", "ai"], awaiting_approval: ["Waiting for approval in Slack", "warn"], approved: ["Approved — waiting for Execute in Slack", "warn"],
-  investigated: ["Investigated — manual fix needed", "warn"], remediating: ["Remediating", "warn"],
+  investigated: ["Manual fix — waiting for Acknowledge in Slack", "warn"], remediating: ["Remediating", "warn"],
   resolved: ["Resolved", "ok"], not_resolved: ["Not resolved", "bad"], rejected: ["Rejected", "bad"], failed: ["Failed", "bad"],
   auto_remediating: ["Remediation Agent fixing it (automatic)", "warn"], handed_over: ["Handed over: engineer must fix it", "bad"],
   acknowledged: ["Engineer owns the fix", "warn"]};
@@ -405,12 +405,18 @@ function renderIncident() {
     h += renderAuto(P, G);
   } else if (P) {
     const slackLink = I.slack_url ? ` <a href="${esc(I.slack_url)}" target="_blank" rel="noopener">Open the Slack thread ↗</a>` : "";
-    h += `<div class="stage"><h3><span class="n">5</span> Human approval — in Slack</h3>`;
+    h += `<div class="stage"><h3><span class="n">5</span> ${P.executable ? "Human approval — in Slack" : "Handed to an engineer — manual fix"}</h3>`;
     if (G) h += `<details style="margin-bottom:8px"><summary>Why a human is needed: the Remediation Agent's policy gate did not pass (${G.checks.filter(c => !c.ok).length} check(s) failed)</summary>${gateList(G)}</details>`;
-    if (!P.executable) h += `<div class="approval"><div><b>No automatic remediation.</b> ${esc(P.reason)}.</div>
+    if (P.executable && P.source === "agent" && P.led_by === "agent") h += `<div class="route lead" style="margin:0 0 8px"><b>Fix proposed by the Investigator Agent</b><div class="sub">The rule engine found no established cause, so its plan had no typed change. The agent's evidence-checked fix was made into a typed action deterministically (current value read live, value bounded, standard verification). It still needs an engineer's Approve + Execute.</div></div>`;
+    if (!P.executable) {
+      const d = I.decision;
+      h += `<div class="approval"><div><b>Nothing to approve:</b> no typed action fits this cause (${esc(P.reason)}). An engineer fixes it manually.</div>
         ${(P.manual_steps || []).length ? `<div><b>Manual steps recommended by the agent:</b><ol>${P.manual_steps.map(s => "<li>" + esc(s) + "</li>").join("")}</ol></div>` : ""}
         ${(P.investigate || []).map(q => `<div class="sub">• ${esc(q)}</div>`).join("")}
-        <div class="sub">The platform only executes typed, policy-checked actions (memory limit, replicas, one configuration value). This fix needs an engineer; the report and these steps were posted to Slack. Use “Reset to healthy” to undo the demo injection.</div></div>`;
+        <ul class="steps"><li><span class="ic">${d ? "✓" : "⏳"}</span><span>${d ? "Acknowledged by " + esc(d.by) + " at " + hms(d.at) + " — the engineer owns the manual fix" : "Waiting for an engineer to press <b>Acknowledge</b> on the plan message in Slack (takes ownership; changes nothing)"}</span></li></ul>
+        ${slackLink ? `<div>${slackLink}</div>` : ""}
+        <div class="sub">The platform only executes typed, policy-checked actions (memory limit, replicas, one configuration value). Use “Reset to healthy” to undo the demo injection.</div></div>`;
+    }
     else {
       const par = P.parameter, d = I.decision, rec = (I.lastRem || {}).record;
       const approved = d && d.decision === "approved", declined = d && d.decision !== "approved";

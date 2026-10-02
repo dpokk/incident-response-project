@@ -72,3 +72,18 @@ def test_the_evidence_window_never_reaches_back_past_the_last_reset(tmp_path, mo
     assert eng._window_start(inc) == 10_000.0 - eng.s.lookback_s          # no reset yet: the usual lookback
     eng.baseline_at = 9_900.0
     assert eng._window_start(inc) == 9_900.0                                # bounded by the reset
+
+
+def test_acknowledge_on_a_plan_without_a_typed_action_reaches_the_page(tmp_path, monkeypatch):
+    """Regression: for a manual-fix incident only Acknowledge exists in Slack, and the page stayed waiting."""
+    eng, bus, _ = engine(tmp_path, monkeypatch)
+    plan, _ = make_plan(fc.world_crash())
+    d = eng.review.register_plan("INC-M", plan, fc.NOW)
+    eng.incident = {"id": "INC-M", "digest": d, "proposal": {"executable": False, "plan_index": None}}
+    eng.phase = "investigated"
+    eng._mirror_slack()
+    assert eng.phase == "investigated"
+    idx = next(i for i, a in enumerate(plan["actions"]) if a["type"] == "investigate_further")
+    assert eng.review.decide("INC-M", d, idx, "acknowledged", APPROVER).effective
+    eng._mirror_slack()
+    assert eng.phase == "acknowledged" and "decision" in kinds(bus)
