@@ -109,6 +109,10 @@ main { display: grid; grid-template-columns: minmax(330px, 420px) 1fr; gap: 16px
 .muted { color: var(--muted); }
 details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
 .err { color: var(--bad); font-size: 12.5px; }
+.route { margin-top: 10px; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--rule); }
+.route.lead { border-color: var(--ai); background: var(--ai-bg); }
+.route.verify { background: var(--soft); }
+.fix ol, .approval ol { margin: 6px 0 0; padding-left: 20px; }
 </style>
 </head>
 <body>
@@ -170,7 +174,7 @@ const esc = (s) => String(s ?? "").replace(/<@([A-Z0-9]+)>/g, "@$1").replace(/[&
 const hms = (t) => t ? new Date(t * 1000).toLocaleTimeString([], {hour12: false}) : "";
 const PHASE = {stopped: ["Stopped", ""], monitoring: ["Monitoring", "ok"], detected: ["Incident detected", "bad"],
   investigating: ["Investigating", "warn"], agent: ["Agent investigating", "ai"], awaiting_approval: ["Waiting for approval in Slack", "warn"], approved: ["Approved — waiting for Execute in Slack", "warn"],
-  investigated: ["Investigated (no executable fix)", "warn"], remediating: ["Remediating", "warn"],
+  investigated: ["Investigated — manual fix needed", "warn"], remediating: ["Remediating", "warn"],
   resolved: ["Resolved", "ok"], not_resolved: ["Not resolved", "bad"], rejected: ["Rejected", "bad"], failed: ["Failed", "bad"]};
 let S = {phase: "stopped", busy: null, config: {}, incidents: [], hidden: new Set()};
 let I = null;   // the current incident view model, built only from events
@@ -280,12 +284,14 @@ function renderIncident() {
       <span class="pill">${decisions.length} decisions · ${calls.length} capability calls</span></h3>
       <ul class="steps">${decisions.slice(-8).map(s => `<li><span class="ic">→</span><span>${esc(s.text)}<div class="why">${esc(s.reason)}</div></span></li>`).join("")}</ul>
       <details><summary>All capability calls (${calls.length})</summary><ul class="steps">${calls.map(c => `<li><span class="ic">${c.status === "ok" ? "✓" : "✗"}</span><span><code>${esc(c.capability)}</code> ${esc((c.args || []).join(", "))} <span class="why">· ${esc(c.summary)} · ${c.ms} ms</span></span></li>`).join("")}</ul></details>
-      ${I.rule ? `<div style="margin-top:8px"><b>Rule engine:</b> ${esc(I.rule.label)} in <code>${esc(I.rule.affected)}</code> · ${esc(I.rule.confidence)} confidence (${Math.round((I.rule.confidence_value || 0) * 100)}%) · ${I.rule.facts} facts</div>` : `<div class="sub">⏳ collecting…</div>`}</div>`;
+      ${I.rule ? `<div style="margin-top:8px"><b>Rule engine:</b> ${esc(I.rule.label)} in <code>${esc(I.rule.affected)}</code> · ${esc(I.rule.confidence)} confidence (${Math.round((I.rule.confidence_value || 0) * 100)}%) · ${I.rule.facts} facts</div>` : `<div class="sub">⏳ collecting…</div>`}
+      ${I.route ? `<div class="route ${I.route.mode}"><b>${I.route.mode === "verify" ? "Known pattern → the rule engine leads, the agent verifies" : "Not a known pattern → the Investigator Agent leads"}</b><div class="sub">${esc(I.route.reason)} · agent budget ≤ ${I.route.budget.tool_calls} tool calls, ${I.route.budget.seconds} s · threshold: rules lead at ≥ 75% confidence</div></div>` : ""}</div>`;
   }
   // 3 agent
   const A = I.agent;
   if (A.model || A.error || A.steps.length) {
-    h += `<div class="stage"><h3><span class="n">3</span> 🔍 Investigator Agent <span class="pill ai">${esc(A.model || "")}</span></h3><div class="agent"><ul class="steps">`;
+    const role = I.route ? (I.route.mode === "verify" ? "verifying the rule engine" : "leading the investigation") : "";
+    h += `<div class="stage"><h3><span class="n">3</span> 🔍 Investigator Agent ${role ? "— " + role : ""} <span class="pill ai">${esc(A.model || "")}</span></h3><div class="agent"><ul class="steps">`;
     for (const s of A.steps) {
       if (s.type === "call") h += `<li><span class="ic">${s.result ? (s.result.ok ? "✓" : "✗") : "⏳"}</span><span><code>${esc(s.tool)}</code>${Object.keys(s.args || {}).length ? " <span class='mono'>" + esc(JSON.stringify(s.args)) + "</span>" : ""}
         ${s.purpose ? `<div class="why">${esc(s.purpose)}</div>` : ""}${s.result ? `<div>${s.result.evidence_id ? `<span class="ev">${esc(s.result.evidence_id)}</span> ` : ""}${esc(s.result.summary)}</div>` : ""}</span></li>`;
@@ -298,11 +304,12 @@ function renderIncident() {
   // 4 report
   if (A.result) {
     const r = A.result, ag = r.agreement || {}, v = r.validation || {};
-    h += `<div class="stage"><h3><span class="n">4</span> Investigation complete</h3><div class="report">
+    h += `<div class="stage"><h3><span class="n">4</span> Investigation complete <span class="pill ${r.led_by === "agent" ? "ai" : ""}">${r.led_by === "agent" ? "diagnosis led by the Investigator Agent" : "diagnosis by the rule engine, verified by the agent"}</span></h3><div class="report">
       <div><div class="sub">Root cause · ${esc(r.confidence)} confidence · <code>${esc(r.category)}</code> in <code>${esc(r.root_cause_component)}</code></div><div class="rc">${esc(r.root_cause)}</div>
         ${r.summary ? `<div>${esc(r.summary)}</div>` : ""}</div>
       <div><b>Findings</b><ul class="steps">${r.findings.map(f => `<li><span class="ic">${f.supported ? "✓" : "⚠️"}</span><span>${esc(f.statement)}
         <div class="ev">${f.evidence.map(e => esc(e.id) + ": " + esc(e.text)).join("<br>") || "no valid evidence cited"}${f.invalid_citations.length ? "<br><span class='err'>rejected citations: " + esc(f.invalid_citations.join(", ")) + "</span>" : ""}</div></span></li>`).join("")}</ul></div>
+      ${r.manual_steps && r.manual_steps.length ? `<div class="fix"><b>Recommended manual steps:</b><ol>${r.manual_steps.map(s => "<li>" + esc(s) + "</li>").join("")}</ol></div>` : ""}
       <div class="fix"><b>Suggested remediation:</b> ${esc(r.suggested_fix.action)} → <code>${esc(r.suggested_fix.target)}</code>${r.suggested_fix.parameter_value ? " = <code>" + esc(r.suggested_fix.parameter_value) + "</code>" : ""}<div>${esc(r.suggested_fix.description)}</div></div>
       <div class="sub">${ag.category && ag.component ? "✓ Agrees with the rule engine" : "≠ Rule engine said: " + esc(ag.rule_label) + " in " + esc(ag.rule_component)}
         · evidence check: ${v.supported_findings}/${v.findings} findings supported${v.problems && v.problems.length ? " · " + esc(v.problems.join("; ")) : ""}
@@ -317,7 +324,10 @@ function renderIncident() {
   if (P) {
     const slackLink = I.slack_url ? ` <a href="${esc(I.slack_url)}" target="_blank" rel="noopener">Open the Slack thread ↗</a>` : "";
     h += `<div class="stage"><h3><span class="n">5</span> Human approval — in Slack${slackLink ? "" : ""}</h3>`;
-    if (!P.executable) h += `<div class="err">No executable remediation: ${esc(P.reason)}</div>${(P.investigate || []).map(q => `<div class="sub">• ${esc(q)}</div>`).join("")}`;
+    if (!P.executable) h += `<div class="approval"><div><b>No automatic remediation.</b> ${esc(P.reason)}.</div>
+        ${(P.manual_steps || []).length ? `<div><b>Manual steps recommended by the agent:</b><ol>${P.manual_steps.map(s => "<li>" + esc(s) + "</li>").join("")}</ol></div>` : ""}
+        ${(P.investigate || []).map(q => `<div class="sub">• ${esc(q)}</div>`).join("")}
+        <div class="sub">The platform only executes typed, policy-checked actions (memory limit, replicas, one configuration value). This fix needs an engineer; the report and these steps were posted to Slack. Use “Reset to healthy” to undo the demo injection.</div></div>`;
     else {
       const par = P.parameter, d = I.decision, rec = (I.lastRem || {}).record;
       const approved = d && d.decision === "approved", declined = d && d.decision !== "approved";
@@ -408,6 +418,7 @@ function onEvent(ev) {
     case "outcome": I.outcome = d; if (d.record) I.lastRem = {...(I.lastRem || {}), record: d.record}; break;
     case "slack": addSlack(d.text, ev.t, d.ok); return;
     case "slack_link": I.slack_url = d.url; break;
+    case "route": I.route = d; break;
     case "execute_refused": (I.refusals = I.refusals || []).push(d); break;
     default: return;
   }

@@ -40,7 +40,29 @@ INCIDENTS = {
     "oom": {"title": "Memory exhaustion (traffic spike)", "script": "scripts/inject/oom.ps1",
             "what": "Sends a 90 s traffic spike (up to 800 req/s). The backend's request backlog grows past its 192Mi "
                     "memory limit and it is OOM-killed. The spike ends by itself after 90 s."},
+    "db-credentials": {"title": "Stale database credentials", "script": "scripts/inject/db-credentials.ps1",
+                       "what": "A credential rotation gone wrong: the backend is switched to read its database password "
+                               "from a new Secret holding a stale value. PostgreSQL stays healthy; every query is rejected. "
+                               "The rule engine has no specific pattern for this one."},
 }
+KNOWN_CONFIDENCE = 0.75          # rules at or above this confidence lead; below it, the agent leads
+BUDGETS = {"verify": (5, 150), "lead": (14, 300)}   # (tool calls, seconds)
+
+
+def route(report: dict) -> dict:
+    """Deterministic hybrid routing. Known pattern (a rule category at high confidence): the rules lead and the agent
+    verifies with a small budget. Otherwise (undetermined, or low/medium confidence): the agent leads."""
+    cat, conf = report.get("failure_category"), float(report.get("confidence") or 0)
+    label = report.get("failure_category_label") or "undetermined"
+    if not cat or cat == "undetermined":
+        mode, reason = "lead", "the rule engine found no established cause"
+    elif conf < KNOWN_CONFIDENCE:
+        mode, reason = "lead", f"the rule engine is only {conf:.0%} confident ({label}): not a known pattern"
+    else:
+        mode, reason = "verify", f"known pattern: {label} at {conf:.0%} confidence"
+    calls, secs = BUDGETS[mode]
+    return {"mode": mode, "reason": reason, "rule_label": label, "rule_confidence": conf,
+            "budget": {"tool_calls": calls, "seconds": secs}}
 TERMINAL = {"resolved", "not_resolved", "rejected", "failed"}
 
 
@@ -220,8 +242,11 @@ class Engine:
                 self._phase("investigating")
             self._slack_note(inc, slack_ai.started(inc, self.model.name if self.model else None))
             report, digest = self._rule_investigation(inc)
-            ai = self._agent(inc, report)
-            proposal = self._proposal(report, ai)
+            r = route(report)
+            inc["route"] = r
+            self._emit("route", r)
+            ai = self._agent(inc, report, r)
+            proposal = self._proposal(report, ai, r)
             inc.update({"report_id": report["id"], "digest": digest, "proposal": proposal})
             self._emit("proposal", proposal)
             self._slack_report(inc, report, digest, ai, proposal)
@@ -256,17 +281,23 @@ class Engine:
             "impact": ((r.get("impact") or {}).get("users") or {}).get("statement")})
         return r, res["digest"]
 
-    def _agent(self, inc: dict, report: dict) -> dict:
+    def _agent(self, inc: dict, report: dict, r: dict) -> dict:
         self._phase("agent")
         if self.model is None:
             self._emit("agent_error", {"error": "no model configured (NVIDIA_API_KEY missing)"})
             return {"status": "unavailable", "error": "no model configured"}
         caps = self.providers.capabilities(EvidenceStore(clock=self.providers.clock))
         tb = ToolBox(caps, self.s, report, inc["detected_at"] - self.s.lookback_s, clock=self.providers.clock)
-        out = InvestigatorAgent(self.model, tb, lambda t, d: self._emit(t, d)).run(inc)
+        rcc = (report.get("root_cause_component") or {}).get("name")
+        summary = (f"{report.get('failure_category_label')} (root-cause component {rcc}; confidence "
+                   f"{float(report.get('confidence') or 0):.0%}): {report.get('likely_root_cause')}")
+        out = InvestigatorAgent(self.model, tb, lambda t, d: self._emit(t, d), mode=r["mode"], rule_summary=summary,
+                                max_tool_calls=r["budget"]["tool_calls"],
+                                max_seconds=r["budget"]["seconds"]).run(inc)
         if out.get("status") == "ok":
             rep = out["report"]
             rule_rcc = (report.get("root_cause_component") or {}).get("name")
+            rep["led_by"] = "agent" if r["mode"] == "lead" else "rules"
             rep["agreement"] = {"rule_category": report.get("failure_category"),
                                 "rule_label": report.get("failure_category_label"),
                                 "rule_component": rule_rcc,
@@ -277,24 +308,27 @@ class Engine:
                                         "model": out.get("model")})
         return out
 
-    def _proposal(self, report: dict, ai: dict) -> dict:
-        """Map the agent's suggested fix to an executable action in the deterministic plan (or say why not)."""
+    def _proposal(self, report: dict, ai: dict, r: dict) -> dict:
+        """The executable action always comes from the deterministic plan (its eligibility rules). The agent's
+        suggestion selects among eligible actions and proposes the value. When the rules lead, an agent that
+        declines to fix (or suggests an ineligible action) does not remove the rules' action; when the agent leads,
+        its 'investigate only' stands and its manual steps are shown instead."""
         plan = report["remediation_plan"]
         actions = plan["actions"]
-        fix = ((ai or {}).get("report") or {}).get("suggested_fix") or {}
-        source = "agent" if fix else "rules"
+        rep = (ai or {}).get("report") or {}
+        fix = rep.get("suggested_fix") or {}
         want = fix.get("action") if fix else None
-        idx = None
-        for i, a in enumerate(actions):
-            if a["type"] == "investigate_further":
-                continue
-            if want is None or a["type"] == want:
-                idx = i
-                break
+        eligible = [i for i, a in enumerate(actions) if a["type"] != "investigate_further"]
+        idx = next((i for i in eligible if actions[i]["type"] == want), None)
+        source = "agent" if idx is not None else "rules"
+        if idx is None and eligible and (r["mode"] == "verify" or not fix):
+            idx = eligible[0]
         base = {"source": source, "agent_action": want, "agent_description": fix.get("description"),
+                "manual_steps": rep.get("manual_steps") or [], "led_by": "agent" if r["mode"] == "lead" else "rules",
                 "plan_assessment": plan.get("assessment"), "plan_reason": plan.get("assessment_reason")}
         if idx is None:
-            why = ("the agent recommends investigating further" if want == "investigate_only" else
+            why = ("the Investigator Agent found no safe typed action for this cause; manual steps below"
+                   if want == "investigate_only" else
                    f"the rule engine's plan has no eligible '{want}' action for the current state" if want else
                    "the plan contains no executable action")
             return {**base, "executable": False, "reason": why,
@@ -302,7 +336,7 @@ class Engine:
                                     for s in a["rationale"]][:4]}
         a = actions[idx]
         spec = PARAMETER_SPECS.get(a["type"]) if not a["parameters_complete"] else None
-        value, value_error = fix.get("parameter_value") if fix else None, None
+        value, value_error = (fix.get("parameter_value") if fix and source == "agent" else None), None
         if spec and value:
             try:
                 value = str(spec.parse(str(value), a))
@@ -404,6 +438,7 @@ class Engine:
             try:
                 self._op("Restoring the healthy baseline (scripts/restore.ps1) …")
                 self._script("scripts/restore.ps1")
+                self._script("scripts/restore-credentials.ps1")
                 self._run(["kubectl", "--context", self.s.kube_context, "-n", self.s.namespace, "patch", "deploy/backend", "--type", "strategic", "-p",
                            '{"spec":{"template":{"spec":{"containers":[{"name":"backend","resources":{"limits":'
                            '{"memory":"192Mi"}}}]}}}}'], "baseline")
@@ -454,7 +489,7 @@ class Engine:
 INCIDENT_EVENTS = {"phase", "incident", "signals", "rule_start", "rule_step", "rule_result", "agent_start",
                    "agent_thinking", "agent_note", "agent_tool_call", "agent_tool_result", "agent_report",
                    "agent_result", "agent_error", "proposal", "decision", "remediation", "outcome", "slack",
-                   "slack_link", "execute_refused"}
+                   "slack_link", "execute_refused", "route"}
 
 
 def _public(rec: dict | None) -> dict | None:

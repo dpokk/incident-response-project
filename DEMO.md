@@ -5,10 +5,33 @@ It adds an **LLM Investigator Agent** that investigates with read-only tools. Ev
 deterministic detection, the rule engine, human approval, typed execution and verification.
 
 ```
-Kubernetes (real injection) → Detector → rule-based evidence collection → Investigator Agent (LLM, read-only tools)
-  → report (findings · evidence · root cause · suggested fix) → web console + Slack
-  → human APPROVE / REJECT → policy → live recheck → dry run → ONE typed change → validation → RESOLVED
+Kubernetes (real injection) → Detector → rule engine (evidence collection + diagnosis)
+  → hybrid routing (deterministic):
+       known pattern  (rule confidence ≥ 75%)        → rules lead, the agent VERIFIES (≤ 5 tool calls)
+       unfamiliar     (undetermined or < 75%)        → the Investigator Agent LEADS (≤ 14 tool calls)
+  → report (findings · cited evidence · root cause · suggested fix or manual steps) → web console + Slack
+  → engineer in Slack: Approve, then Execute → policy → live recheck → dry run → ONE typed change → validation
 ```
+
+## The hybrid, and how to show it
+
+| Incident | Rule engine | Route | What the agent adds |
+|---|---|---|---|
+| Wrong database host | High confidence | rules lead, agent verifies | a quick cross-check and the fix |
+| Database down | High confidence | rules lead, agent verifies | a quick cross-check and the replica count |
+| Memory exhaustion | High confidence | rules lead, agent verifies | the concrete memory limit to propose |
+| **Stale database credentials** | Medium (60%), and blames the wrong setting (`DATABASE_URL`) | **the agent leads** | **finds the real cause** (`PGPASSWORD` was switched to `secret/postgres-credentials-rotated`, from configuration history) and gives manual steps, because no typed action fits |
+
+Show one known incident first, then **Stale database credentials**: that's where the agent finds what the rules
+can't. Measured live, verifying took 4 tool calls, about 37 s and 21k tokens; leading took 10 tool calls,
+about 180 s and 89k tokens.
+
+Safeguards in every route:
+- The agent's tools are read-only.
+- Every finding's citations are checked against what the agent actually collected.
+- The executable action always comes from the deterministic plan, and only a human in Slack can approve and
+  execute it.
+- If the model fails, the rule engine's findings stand.
 
 ## Run it
 
@@ -42,7 +65,9 @@ python -m demo            # opens http://127.0.0.1:8800
    review and execution records, with a link to the Slack thread. Execute runs the deterministic remediation and then
    validation, shown live in both places.
 8. **🟢 RESOLVED** appears in the page and in Slack.
-9. **Reset to healthy** before the next incident.
+9. **Reset to healthy** before the next incident. It also undoes the credentials incident
+   (`scripts/restore-credentials.ps1`). For that incident there is no automatic fix: the console and Slack show the
+   agent's manual steps.
 
 ## What is real
 

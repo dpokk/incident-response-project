@@ -31,7 +31,7 @@ class ChatModel:
     def name(self) -> str:
         return f"{self.model} (NVIDIA NIM)"
 
-    def chat(self, messages: list[dict], tools: list[dict], tool_choice="auto", max_tokens: int = 1500) -> dict:
+    def chat(self, messages: list[dict], tools: list[dict], tool_choice="auto", max_tokens: int = 4096) -> dict:
         """One model turn. Returns {"message": {...}, "usage": {...}, "latency_s": float}."""
         body = {"model": self.model, "messages": messages, "tools": tools, "tool_choice": tool_choice,
                 "max_tokens": max_tokens, "temperature": 0.2}
@@ -45,7 +45,9 @@ class ChatModel:
             raise LLMError(f"model returned HTTP {r.status_code}: {r.text[:200]}")
         data = r.json()
         try:
-            msg = data["choices"][0]["message"]
+            choice = data["choices"][0]
+            msg = choice["message"]
         except (KeyError, IndexError):
             raise LLMError("model returned no message") from None
-        return {"message": msg, "usage": data.get("usage") or {}, "latency_s": round(time.time() - t0, 2)}
+        return {"message": msg, "finish_reason": choice.get("finish_reason"), "usage": data.get("usage") or {},
+                "latency_s": round(time.time() - t0, 2)}

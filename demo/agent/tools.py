@@ -17,6 +17,7 @@ from investigator.capabilities.base import TimeRange
 
 HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9.\-]{0,251}[a-z0-9])?$")
 CATEGORIES = ["memory_exhaustion", "application_crash", "dependency_misconfiguration", "dependency_unavailable",
+              "dependency_authentication",
               "image_pull_failure", "container_config_error", "unschedulable", "health_check_failure", "other"]
 FIX_ACTIONS = ["adjust_resource_limit", "scale_workload", "restore_configuration", "investigate_only"]
 MAX_ACTIVE_PROBES = 3
@@ -103,6 +104,9 @@ class ToolBox:
                                             "replica count (e.g. 1), or the hostname to restore (e.g. postgres)"},
                         "description": {"type": "string"},
                         "evidence_ids": {"type": "array", "items": {"type": "string"}}}},
+                    "manual_steps": {"type": "array", "items": {"type": "string"},
+                                     "description": "Concrete steps for a human when no typed action fits "
+                                                    "(suggested_fix.action = investigate_only)."},
                     "confidence": {"type": "string", "enum": ["high", "medium", "low"]}}}}},
         ]
 
@@ -213,7 +217,10 @@ class ToolBox:
         c = self._component(component)
         entries = [{"name": e.name, "value": "***" if e.sensitive else (e.value or "")[:200], "source": e.source}
                    for e in self.caps.get_configuration(c) or []]
-        return {"entries": entries}, f"{c}: {len(entries)} configuration entries"
+        sourced = [f"{e['name']} ← {e['source']}" for e in sorted(entries, key=lambda e: not e["source"].startswith(
+            "secret/")) if e["source"] != "literal"]                       # secret-backed settings first
+        return {"entries": entries}, (f"{c}: {len(entries)} configuration entries"
+                                       + (f"; {', '.join(sourced[:5])}" if sourced else ""))
 
     def _t_get_configuration_history(self, component):
         c = self._component(component)
@@ -221,7 +228,8 @@ class ToolBox:
         res = {"changes": [{"source": x.source, "item": x.item,
                             "before": "***" if x.sensitive else x.before, "after": "***" if x.sensitive else x.after,
                             "t": x.t or x.t_latest} for x in ch[-10:]]}
-        return res, f"{c}: {len(ch)} recorded configuration change(s)"
+        recent = [f"{x['item']} ({x['source']}): {x['before']} → {x['after']}" for x in res["changes"][-3:]]
+        return res, f"{c}: {len(ch)} recorded configuration change(s)" + (f"; latest: {'; '.join(recent)}" if recent else "")
 
     def _t_get_dependencies(self, component):
         c = self._component(component)

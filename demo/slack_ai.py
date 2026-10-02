@@ -16,6 +16,11 @@ def started(inc: dict, model: str | None) -> dict:
 
 def report(inc: dict, ai: dict, proposal: dict, rule: dict) -> dict:
     blocks = [{"type": "header", "text": {"type": "plain_text", "text": f"Investigator Agent report — {inc['id']}"}}]
+    rt = inc.get("route") or {}
+    if rt:
+        blocks.append(_context(
+            f":compass: *{'Known pattern — the rule engine led; the agent verified' if rt['mode'] == 'verify' else 'Unfamiliar for the rules — the Investigator Agent led'}* "
+            f"({rt['reason']})"))
     if (ai or {}).get("status") != "ok":
         blocks.append(_section(f":warning: The agent produced no report ({(ai or {}).get('error') or (ai or {}).get('status')}). "
                                f"The rule-based findings below stand: *{rule.get('failure_category_label')}* in "
@@ -53,7 +58,10 @@ def report(inc: dict, ai: dict, proposal: dict, rule: dict) -> dict:
                                + (" (type the value you choose)" if par else "")
                                + ", then *Execute*. Nothing changes until a human approves and executes."))
     else:
-        blocks.append(_section(f":no_entry: No executable remediation: {proposal.get('reason')}."))
+        steps = "\n".join(f"{i}. {s}" for i, s in enumerate(proposal.get("manual_steps") or [], 1))
+        blocks.append(_section(f":no_entry: *No automatic remediation:* {proposal.get('reason')}."
+                               + (f"\n*Recommended manual steps (from the agent):*\n{steps}" if steps else "")
+                               + "\nThe platform only executes typed, policy-checked actions; this one needs an engineer."))
     return {"text": f"Investigator Agent report for {inc['id']}", "blocks": blocks[:50]}
 
 
