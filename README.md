@@ -1,4 +1,4 @@
-# Incident Investigation Prototype: Iterations 1–7 complete (investigation, history, planning, human review, approved execution)
+# Incident Investigation Prototype: (investigation, history, planning, human review, approved execution)
 
 An evidence-driven incident investigator, proven first on a local Kubernetes application. Failures are
 injected into the running system. The investigator is **not told what failed**. It decides which
