@@ -22,6 +22,8 @@ import time
 import traceback
 from pathlib import Path
 
+import requests
+
 from investigator import pipeline, slack
 from investigator.context import IncidentContext
 from investigator.detector import Detector
@@ -691,8 +693,15 @@ class Engine:
                                      "buttons) posted to the thread", "ok": ok})
         entry = self.registry.get(inc["id"])
         if entry.get("channel") and entry.get("root_ts"):
-            link = self.transport._api("chat.getPermalink", {"channel": entry["channel"],
-                                                              "message_ts": entry["root_ts"]})
+            # chat.getPermalink rejects a JSON body (invalid_arguments), so it is sent as query arguments
+            try:
+                link = requests.get(f"{slack.API}/chat.getPermalink", timeout=15,
+                                    headers={"Authorization": f"Bearer {self.s.slack_bot_token}"},
+                                    params={"channel": entry["channel"], "message_ts": entry["root_ts"]}).json()
+            except (requests.RequestException, ValueError) as exc:
+                link = {"ok": False, "error": type(exc).__name__}
+            if not link.get("ok"):
+                self.log(f"  ! Slack chat.getPermalink failed: {link.get('error')}")
             if link.get("ok"):
                 inc["slack_url"] = link["permalink"]
                 self._emit("slack_link", {"url": link["permalink"]})

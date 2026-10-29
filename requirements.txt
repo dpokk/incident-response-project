@@ -1,5 +1,5 @@
 # Investigation service (runs on the host, talks to the cluster via kubeconfig)
-kubernetes>=29
+kubernetes>=29,<37   # 37 changed ApiClient.call_api (no query_params): the synthetic user probe in kube.py fails
 requests>=2.31
 python-dotenv>=1.0
 # Slack Socket Mode listener for human review (Iteration 6)
