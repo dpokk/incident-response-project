@@ -2,8 +2,10 @@
 
 Outbound only - inbound interactions arrive through slack_app.py (Socket Mode).
 
-  * With a bot token + channel: chat.postMessage returns a message timestamp, so each incident gets one thread
-    (root message + replies) and messages can be updated (chat.update) as review decisions arrive.
+  * With a bot token + channel: each incident is a few headed channel messages - Incident detected (its status
+    kept current), Investigation (details as a reply), Remediation (decisions, execution progress and rollback
+    plans as replies) and, from a caller that tracks the outcome, a final status. chat.postMessage returns a
+    message timestamp, so messages can be updated (chat.update) as review decisions arrive.
   * With only the incoming webhook: the same rendered messages are posted, unthreaded, and cannot be updated
     (a webhook returns no message id). Interactive updates then go through the interaction's response_url.
 
@@ -140,7 +142,8 @@ def _stale_after(execution, stale_after_s):
     return execution.policy.max_plan_age_s if execution is not None else view.STALE_AFTER_S
 
 
-def _plan_payload(review, key: str, digest: str, now: float, execution=None, stale_after_s=None) -> dict | None:
+def _plan_payload(review, key: str, digest: str, now: float, execution=None, stale_after_s=None,
+                  note: str | None = None) -> dict | None:
     rec = review.plan(key, digest)
     if rec is None:
         return None
@@ -151,7 +154,13 @@ def _plan_payload(review, key: str, digest: str, now: float, execution=None, sta
     return view.plan_message(rec["plan"], digest, statuses, rec["collected_at"], now,
                              stale_after_s=_stale_after(execution, stale_after_s),
                              executable=execution is not None and getattr(execution, "actuator", None) is not None,
-                             executions=execs)
+                             executions=execs, note=note)
+
+
+def _reply_ts(entry: dict) -> str | None:
+    """Where follow-ups of the remediation go (decisions, execution progress, rollback plans): replies to the
+    Remediation message, or to the detection message if no plan was posted."""
+    return entry.get("plan_ts") or entry.get("root_ts")
 
 
 def publish_detection(transport: Transport, registry: ThreadRegistry, incident: dict, namespace: str) -> None:
@@ -162,9 +171,12 @@ def publish_detection(transport: Transport, registry: ThreadRegistry, incident: 
 
 
 def publish_investigation(transport: Transport, registry: ThreadRegistry, report: dict, review, digest: str,
-                          namespace: str, now: float, execution=None, stale_after_s=None) -> bool:
-    """Investigation summary and the plan for review, in the incident's thread (started here if detection was not
-    posted). The plan message carries the review controls and is updated as decisions are recorded."""
+                          namespace: str, now: float, execution=None, stale_after_s=None,
+                          investigation: dict | None = None, details: dict | None = None,
+                          note: str | None = None) -> bool:
+    """The Investigation message (with its details as a reply) and the Remediation message, each its own channel
+    message. A caller may supply its own `investigation`/`details` payloads (e.g. the demo, which adds the agent's
+    verdict) and a `note` for the plan. The plan message carries the review controls and is updated in place."""
     iid = report["id"]
     entry = registry.get(iid)
     headline = f"{report['failure_category_label']} in {report['affected_component']['name']}"
@@ -173,13 +185,16 @@ def publish_investigation(transport: Transport, registry: ThreadRegistry, report
         if res is None:
             return False
         entry = registry.set(iid, channel=res[0], root_ts=res[1], namespace=namespace)
-    root = entry.get("root_ts")
-    if transport.post(view.investigation_message(report), thread_ts=root) is None:
-        return False
-    res = transport.post(_plan_payload(review, iid, digest, now, execution, stale_after_s), thread_ts=root)
+    res = transport.post(investigation or view.investigation_message(report))
     if res is None:
         return False
-    registry.set(iid, plan_ts=res[1], digest=digest, headline=headline, namespace=namespace)
+    if transport.threaded:
+        registry.set(iid, investigation_ts=res[1])
+        transport.post(details or view.investigation_details(report), thread_ts=res[1])
+    res = transport.post(_plan_payload(review, iid, digest, now, execution, stale_after_s, note))
+    if res is None:
+        return False
+    registry.set(iid, plan_ts=res[1], digest=digest, headline=headline, namespace=namespace, plan_note=note)
     refresh_root(transport, registry, review, iid, execution)
     return True
 
@@ -188,10 +203,11 @@ def refresh_plan(transport: Transport, registry: ThreadRegistry, review, inciden
                  response_url: str | None = None, execution=None, stale_after_s=None) -> bool:
     """Re-render a plan message (an incident's plan or a rollback plan) from the stored plan, the recorded decisions
     and, in Iteration 7, the execution records."""
-    payload = _plan_payload(review, incident_id, digest, now, execution, stale_after_s)
+    entry, slot = _slot(registry, incident_id)
+    note = entry.get("plan_note") if incident_id == base_key(incident_id) else None
+    payload = _plan_payload(review, incident_id, digest, now, execution, stale_after_s, note)
     if payload is None:
         return False
-    entry, slot = _slot(registry, incident_id)
     if slot.get("plan_ts") and slot.get("digest") == digest \
             and transport.update(entry.get("channel"), slot["plan_ts"], payload):
         return True
@@ -222,15 +238,43 @@ def refresh_root(transport: Transport, registry: ThreadRegistry, review, inciden
     return transport.update(entry.get("channel"), entry["root_ts"], view.thread_root(
         incident_id, entry.get("namespace", ""), signals=entry.get("signals"), headline=entry.get("headline"),
         review_summary=review.summary(incident_id) if entry.get("digest") else None,
-        resolved=bool(entry.get("resolved")), execution_summary=_execution_summary(registry, incident_id, execution)))
+        resolved=bool(entry.get("resolved")), execution_summary=_execution_summary(registry, incident_id, execution),
+        status=entry.get("status")))
+
+
+def set_status(transport: Transport, registry: ThreadRegistry, review, incident_id: str, status: str,
+               execution=None) -> bool:
+    """Set the one-line status the detection message shows, and re-render it."""
+    registry.set(incident_id, status=status)
+    return refresh_root(transport, registry, review, incident_id, execution)
+
+
+def reply(transport: Transport, registry: ThreadRegistry, incident_id: str, payload: dict, under: str = "plan"):
+    """Post a reply to one of the incident's messages: "plan" (Remediation), "investigation", "final" or "root"
+    (detection). Falls back to the detection message. Returns (channel, ts) or None."""
+    entry = registry.get(base_key(incident_id))
+    ts = {"plan": _reply_ts(entry), "investigation": entry.get("investigation_ts"),
+          "final": entry.get("final_ts"), "root": entry.get("root_ts")}.get(under) or entry.get("root_ts")
+    return transport.post(payload, thread_ts=ts if transport.threaded else None)
+
+
+def publish_final(transport: Transport, registry: ThreadRegistry, incident_id: str, payload: dict) -> bool:
+    """The incident's final status, as its own channel message: posted once, then updated in place."""
+    entry = registry.get(incident_id)
+    if entry.get("final_ts") and transport.update(entry.get("channel"), entry["final_ts"], payload):
+        return True
+    res = transport.post(payload)
+    if res is not None and res[1]:
+        registry.set(incident_id, final_ts=res[1])
+    return res is not None
 
 
 def publish_decision(transport: Transport, registry: ThreadRegistry, record: dict, plan: dict,
                      response_url: str | None = None) -> bool:
     entry = registry.get(base_key(record["incident_id"]))
     payload = view.decision_message(record, plan)
-    if entry.get("root_ts") and transport.threaded:
-        return transport.post(payload, thread_ts=entry["root_ts"]) is not None
+    if _reply_ts(entry) and transport.threaded:
+        return transport.post(payload, thread_ts=_reply_ts(entry)) is not None
     if response_url:
         return transport.respond(response_url, {**payload, "replace_original": False, "response_type": "in_channel"})
     return transport.post(payload) is not None
@@ -258,8 +302,8 @@ def publish_execution(transport: Transport, registry: ThreadRegistry, key: str, 
     ts = (entry.get("executions") or {}).get(execution_id)
     if ts and transport.update(entry.get("channel"), ts, payload):
         return True
-    if entry.get("root_ts") and transport.threaded:
-        res = transport.post(payload, thread_ts=entry["root_ts"])
+    if _reply_ts(entry) and transport.threaded:
+        res = transport.post(payload, thread_ts=_reply_ts(entry))
         if res is not None:
             registry.set_item(base, "executions", execution_id, res[1])
             return True
@@ -272,8 +316,8 @@ def publish_execution(transport: Transport, registry: ThreadRegistry, key: str, 
 def publish_execution_refused(transport: Transport, registry: ThreadRegistry, key: str, payload: dict,
                               response_url: str | None = None) -> bool:
     entry = registry.get(base_key(key))
-    if entry.get("root_ts") and transport.threaded:
-        return transport.post(payload, thread_ts=entry["root_ts"]) is not None
+    if _reply_ts(entry) and transport.threaded:
+        return transport.post(payload, thread_ts=_reply_ts(entry)) is not None
     if response_url:
         return transport.respond(response_url, {**payload, "replace_original": False, "response_type": "in_channel"})
     return transport.post(payload) is not None
@@ -287,8 +331,8 @@ def publish_rollback_plan(transport: Transport, registry: ThreadRegistry, review
         return False
     base = base_key(key)
     entry = registry.get(base)
-    if entry.get("root_ts") and transport.threaded:
-        res = transport.post(payload, thread_ts=entry["root_ts"])
+    if _reply_ts(entry) and transport.threaded:
+        res = transport.post(payload, thread_ts=_reply_ts(entry))
         if res is None:
             return False
         registry.set_item(base, "rollbacks", key, {"plan_ts": res[1], "digest": digest})

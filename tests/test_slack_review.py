@@ -51,10 +51,12 @@ def test_actionable_plan_renders_every_review_element():
     plan, _ = make_plan()
     msg = slack_view.plan_message(plan, plan_digest(plan), {}, NOW - 60, NOW)
     t = text_of(msg)
-    assert "Remediation plan — proposed, not executed" in t and "Action proposed" in t
-    for part in ("*Why:*", "*Risks:*", "*Rollback:*", "*Verification", "*Expected final state:*",
-                 "Needs your input", "*Confidence:*", "Requires human approval", "nothing is executed"):
+    assert "Remediation · INC-TEST" in t
+    for part in ("*1. Fix:*", "*Change:*", "memory limit of `backend`: `192Mi` →", "*Risk:*", "*Success check:*",
+                 "*Undo:*", "Needs your input", "next: *Approve*, then *Execute*"):
         assert part in t, part
+    for boilerplate in ("Requires human approval", "nothing is executed until", "*Expected final state:*"):
+        assert boilerplate not in t, boilerplate             # only what the reader needs
     assert buttons(msg) == ["review:approved:0", "review:rejected:0", "review:investigate_first:0",
                             "review:acknowledged:1"]
     assert [b["block_id"] for b in msg["blocks"] if b["type"] == "input"] == ["param:0"]
@@ -94,7 +96,7 @@ def test_recorded_decisions_replace_the_controls():
     statuses = {0: {"status": "approved", "reviewer": APPROVER, "at": NOW, "supplied_parameters": {"proposed_limit": "256Mi"}},
                 1: {"status": "acknowledged", "reviewer": APPROVER, "at": NOW}}
     msg = slack_view.plan_message(plan, plan_digest(plan), statuses, NOW, NOW)
-    assert buttons(msg) == [] and "proposed_limit = `256Mi`" in text_of(msg) and f"<@{APPROVER}>" in text_of(msg)
+    assert buttons(msg) == [] and "`192Mi` → `256Mi`" in text_of(msg) and f"<@{APPROVER}>" in text_of(msg)
     sup = slack_view.plan_message(plan, plan_digest(plan), {0: {"status": "superseded"}, 1: {"status": "superseded"}}, NOW, NOW)
     assert buttons(sup) == [] and "superseded by a newer plan" in text_of(sup)
 
@@ -102,9 +104,13 @@ def test_recorded_decisions_replace_the_controls():
 def test_investigation_message_shows_the_diagnosis_from_the_report():
     _, report = make_plan()
     t = text_of(slack_view.investigation_message(report))
-    for part in (report["failure_category_label"], "Affected component", "Root-cause component", "Likely root cause",
-                 "Evidence", "Confidence", "Impact"):
+    for part in (report["failure_category_label"], "*Root cause:*", "Root-cause component", "Confidence",
+                 "Key evidence", "User impact"):
         assert part in t, part
+    assert sum(1 for line in t.splitlines() if line.startswith("• ")) <= 3          # the top evidence only
+    details = text_of(slack_view.investigation_details(report))
+    for part in ("All evidence", "*Impact*", "facts collected"):
+        assert part in details, part
 
 
 # --------------------------------------------------------------------------- review model (independent of Slack)
@@ -258,22 +264,42 @@ def click(decision, index, digest, user=APPROVER, value=None):
     return payload
 
 
-def test_the_incident_is_one_thread_and_the_review_updates_it(tmp_path):
+def test_each_block_is_its_own_message_and_follow_ups_reply_to_it(tmp_path):
     plan, report = make_plan()
     report["id"] = "INC-TEST"
     svc, d = service(tmp_path, plan)
     tr, reg = FakeTransport(), slack.ThreadRegistry(tmp_path / "threads.json")
     slack.publish_detection(tr, reg, {"id": "INC-TEST", "signals": [{"text": "restarts"}]}, "shop")
     assert slack.publish_investigation(tr, reg, report, svc, d, "shop", NOW)
-    root = reg.get("INC-TEST")["root_ts"]
-    assert [t for t, _ in tr.posts] == [None, root, root]                  # detection root, then two replies
-    assert reg.get("INC-TEST")["plan_ts"] == "ts3" and reg.get("INC-TEST")["digest"] == d
+    entry = reg.get("INC-TEST")
+    root, inv, plan_ts = entry["root_ts"], entry["investigation_ts"], entry["plan_ts"]
+    # detection, investigation and remediation are channel messages; the investigation details reply to it
+    assert [t for t, _ in tr.posts] == [None, None, inv, None] and plan_ts == "ts4" and entry["digest"] == d
+    assert [text_of(p).split("\n")[0] for _, p in tr.posts] == [
+        ":rotating_light: Incident detected · INC-TEST", ":mag: Investigation · INC-TEST", "*All evidence*",
+        ":hammer_and_wrench: Remediation · INC-TEST"]
 
     out = slack_app.handle_interaction(click("approved", 0, d, value="256Mi"), svc, tr, reg, NOW, log=lambda *_: None)
     assert out["effective"] and out["record"]["supplied_parameters"] == {"proposed_limit": "256Mi"}
-    assert any(ts == "ts3" for ts, _ in tr.updates)                         # plan message re-rendered in place
-    assert "approved" in text_of(tr.posts[-1][1]) and tr.posts[-1][0] == root   # decision announced in the thread
-    assert any(ts == root and "Remediation review" in text_of(p) for ts, p in tr.updates)  # root shows review status
+    assert any(ts == plan_ts for ts, _ in tr.updates)                       # plan message re-rendered in place
+    assert "approved" in text_of(tr.posts[-1][1]) and tr.posts[-1][0] == plan_ts   # the decision replies to it
+    assert any(ts == root and "*Review:*" in text_of(p) for ts, p in tr.updates)  # detection shows review status
+
+
+def test_the_detection_status_and_the_final_status(tmp_path):
+    tr, reg = FakeTransport(), slack.ThreadRegistry(tmp_path / "threads.json")
+    svc, _ = service(tmp_path)
+    slack.publish_detection(tr, reg, {"id": "INC-TEST", "signals": [{"text": "restarts"}]}, "shop")
+    root = reg.get("INC-TEST")["root_ts"]
+    slack.set_status(tr, reg, svc, "INC-TEST", "Awaiting approval")
+    assert "*Status:* Awaiting approval" in text_of(tr.updates[-1][1]) and tr.updates[-1][0] == root
+    assert slack.publish_final(tr, reg, "INC-TEST", slack_view.notice("Resolved"))
+    final = reg.get("INC-TEST")["final_ts"]
+    assert tr.posts[-1][0] is None                                          # its own channel message
+    assert slack.publish_final(tr, reg, "INC-TEST", slack_view.notice("Resolved, verified"))
+    assert tr.updates[-1][0] == final and len(tr.posts) == 2                # then updated in place, never reposted
+    slack.reply(tr, reg, "INC-TEST", slack_view.notice("acknowledged"), under="final")
+    assert tr.posts[-1][0] == final
 
 
 def test_cleared_symptoms_survive_later_review_clicks(tmp_path):

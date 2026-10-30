@@ -87,3 +87,63 @@ def test_acknowledge_on_a_plan_without_a_typed_action_reaches_the_page(tmp_path,
     assert eng.review.decide("INC-M", d, idx, "acknowledged", APPROVER).effective
     eng._mirror_slack()
     assert eng.phase == "acknowledged" and "decision" in kinds(bus)
+
+
+# --------------------------------------------------------------------------- the incident's Slack messages
+
+def slack_engine(tmp_path, monkeypatch):
+    from test_slack_review import FakeTransport
+
+    from investigator import slack
+    eng, bus, d = engine(tmp_path, monkeypatch)
+    eng.transport, eng.registry = FakeTransport(), slack.ThreadRegistry(tmp_path / "threads.json")
+    slack.publish_detection(eng.transport, eng.registry, {"id": "INC-TEST", "signals": [{"text": "5xx"}]}, "shop")
+    eng.registry.set("INC-TEST", plan_ts="ts-plan")
+    eng.incident.update({"detected_at": fc.NOW - 200, "cause": "the limit is too low", "fix": "Raise the limit"})
+    return eng, d
+
+
+def headers(tr):
+    return [b["text"]["text"] for _, p in tr.posts for b in p["blocks"] if b["type"] == "header"]
+
+
+def test_a_resolved_execution_ends_with_its_own_final_status_message(tmp_path, monkeypatch):
+    eng, d = slack_engine(tmp_path, monkeypatch)
+    out = eng.review.decide("INC-TEST", d, 0, "approved", APPROVER, supplied="384Mi")
+    eng._mirror_slack()
+    assert "Approved by" in str(eng.transport.updates[-1][1])                  # the detection status follows
+    _, rec = eng.execution.store.claim(ExecutionRequest("INC-TEST", d, 0, APPROVER, fc.NOW), "adjust_resource_limit",
+                                       out.record, {}, {"allowed": True, "checks": []})
+    eng.execution.store.update(rec["execution_id"], Status.COMPLETED, outcome="RESOLVED", message="ok",
+                               verification={"criteria": [{"statement": "All backend instances are ready",
+                                                           "status": "pass"}], "reason": "held"})
+    eng._mirror_slack()
+    final = eng.transport.posts[-1]
+    assert final[0] is None and headers(eng.transport)[-1] == ":white_check_mark: Resolved · INC-TEST"
+    text = str(final[1])
+    assert "the limit is too low" in text and "1/1 checks held" in text and "Duration:" in text
+    assert eng.registry.get("INC-TEST")["final_ts"] and "*Status:* :white_check_mark: Resolved" in \
+        str(eng.transport.updates[-1][1])
+
+
+def test_a_rejection_ends_with_a_final_status(tmp_path, monkeypatch):
+    eng, d = slack_engine(tmp_path, monkeypatch)
+    eng.review.decide("INC-TEST", d, 0, "rejected", APPROVER)
+    eng._mirror_slack()
+    assert headers(eng.transport)[-1] == ":no_entry: Fix not applied · INC-TEST" and eng.transport.posts[-1][0] is None
+
+
+def test_the_investigation_message_carries_the_agents_verdict(tmp_path):
+    from demo import slack_ai
+    _, report = make_plan()
+    report["id"] = "INC-TEST"
+    inc = {"id": "INC-TEST", "route": {"mode": "verify"}}
+    agree = {"status": "ok", "tool_calls": 4, "seconds": 48, "model": "m",
+             "report": {"root_cause": "x", "root_cause_component": "backend", "findings": [], "summary": "",
+                        "validation": {"ok": True, "problems": []}, "agreement": {"category": True, "component": True}}}
+    t = str(slack_ai.investigation(inc, report, agree))
+    assert "Investigation · INC-TEST" in t and "agrees" in t and report["likely_root_cause"][:40] in t
+    assert "AI agent unavailable" in str(slack_ai.investigation(inc, report, {"status": "error", "error": "timeout"}))
+    manual = str(slack_ai.manual({"id": "INC-TEST", "cause": "bad data"},
+                                 {"reason": "no typed action fits", "manual_steps": ["Delete the bad order"]}))
+    assert "Handed to engineer" in manual and "1. Delete the bad order" in manual and "Acknowledge" in manual

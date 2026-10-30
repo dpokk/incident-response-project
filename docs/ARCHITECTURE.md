@@ -632,7 +632,7 @@ Remediation plan     investigator/remediation.py         deterministic planner; 
 Report               investigator/report.py              text / markdown / json
 Human review         investigator/review.py              decisions bound to a plan digest (state/reviews.db)
 Slack                investigator/slack_view.py          Block Kit rendering (presentation only)
-                     investigator/slack.py               transport, one thread per incident
+                     investigator/slack.py               transport; headed messages per incident, follow-ups as replies
                      investigator/slack_app.py           Socket Mode: review.decide(); Execute -> the given service
 Execution            investigator/executor.py            the only holder of the cluster writer; checks -> one change
                      investigator/execution_policy.py    environment policy (config/execution_policy.json)

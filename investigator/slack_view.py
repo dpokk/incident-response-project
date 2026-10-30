@@ -4,6 +4,10 @@ Presentation only. This module does not determine root causes, choose or change 
 execute anything: every word it shows comes from the report dict, the RemediationPlan dict (the Iteration 5
 contract) and the review status it is given. The same objects remain usable by a web UI or an API.
 
+Each incident is a few headed channel messages, each holding only what a reader needs at that step:
+  Incident detected (status kept current) · Investigation (+ a reply with the details) · Remediation (buttons;
+  decisions and execution progress are replies to it) · the final status (posted by the caller, e.g. the demo).
+
 Interactive controls carry only identifiers (incident, plan digest, action index); the decision itself is made and
 recorded by review.py, never here.
 """
@@ -21,7 +25,7 @@ CHECK_MARK = {True: ":white_check_mark:", False: ":x:", None: ":grey_question:"}
 CHANGE_TYPES = {"adjust_resource_limit", "scale_workload", "restore_configuration", "rollback_release"}
 STATUS_ICON = {"awaiting_review": ":hourglass_flowing_sand:", "approved": ":white_check_mark:", "rejected": ":x:",
                "investigate_first": ":mag:", "acknowledged": ":ballot_box_with_check:", "superseded": ":no_entry_sign:"}
-STATUS_TEXT = {"awaiting_review": "awaiting review", "approved": "approved (decision recorded, not executed)",
+STATUS_TEXT = {"awaiting_review": "awaiting review", "approved": "approved",
                "rejected": "rejected", "investigate_first": "investigate first (no change approved)",
                "acknowledged": "acknowledged", "superseded": "superseded by a newer plan: this decision no longer applies"}
 TYPE_TEXT = {"adjust_resource_limit": "Adjust resource limit", "scale_workload": "Scale workload",
@@ -50,6 +54,10 @@ def _context(text: str) -> dict:
     return {"type": "context", "elements": [{"type": "mrkdwn", "text": _trim(text, 1900)}]}
 
 
+def _header(text: str) -> dict:
+    return {"type": "header", "text": {"type": "plain_text", "text": text[:150], "emoji": True}}
+
+
 def _cite(ids) -> str:
     return f" `{', '.join(ids[:4])}`" if ids else ""
 
@@ -65,95 +73,149 @@ def _age(collected_at: float | None, now: float, stale_after_s: float = STALE_AF
     return f"evidence collected at {token}", age > stale_after_s
 
 
-# --------------------------------------------------------------------------- thread messages
+# --------------------------------------------------------------------------- incident detected (kept current)
 
 def thread_root(incident_id: str, namespace: str, signals: list[str] | None = None, headline: str | None = None,
-                review_summary: str | None = None, resolved: bool = False, execution_summary: str | None = None) -> dict:
-    """The thread's first message: what was detected, and (once known) the diagnosis and review status."""
-    icon = ":large_green_circle:" if resolved else ":large_orange_circle:"
-    lines = [f"{icon} *Incident {incident_id}* in `{namespace}`" + (" — symptoms have cleared" if resolved else "")]
-    if headline:
-        lines.append(f"*Diagnosis:* {headline}")
+                review_summary: str | None = None, resolved: bool = False, execution_summary: str | None = None,
+                status: str | None = None) -> dict:
+    """The incident's first message: what was detected, and one status line that is re-rendered as the incident
+    progresses. `status` (when the caller tracks one) replaces the status derived from the other fields."""
+    parts = [f"*Diagnosis:* {headline}"] if headline else []
+    if status:
+        parts.append(f"*Status:* {status}")
     else:
-        lines += [f"• {s[:200]}" for s in (signals or [])[:5]] + ([] if resolved else ["_Investigating…_"])
-    if review_summary:
-        lines.append(f"*Remediation review:* {review_summary}")
-    if execution_summary:
-        lines.append(f"*Remediation:* {execution_summary}")
-    text = "\n".join(lines)
-    return {"text": f"Incident {incident_id} in {namespace}", "blocks": [_section(text)]}
+        if review_summary:
+            parts.append(f"*Review:* {review_summary}")
+        if execution_summary:
+            parts.append(f"*Remediation:* {execution_summary}")
+        if not headline and not resolved:
+            parts.append("_Investigating…_")
+    if resolved:
+        parts.append(":large_green_circle: symptoms have cleared")
+    return {"text": f"Incident {incident_id} in {namespace}", "blocks": [
+        _header(f":rotating_light: Incident detected · {incident_id}"),
+        _section("\n".join(f"• {s[:200]}" for s in (signals or [])[:3]) or "_no signal recorded_"),
+        _context(f"`{namespace}` · " + " · ".join(parts))]}
+
+
+# --------------------------------------------------------------------------- investigation
+
+def _rcc_text(r: dict) -> str:
+    rcc = r.get("root_cause_component")
+    return f"{rcc['name']}" if rcc else "not determined"
 
 
 def investigation_message(r: dict) -> dict:
-    """Diagnosis, root cause, components, confidence, evidence, impact and the key timeline answers."""
-    rcc = r.get("root_cause_component")
-    rcc_text = f"{rcc['name']} ({rcc['relation']})" if rcc else "not determined"
+    """The diagnosis at a glance: what failed, why, how sure, the strongest evidence and who is affected."""
     blocks = [
-        {"type": "header", "text": {"type": "plain_text", "text": f"Investigation — {r['failure_category_label']}"[:150]}},
+        _header(f":mag: Investigation · {r['id']}"),
+        _section(f"*{r['failure_category_label']}* in `{r['affected_component']['name']}`\n"
+                 f"*Root cause:* {r['likely_root_cause']}"),
         {"type": "section", "fields": [
-            {"type": "mrkdwn", "text": f"*Affected component:*\n{r['affected_component']['name']}"},
-            {"type": "mrkdwn", "text": f"*Root-cause component:*\n{rcc_text}"},
-            {"type": "mrkdwn", "text": f"*Impacted:*\n{', '.join(r['impacted_components']) or 'none observed'}"},
-            {"type": "mrkdwn", "text": f"*Confidence:*\n{r['confidence_label']} ({r['confidence']:.0%})"},
+            {"type": "mrkdwn", "text": f"*Root-cause component*\n{_rcc_text(r)}"},
+            {"type": "mrkdwn", "text": f"*Confidence*\n{r['confidence_label']} ({r['confidence']:.0%})"},
+            {"type": "mrkdwn", "text": f"*Affected*\n{r['affected_component']['name']}"},
+            {"type": "mrkdwn", "text": f"*Also impacted*\n{', '.join(r['impacted_components']) or 'none observed'}"},
         ]},
-        _section(f"*Likely root cause:*\n{r['likely_root_cause']}"),
-        _section("*Evidence:*\n" + "\n".join(f"• `{e['id']}` {e['text'][:220]}" for e in r["evidence"][:6])),
     ]
-    imp = r.get("impact") or {}
-    if imp.get("assessed"):
-        blocks.append(_section("*Impact:*\n" + "\n".join(f"• {x}" for x in [
-            imp["instances"]["statement"], imp["users"]["statement"], "Duration: " + imp["duration"]["statement"],
-            "Propagation: " + imp["propagation_statement"]])))
-    answers = ((r.get("reconstruction") or {}).get("answers") or {})
-    if answers:
-        blocks.append(_section("*Timeline:*\n" + "\n".join(
-            f"• {answers[k]['statement'][:240]}" for k in ("what_changed_first", "failure_occurred", "after_recovery")
-            if k in answers)))
-    alts = [a for a in r.get("alternatives_considered", []) if a.get("score", 0) >= 0.3][:3]
-    if alts:
-        blocks.append(_context("Also considered: " + "; ".join(f"{a['label']} in {a['component']} ({a['score']:.2f})"
-                                                                for a in alts)))
-    blocks.append(_context(f"{r['facts_collected']} facts collected • {r['generated_by']}"))
+    if r["evidence"]:
+        blocks.append(_section("*Key evidence*\n" + "\n".join(f"• {e['text'][:200]} `{e['id']}`"
+                                                             for e in r["evidence"][:3])))
+    users = (((r.get("impact") or {}).get("users") or {}).get("statement")) if (r.get("impact") or {}).get("assessed") \
+        else None
+    if users:
+        blocks.append(_section(f"*User impact*\n{users[:300]}"))
+    blocks.append(_context("Details (all evidence, impact, timeline) are in the replies."))
     return {"text": f"Investigation of {r['id']}: {r['failure_category_label']} in {r['affected_component']['name']}",
             "blocks": blocks}
 
 
+def investigation_details(r: dict) -> dict:
+    """A reply to the Investigation message: everything behind the summary, for whoever wants to check it."""
+    blocks = [_section("*All evidence*\n" + ("\n".join(f"• `{e['id']}` {e['text'][:220]}" for e in r["evidence"][:8])
+                                            or "_none_"))]
+    imp = r.get("impact") or {}
+    if imp.get("assessed"):
+        blocks.append(_section("*Impact*\n" + "\n".join(f"• {x}" for x in [
+            imp["instances"]["statement"], imp["users"]["statement"], "Duration: " + imp["duration"]["statement"],
+            "Propagation: " + imp["propagation_statement"]])))
+    answers = ((r.get("reconstruction") or {}).get("answers") or {})
+    timeline = [answers[k]["statement"][:240] for k in ("what_changed_first", "failure_occurred", "after_recovery")
+                if k in answers]
+    if timeline:
+        blocks.append(_section("*Timeline*\n" + "\n".join(f"• {x}" for x in timeline)))
+    alts = [a for a in r.get("alternatives_considered", []) if a.get("score", 0) >= 0.3][:3]
+    if alts:
+        blocks.append(_context("Also considered: " + "; ".join(f"{a['label']} in {a['component']} ({a['score']:.2f})"
+                                                                for a in alts)))
+    blocks.append(_context(f"{r['facts_collected']} facts collected · {r['generated_by']}"))
+    return {"text": f"Investigation details for {r['id']}", "blocks": blocks[:50]}
+
+
+# --------------------------------------------------------------------------- remediation
+
+def _target(a: dict) -> str:
+    return a["target"].get("component") or a["target"].get("config_item")
+
+
+def _change_line(a: dict, supplied: dict | None = None) -> str | None:
+    """`before` → `after` for a change action, from its parameters (or the value a reviewer supplied)."""
+    p, chosen = a["parameters"], next(iter((supplied or {}).values()), None)
+    if a["type"] == "adjust_resource_limit":
+        before, after = p.get("current_limit"), chosen or p.get("proposed_limit")
+        what = f"{p.get('resource', 'memory')} limit of `{_target(a)}`"
+    elif a["type"] == "scale_workload":
+        before, after = p.get("current_replicas"), chosen or p.get("target_replicas")
+        what = f"replicas of `{_target(a)}`"
+    elif a["type"] == "restore_configuration":
+        before = p.get("current_host")
+        after = chosen or p.get("restore_to_host") or ("its previous value" if p.get("restore_to") else None)
+        what = f"host in `{_target(a)}`"
+    elif a["type"] == "rollback_release":
+        before, after = p.get("current_image"), chosen or p.get("previous_image")
+        what = f"image of `{_target(a)}`"
+    else:
+        return None
+    after_text = (f"`{after}`" if after not in (None, "its previous value") else
+                  after or "_the value you enter_")
+    return f"{what}: `{before}` → {after_text}"
+
+
 def plan_message(plan: dict, digest: str, statuses: dict[int, dict], collected_at: float | None, now: float,
                  interactive: bool = True, stale_after_s: float = STALE_AFTER_S, executable: bool = False,
-                 executions: dict[int, dict] | None = None) -> dict:
+                 executions: dict[int, dict] | None = None, note: str | None = None) -> dict:
     """The RemediationPlan for review. `statuses` maps action index -> {"status", "reviewer", "at",
     "supplied_parameters"} as recorded by the review layer; `executions` maps action index -> the execution record
     (Iteration 7). `executable`: an executor is available, so an approved change action offers Execute.
-    `stale_after_s` comes from the execution policy (max plan age). This function only displays what it is given."""
+    `stale_after_s` comes from the execution policy (max plan age). `note`: one line from the caller about who acts
+    next (e.g. the demo's automation gate). This function only displays what it is given."""
     age, stale = _age(collected_at, now, stale_after_s)
     rollback = ROLLBACK_MARK in str(plan.get("incident_id", ""))
-    title = "Rollback plan — proposed, not executed" if rollback else "Remediation plan — proposed, not executed"
-    blocks = [
-        {"type": "header", "text": {"type": "plain_text", "text": title}},
-        _section(f"*{ASSESSMENT_TEXT.get(plan['assessment'], plan['assessment'])}* — {plan['assessment_reason']}\n"
-                 f"*Incident state:* {plan['incident_state']} (when the evidence was collected)"),
-    ]
+    incident = str(plan.get("incident_id", "")).split(ROLLBACK_MARK)[0]
+    blocks = [_header(f":leftwards_arrow_with_hook: Rollback plan · {incident}" if rollback
+                      else f":hammer_and_wrench: Remediation · {incident}")]
+    if plan["assessment"] != "action_proposed":
+        blocks.append(_section(f"*{ASSESSMENT_TEXT.get(plan['assessment'], plan['assessment'])}* — "
+                               f"{plan['assessment_reason']}"))
+    if note:
+        blocks.append(_section(note))
     if stale:
-        blocks.append(_section(f":warning: *This plan reflects the state observed at {hms(collected_at)}.* The system may "
-                               f"have changed since. It is older than the {stale_after_s / 60:.0f} min the execution "
-                               f"policy allows: Execute will be refused; run a fresh investigation."))
-    if plan["current_state"]:
-        blocks.append(_section("*Current state (at collection):*\n" + "\n".join(
-            f"• {c['statement'][:220]}{_cite(c['fact_ids'])}" for c in plan["current_state"][:6])))
+        blocks.append(_section(f":warning: *This plan reflects the state observed at {hms(collected_at)}.* It is older "
+                               f"than the {stale_after_s / 60:.0f} min the execution policy allows: Execute will be "
+                               f"refused; run a fresh investigation."))
     for i, a in enumerate(plan["actions"]):
         blocks += _action_blocks(i, a, plan, digest, statuses.get(i, {"status": "awaiting_review"}), interactive,
                                  executable and not stale, (executions or {}).get(i))
     u = plan["uncertainty"]
-    unc = f"*Confidence:* {u['confidence_label']} ({u['confidence']:.0%}, from the diagnosis)"
+    doubts = []
     if u["competing_causes"]:
-        unc += "\n*Competing explanations:* " + "; ".join(f"{c['category']} in {c['component']} ({c['score']:.2f})"
-                                                        for c in u["competing_causes"])
+        doubts.append("*Competing explanations:* " + "; ".join(f"{c['category']} in {c['component']} ({c['score']:.2f})"
+                                                              for c in u["competing_causes"]))
     if u["evidence_gaps"]:
-        unc += "\n*Evidence gaps:* " + "; ".join(g[:160] for g in u["evidence_gaps"][:3])
-    blocks += [{"type": "divider"}, _section(unc),
-               _context(f":lock: Requires human approval. Approving records a decision only — nothing is executed until "
-                        f"an authorised person clicks Execute, which re-checks the live state, applies the policy and "
-                        f"dry-runs first. • {age} • plan `{digest[:12]}`")]
+        doubts.append("*Evidence gaps:* " + "; ".join(g[:160] for g in u["evidence_gaps"][:2]))
+    if doubts:
+        blocks.append(_context("\n".join(doubts)))
+    blocks.append(_context(f"{age} · plan `{digest[:12]}`"))
     return {"text": f"Remediation plan for {plan['incident_id']}: {ASSESSMENT_TEXT.get(plan['assessment'])}",
             "blocks": blocks[:50]}
 
@@ -161,32 +223,28 @@ def plan_message(plan: dict, digest: str, statuses: dict[int, dict], collected_a
 def _action_blocks(i: int, a: dict, plan: dict, digest: str, st: dict, interactive: bool, executable: bool = False,
                    execution: dict | None = None) -> list[dict]:
     status = st.get("status", "awaiting_review")
-    target = a["target"].get("component") or a["target"].get("config_item")
-    head = (f"*{i + 1}. {TYPE_TEXT.get(a['type'], a['type'])}* · {a['urgency']} · target `{target}`\n{a['summary']}")
-    out = [{"type": "divider"}, _section(head)]
-    params = {k: v for k, v in a["parameters"].items() if k != "questions" and v is not None}
+    many = len(plan["actions"]) > 1
+    label = f"{i + 1}. " if many else ""
+    out = [{"type": "divider"}] if many else []
     if a["type"] == "investigate_further":
-        out.append(_section("*Questions:*\n" + "\n".join(f"• {s['statement'][:240]}{_cite(s['fact_ids'])}"
-                                                         for s in a["rationale"][:6])))
+        out.append(_section(f"*{label}Open questions* (no change to the system)\n" + "\n".join(
+            f"• {s['statement'][:240]}{_cite(s['fact_ids'])}" for s in a["rationale"][:3])))
     else:
-        detail = ["*Why:*"] + [f"• {s['statement'][:240]}{_cite(s['fact_ids'])}" for s in a["rationale"][:4]]
-        if params:
-            detail.append("*Parameters:* " + ", ".join(f"{k} = `{v}`" for k, v in params.items()))
-        if not a["parameters_complete"]:
-            detail.append(":memo: *Needs your input:* " + "; ".join(a["preconditions"]))
-        detail += ["*Expected final state:*"] + [f"• {x}" for x in a["expected_final_state"]]
-        detail += ["*Risks:*"] + [f"• {s['statement'][:240]}{_cite(s['fact_ids'])}" for s in a["risks"][:4]]
+        lines = [f"*{label}Fix:* {a['summary']}"]
+        change = _change_line(a, st.get("supplied_parameters"))
+        if change:
+            lines.append(f"*Change:* {change}")
+        if not a["parameters_complete"] and not st.get("supplied_parameters"):
+            lines.append(":memo: *Needs your input:* " + "; ".join(a["preconditions"]))
+        if a["risks"]:
+            lines.append(f"*Risk:* {a['risks'][0]['statement'][:220]}")
+        if a["verification"]:
+            lines.append("*Success check:* " + " · ".join(v["statement"] for v in a["verification"]))
         if a["rollback"]:
-            detail.append(f"*Rollback:* {a['rollback']['statement']}")
-        detail += ["*Verification (evaluated after execution):*"] + [f"• {v['statement']}" for v in a["verification"]]
-        out.append(_section("\n".join(detail)))
-    out.append(_context(f"{STATUS_ICON.get(status, '')} *{STATUS_TEXT.get(status, status)}*" + (
-        f" — by <@{st['reviewer']}> at {hms(st['at'])}" if st.get("reviewer") else "") + (
-        "; supplied: " + ", ".join(f"{k} = `{v}`" for k, v in st["supplied_parameters"].items())
-        if st.get("supplied_parameters") else "")))
-    if execution:
-        out.append(_context(execution_status_line(execution)))
-    elif interactive and executable and status == "approved" and a["type"] in CHANGE_TYPES:
+            lines.append(f"*Undo:* {a['rollback']['statement']}")
+        out.append(_section("\n".join(lines)))
+    out.append(_context(_status_line(a, st, executable, execution)))
+    if not execution and interactive and executable and status == "approved" and a["type"] in CHANGE_TYPES:
         value = json.dumps({"incident": plan["incident_id"], "digest": digest, "action": i}, separators=(",", ":"))
         out.append({"type": "actions", "block_id": f"exec:{i}", "elements": [
             _button("Execute", f"exec:{i}", value, "danger")]})
@@ -211,6 +269,21 @@ def _action_blocks(i: int, a: dict, plan: dict, digest: str, st: dict, interacti
     return out
 
 
+def _status_line(a: dict, st: dict, executable: bool, execution: dict | None) -> str:
+    """Where this action stands and what happens next."""
+    if execution:
+        return execution_status_line(execution)
+    status = st.get("status", "awaiting_review")
+    who = f" by <@{st['reviewer']}> at {hms(st['at'])}" if st.get("reviewer") else ""
+    line = f"{STATUS_ICON.get(status, '')} *{STATUS_TEXT.get(status, status)}*{who}"
+    if status == "awaiting_review":
+        line += (" — next: *Approve*, then *Execute*" if a["type"] in CHANGE_TYPES else
+                 " — *Acknowledge* when you take it over")
+    elif status == "approved" and a["type"] in CHANGE_TYPES and executable:
+        line += " — next: *Execute*"
+    return line
+
+
 def _button(text: str, action_id: str, value: str, style: str | None = None) -> dict:
     b = {"type": "button", "text": {"type": "plain_text", "text": text}, "action_id": action_id, "value": value}
     if style:
@@ -219,13 +292,13 @@ def _button(text: str, action_id: str, value: str, style: str | None = None) -> 
 
 
 def decision_message(record: dict, plan: dict) -> dict:
-    """A thread reply announcing a recorded decision."""
+    """A reply to the Remediation message announcing a recorded decision."""
     a = plan["actions"][record["action_index"]]
     supplied = record.get("supplied_parameters") or {}
-    text = (f"{STATUS_ICON.get(record['decision'], '')} <@{record['reviewer']}> recorded *{record['decision']}* for action "
-            f"{record['action_index'] + 1} ({TYPE_TEXT.get(a['type'], a['type'])}: {a['summary'][:160]})"
-            + (f" with " + ", ".join(f"{k} = `{v}`" for k, v in supplied.items()) if supplied else "")
-            + f".\nDecision recorded against plan `{record['plan_digest'][:12]}`. Nothing has been executed.")
+    text = (f"{STATUS_ICON.get(record['decision'], '')} *{STATUS_TEXT.get(record['decision'], record['decision'])}* "
+            f"by <@{record['reviewer']}>"
+            + (" with " + ", ".join(f"`{v}`" for v in supplied.values()) if supplied else "")
+            + (" — next: *Execute*" if record["decision"] == "approved" and a["type"] in CHANGE_TYPES else ""))
     return {"text": f"Decision recorded: {record['decision']}", "blocks": [_section(text)]}
 
 
@@ -246,46 +319,45 @@ def execution_status_line(rec: dict) -> str:
 
 
 def _checks_text(checks: list[dict]) -> str:
-    return "\n".join(f"{CHECK_MARK.get(c.get('ok'))} {c.get('detail', c.get('check'))[:220]}" for c in checks[:14])
+    """All passed: one line. Otherwise only the checks that did not pass, with why."""
+    failed = [c for c in checks if c.get("ok") is not True]
+    if not failed:
+        return f":white_check_mark: all {len(checks)} passed"
+    return "\n".join(f"{CHECK_MARK.get(c.get('ok'))} {c.get('detail', c.get('check'))[:220]}" for c in failed[:8])
 
 
 def execution_message(plan: dict, index: int, executor: str, stage: str, checks: list[dict] | None = None,
                       record: dict | None = None, window: dict | None = None) -> dict:
-    """The evolving message for ONE execution: safety checks -> executing -> verifying -> outcome. Shows what the
+    """The evolving reply for ONE execution: safety checks -> executing -> verifying -> outcome. Shows what the
     execution record and the executor report; decides nothing."""
     a = plan["actions"][index]
     rec = record or {}
-    target = a["target"].get("component") or a["target"].get("config_item")
     title = {"checks": "Execution checks", "applied": "Executing", "verifying": "Verifying", "observing": "Verifying",
              "completed": "Execution result", "stopped": "Execution stopped"}.get(stage, "Execution")
-    lines = [f"*{index + 1}. {TYPE_TEXT.get(a['type'], a['type'])}* · target `{target}`",
-             f"Requested by <@{executor}>" + (f" · approved by <@{rec['approver']}>" if rec.get("approver") else "")
-             + (f" · plan `{rec['plan_digest'][:12]}`" if rec.get("plan_digest") else "")]
+    lines = [f"*{title}* — {TYPE_TEXT.get(a['type'], a['type'])} `{_target(a)}` · by <@{executor}>"
+             + (f" · approved by <@{rec['approver']}>" if rec.get("approver") else "")]
     if rec.get("change"):
         lines.append(f"*Change:* {_describe(a['type'], rec['change'])}")
-    blocks = [{"type": "header", "text": {"type": "plain_text", "text": f"{title} — action {index + 1}"}},
-              _section("\n".join(lines))]
     if checks:
-        blocks.append(_section("*Safety checks:*\n" + _checks_text(checks)))
+        lines.append(f"*Safety checks:* {_checks_text(checks)}")
     dry = rec.get("dry_run")
     if dry:
-        blocks.append(_section(f"*Dry run:* {CHECK_MARK[bool(dry.get('accepted'))]} "
-                               + ("accepted by the cluster (nothing persisted)" if dry.get("accepted")
-                                  else f"rejected — {dry.get('error')}")))
+        lines.append(f"*Dry run:* {CHECK_MARK[bool(dry.get('accepted'))]} "
+                     + ("accepted" if dry.get("accepted") else f"rejected — {dry.get('error')}"))
     applied = rec.get("applied")
     if applied and applied.get("accepted"):
-        ops = "\n".join(f"• `{d[:200]}`" for d in applied.get("detail") or [])
-        blocks.append(_section(f"*Applied at {hms(applied.get('at'))}:* `{applied.get('before')}` → "
-                               f"`{applied.get('after')}`\n{ops}"))
+        lines.append(f"*Applied at {hms(applied.get('at'))}:* `{applied.get('before')}` → `{applied.get('after')}`")
+    blocks = [_section("\n".join(lines))]
     v = rec.get("verification")
     if v and v.get("criteria") is not None and rec.get("outcome"):
-        crit = "\n".join(f"{CHECK_MARK.get({'pass': True, 'fail': False}.get(c['status']))} {c['statement'][:120]} — "
-                         f"_{(c.get('evidence') or ['no evidence'])[-1][:160]}_" for c in v["criteria"][:8])
+        crit = "\n".join(f"{CHECK_MARK.get({'pass': True, 'fail': False}.get(c['status']))} {c['statement'][:120]}"
+                         + ("" if c["status"] == "pass" else f" — _{(c.get('evidence') or ['no evidence'])[-1][:160]}_")
+                         for c in v["criteria"][:8])
         w = v.get("window") or {}
         span = (f" (settled after {(v['settle']['ended_at'] - v['settle']['started_at']):.0f} s, then observed "
                 f"{(w.get('ended_at', 0) - w.get('started_at', 0)):.0f} s)" if v.get("settle") and w else "")
-        blocks.append(_section(f"*Verification{span}:*\n{crit or '_no criteria_'}"))
-        blocks.append(_section(f"{OUTCOME_ICON.get(rec['outcome'], '')} *Outcome: {rec['outcome']}* — "
+        blocks.append(_section(f"*Verification{span}:*\n{crit or '_no criteria_'}\n"
+                               f"{OUTCOME_ICON.get(rec['outcome'], '')} *Outcome: {rec['outcome']}* — "
                                f"{v.get('reason', '')[:400]}"))
         rb = v.get("rollback")
         if rec["outcome"] != "RESOLVED":
@@ -293,9 +365,8 @@ def execution_message(plan: dict, index: int, executor: str, stage: str, checks:
                 " A rollback plan has been posted below for review: it needs its own approval and Execute."
                 if rb and rb.get("available") else (f" No rollback is available ({rb['reason']})." if rb else ""))))
     elif stage in ("applied", "verifying", "observing") and window:
-        blocks.append(_context(f":hourglass_flowing_sand: Verifying with the plan's criteria: waiting up to "
-                               f"{window.get('settle_max_s', 0):.0f} s for the change to settle, then observing for "
-                               f"{window.get('window_s', 0):.0f} s. Nothing is reported as resolved before that."))
+        blocks.append(_context(f":hourglass_flowing_sand: Verifying: up to {window.get('settle_max_s', 0):.0f} s to "
+                               f"settle, then {window.get('window_s', 0):.0f} s of observation."))
     if rec.get("status") in ("refused", "apply_failed", "uncertain"):
         blocks.append(_section(f":no_entry: *{EXEC_TEXT.get(rec['status'])}:* {rec.get('message', '')[:500]}"))
     return {"text": f"{title} — action {index + 1}: {rec.get('outcome') or rec.get('status') or stage}",

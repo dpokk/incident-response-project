@@ -130,10 +130,16 @@ Every plan has `requires_human_approval: true` and `execution.status: not_execut
 
 ### Iteration 6 — completed (Slack incident experience + human review)
 
-Each incident is one Slack thread. The parts:
+Each incident is a few headed channel messages (changed 2026-10-30; it was one thread):
+- **Incident detected**, with a one-line status kept current;
+- **Investigation**, with its details as a reply;
+- **Remediation**, with the buttons; decisions, execution progress and rollback plans are replies to it;
+- **Final status** (Resolved / Not resolved / Stopped / Handed to engineer / Fix not applied), posted by the demo.
+
+The parts:
 - **Rendering:** `slack_view.py`, presentation only.
-- **Transport and thread registry:** `slack.py`. It uses the bot token for threads and updates, with the
-  webhook as an unthreaded fallback.
+- **Transport and message registry:** `slack.py`. It uses the bot token for messages, replies and updates, with
+  the webhook as an unthreaded fallback.
 - **Interactions:** `slack_app.py`, over Socket Mode (`SLACK_APP_TOKEN`).
 
 Reviews go through `review.py`, which is Slack-independent and stores to `state/reviews.db`:

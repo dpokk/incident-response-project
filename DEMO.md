@@ -111,7 +111,10 @@ python -m demo            # opens http://127.0.0.1:8800
    - first, the rule engine's evidence collection (its decisions and capability calls);
    - then the **Investigator Agent**'s tool calls, each with its purpose and result.
 6. **Read the report.** It shows the root cause, the evidence-checked findings, the suggested fix, and whether the
-   agent agrees with the rule engine. The same report is posted to the Slack thread.
+   agent agrees with the rule engine. Slack gets the same, as headed messages: **Incident detected** (its status
+   line kept current), **Investigation** (root cause, key evidence, the agent's verdict; details in a reply),
+   **Remediation** (the fix and its buttons; approvals and execution progress as replies), and a separate
+   **final status** message once the incident concludes.
 7. **Approve in Slack, then Execute in Slack.** The console takes no decisions. It mirrors them from the shared
    review and execution records, with a link to the Slack thread. Execute runs the deterministic remediation and then
    validation, shown live in both places.
@@ -145,7 +148,7 @@ Nothing in the page is simulated:
 | `demo/engine.py` | Wires the existing components together and publishes each real step |
 | `demo/live.py` | Component status and log tailing |
 | `demo/agent/` | `llm.py` (model adapter), `tools.py` (read-only tools over capabilities), `investigator.py` (the loop and report validation) |
-| `demo/slack_ai.py` | The agent's Slack messages |
+| `demo/slack_ai.py` | The Investigation (rules + agent), the Remediation note, the Remediation Agent's replies and the final status |
 | `demo/web/index.html` | The console |
 
-The `investigator/` package matches the main project except for one addition: the `rollback_release` action (planner rule, recheck, `set_image` actuator, policy entry, Slack labels).
+The `investigator/` package matches the main project except for two changes: the `rollback_release` action (planner rule, recheck, `set_image` actuator, policy entry, Slack labels), and the Slack layout (`slack_view.py`, `slack.py`: headed channel messages instead of one thread, shorter content).

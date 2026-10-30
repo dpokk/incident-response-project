@@ -69,7 +69,7 @@ def test_execute_is_offered_only_on_approved_change_actions_where_execution_is_a
 def test_rollback_plans_are_labelled_as_such():
     plan, _ = make_plan()
     plan["incident_id"] = "INC-TEST#rollback-abc"
-    assert "Rollback plan — proposed, not executed" in text_of(slack_view.plan_message(plan, "d" * 64, {}, NOW, NOW))
+    assert "Rollback plan · INC-TEST" in text_of(slack_view.plan_message(plan, "d" * 64, {}, NOW, NOW))
 
 
 # --------------------------------------------------------------------------- the lifecycle in the thread
@@ -78,17 +78,18 @@ def test_execute_shows_checks_progress_evidence_and_outcome_in_one_message(tmp_p
     svc, review, d, tr, reg, _ = thread(tmp_path)
     plan_ts, root = reg.get("INC-TEST")["plan_ts"], reg.get("INC-TEST")["root_ts"]
     assert "exec:0" in buttons(last_update(tr, plan_ts) if any(t == plan_ts for t, _ in tr.updates)
-                               else tr.posts[2][1])
+                               else tr.posts[3][1])
     posts_before = len(tr.posts)
     out = execute(svc, review, tr, reg, "INC-TEST", d)
     assert out["result"].code == "RESOLVED"
-    assert len(tr.posts) == posts_before + 1 and tr.posts[-1][0] == root     # ONE execution message, in the thread
+    assert len(tr.posts) == posts_before + 1 and tr.posts[-1][0] == plan_ts  # ONE execution reply, under Remediation
     ts = reg.get("INC-TEST")["executions"][out["result"].execution_id]
     final = text_of(last_update(tr, ts))
-    for part in ("Execution result — action 1", f"<@{EXECUTOR}>", f"approved by <@{APPROVER}>", "Safety checks:",
-                 "approved by", "plan age", "memory limit is still 192Mi", "Dry run:", "Applied at", "`192Mi` → `256Mi`",
-                 "Verification (settled after", "Outcome: RESOLVED"):
+    for part in ("*Execution result*", f"<@{EXECUTOR}>", f"approved by <@{APPROVER}>", "*Safety checks:*",
+                 "passed", "Dry run:", "Applied at", "`192Mi` → `256Mi`", "Verification (settled after",
+                 "Outcome: RESOLVED"):
         assert part in final, part
+    assert "memory limit is still 192Mi" not in final                       # passed checks are summarised, not listed
     assert "executed — RESOLVED" in text_of(last_update(tr, plan_ts)) and "exec:0" not in buttons(last_update(tr, plan_ts))
     assert "Remediation:* action 1 → RESOLVED" in text_of(last_update(tr, root))
     stages = [text_of(p).split("\n")[0] for t, p in tr.updates if t == ts]
@@ -103,7 +104,7 @@ def test_a_failed_verification_posts_the_outcome_and_a_rollback_plan_that_needs_
     assert "No further change was made. A rollback plan has been posted below" in text_of(last_update(tr, ts))
     [(key, slot)] = reg.get("INC-TEST")["rollbacks"].items()
     rb_msg = tr.posts[-1][1]
-    assert "Rollback plan — proposed, not executed" in text_of(rb_msg)
+    assert "Rollback plan · INC-TEST" in text_of(rb_msg) and tr.posts[-1][0] == reg.get("INC-TEST")["plan_ts"]
     assert buttons(rb_msg) == ["review:approved:0", "review:rejected:0", "review:investigate_first:0"]   # review first
     calls = len(svc.actuator.calls)
     assert execute(svc, review, tr, reg, key, slot["digest"])["result"].code == "EXECUTION_REFUSED_NOT_APPROVED"

@@ -298,7 +298,7 @@ class Engine:
             time.sleep(self.s.investigate_delay_s)               # let symptoms accumulate, as watch does
             with self.lock:
                 self._phase("investigating")
-            self._slack_note(inc, slack_ai.started(inc, self.model.name if self.model else None))
+            self._slack_status(inc, ":mag: Investigating")
             self._actor("rules", "working", "collecting evidence through read-only capabilities")
             report, digest = self._rule_investigation(inc)
             r = route(report)
@@ -318,8 +318,11 @@ class Engine:
                 g["eligible"] = False
             inc["gate"] = g
             self._emit("auto_gate", {**g, "ladder": [str(v) for v in values]})
+            inc["cause"] = slack_ai.headline(inc, report, ai)[0]
+            inc["fix"] = proposal.get("summary")
             self._slack_report(inc, report, digest, ai, proposal, g)
             if g["eligible"]:
+                self._slack_status(inc, ":robot_face: Remediation Agent is applying the fix")
                 self._auto_remediate(inc, proposal, values, g)
                 return
             failed = next((c["detail"] for c in g["checks"] if not c["ok"]), "")
@@ -327,10 +330,13 @@ class Engine:
                 self._actor("remediation", "standby", f"not automated: {failed}")
                 self._actor("engineer", "waiting", "Approve, then Execute, in Slack")
                 self._phase("awaiting_approval")
+                self._slack_status(inc, ":hourglass_flowing_sand: Awaiting approval — Approve, then Execute")
             else:
                 self._actor("remediation", "standby", "no typed action fits: nothing to execute")
                 self._actor("engineer", "waiting", "manual fix (the agent's steps are in Slack)")
                 self._phase("investigated")
+                self._slack_final(inc, slack_ai.manual(inc, proposal),
+                                  ":construction_worker: Handed to engineer (manual fix)")
         except Exception as exc:  # noqa: BLE001
             self._op(f"Investigation failed: {type(exc).__name__}: {exc}", "error")
             self.log(traceback.format_exc())
@@ -482,6 +488,8 @@ class Engine:
                                             "value": {}})
                     self._actor("engineer", "working", f"{d['reviewer']} acknowledged in Slack and owns the manual fix")
                     self._phase("acknowledged")
+                    self._slack_reply(inc, slack_ai.acknowledged(d["reviewer"]), under="final")
+                    self._slack_status(inc, f":construction_worker: <@{d['reviewer']}> is fixing it manually")
             return
         d = self.review.effective_decision(inc["id"], inc["digest"], idx)
         if d and inc.get("mirror_decision") != d["id"]:
@@ -492,10 +500,13 @@ class Engine:
                         f"{d['decision']} in Slack" + (": Execute next" if d["decision"] == "approved" else ""))
             if d["decision"] == "approved":
                 self._phase("approved")
-            elif d["decision"] == "rejected":
-                self._phase("rejected")
+                self._slack_status(inc, f":white_check_mark: Approved by <@{d['reviewer']}> — awaiting Execute")
             else:
-                self._phase("rejected", reason=f"sent back: {d['decision']}")
+                if d["decision"] == "rejected":
+                    self._phase("rejected")
+                else:
+                    self._phase("rejected", reason=f"sent back: {d['decision']}")
+                self._slack_final(inc, slack_ai.rejected(inc, d), f":no_entry: Fix not applied ({d['decision']})")
         attempts = [a for a in self.execution.store.attempts(inc["id"]) if a["plan_digest"] == inc["digest"]
                     and a["action_index"] == idx]
         if attempts and inc.get("mirror_attempt") != attempts[-1]["id"]:
@@ -518,6 +529,7 @@ class Engine:
             self._phase("remediating")
             self._actor("engineer", "done", "approved and executed in Slack")
             self._actor("remediation", "working", "executing the engineer's approved change (deterministic executor)")
+            self._slack_status(inc, ":gear: Fix being applied and verified")
         self._emit("remediation", {"stage": rec["status"], "checks": checks, "record": _public(rec),
                                    "requested_at": rec.get("requested_at"),
                                    "window": {"settle_max_s": self.execution.policy.verification.settle_max_s,
@@ -527,12 +539,14 @@ class Engine:
             self._actor("remediation", "offline", f"verification: {rec['outcome']}")
             if rec["outcome"] == "RESOLVED":
                 self._phase("resolved")
-                self._slack_note(inc, slack_ai.resolved(inc, rec))
+                self._slack_final(inc, slack_ai.resolved(inc, rec), ":white_check_mark: Resolved")
             else:
                 self._phase("not_resolved", outcome=rec["outcome"])
+                self._slack_final(inc, slack_ai.not_resolved(inc, rec), f":x: Not resolved ({rec['outcome']})")
         elif rec["status"] in ("refused", "apply_failed", "uncertain"):
             self._actor("remediation", "offline", f"stopped: {rec['status']}")
             self._phase("failed", error=rec.get("message"))
+            self._slack_final(inc, slack_ai.failed(inc, rec), ":warning: Remediation stopped")
 
     # ----------------------------------------------------------------------------- the Remediation Agent
     def _auto_remediate(self, inc: dict, proposal: dict, values: list, g: dict) -> None:
@@ -575,18 +589,22 @@ class Engine:
                 slot = (inc["id"], "attempt", data["n"])
                 if slot in self._auto_msgs and self.transport.update(*self._auto_msgs[slot], payload):
                     return
-                res = self.transport.post(payload, thread_ts=self.registry.get(inc["id"]).get("root_ts"))
+                res = self._slack_reply(inc, payload)
                 if res is not None:
                     self._auto_msgs[slot] = res
-                self._emit("slack", {"text": payload["text"][:160], "ok": res is not None})
                 return
-            payload = {"start": lambda: slack_ai.auto_start(inc, data["ladder"], data["proposal"], data["gate"]),
-                       "revert": lambda: slack_ai.auto_revert(inc, data),
-                       "handover": lambda: slack_ai.auto_handover(inc, data),
-                       "resolved": lambda: slack_ai.auto_resolved(inc, data),
-                       "stopped": lambda: slack_ai.auto_stopped(inc, data["by"])}.get(kind)
-            if payload is not None:
-                self._slack_note(inc, payload())
+            reply = {"start": lambda: slack_ai.auto_start(inc, data["ladder"], data["proposal"], data["gate"]),
+                     "revert": lambda: slack_ai.auto_revert(inc, data)}.get(kind)
+            if reply is not None:
+                self._slack_reply(inc, reply())
+                return
+            final = {"handover": lambda: (slack_ai.auto_handover(inc, data),
+                                          ":construction_worker: Handed to engineer (automatic fix did not work)"),
+                     "resolved": lambda: (slack_ai.auto_resolved(inc, data), ":white_check_mark: Resolved automatically"),
+                     "stopped": lambda: (slack_ai.auto_stopped(inc, data["by"]),
+                                         f":octagonal_sign: Taken over by <@{data['by']}>")}.get(kind)
+            if final is not None:
+                self._slack_final(inc, *final())
         except Exception as exc:  # noqa: BLE001 - Slack rendering never affects the remediation
             self._op(f"Slack message ({kind}) failed: {type(exc).__name__}: {exc}", "warning")
 
@@ -608,14 +626,13 @@ class Engine:
             self.auto_store.event(incident_id, "acknowledged", user, {"components": comps})
             self._emit("auto_ack", {"by": user, "components": comps, "at": time.time()})
             self._emit("auto_config", self.auto_config(), keep=False)
-            note = slack_ai.auto_acknowledged(inc or {"id": incident_id}, user, comps)
+            target = inc or {"id": incident_id}
+            self._slack_reply(target, slack_ai.acknowledged(user, comps), under="final")
+            self._slack_status(target, f":construction_worker: <@{user}> is fixing it manually")
             if inc:
-                self._slack_note(inc, note)
                 self._actor("engineer", "working", f"{user} acknowledged and is fixing it manually")
                 if self.phase == "handed_over":
                     self._phase("acknowledged")
-            elif self.transport.configured:
-                self.transport.post(note, thread_ts=self.registry.get(incident_id).get("root_ts"))
             self._op(f"{user} acknowledged {incident_id}; automatic remediation re-enabled for {', '.join(comps)}")
             return None
         return None
@@ -676,21 +693,37 @@ class Engine:
         slack.publish_detection(self.transport, self.registry, inc, self.s.namespace)
         self._emit("slack", {"text": f"Incident {inc['id']} posted to Slack (thread started)"})
 
-    def _slack_note(self, inc: dict, payload: dict) -> None:
+    def _slack_reply(self, inc: dict, payload: dict, under: str = "plan"):
+        """A reply to one of the incident's messages (default: the Remediation message)."""
+        if not self.transport.configured:
+            return None
+        res = slack.reply(self.transport, self.registry, inc["id"], payload, under)
+        self._emit("slack", {"text": payload.get("text", "")[:160], "ok": res is not None})
+        return res
+
+    def _slack_status(self, inc: dict, status: str) -> None:
+        """The one-line status on the Incident detected message."""
+        if self.transport.configured:
+            slack.set_status(self.transport, self.registry, self.review, inc["id"], status, self.execution)
+
+    def _slack_final(self, inc: dict, payload: dict, status: str) -> None:
+        """The incident's final status, as its own message (updated in place if it changes), and the status line."""
         if not self.transport.configured:
             return
-        root = self.registry.get(inc["id"]).get("root_ts")
-        ok = self.transport.post(payload, thread_ts=root) is not None
+        ok = slack.publish_final(self.transport, self.registry, inc["id"], payload)
         self._emit("slack", {"text": payload.get("text", "")[:160], "ok": ok})
+        self._slack_status(inc, status)
 
     def _slack_report(self, inc, report, digest, ai, proposal, gate=None) -> None:
         if not self.transport.configured:
             return
-        self._slack_note(inc, slack_ai.report(inc, ai, proposal, report, gate))
         ok = slack.publish_investigation(self.transport, self.registry, report, self.review, digest,
-                                         self.s.namespace, time.time(), execution=self.execution)
-        self._emit("slack", {"text": "Rule-based investigation and the remediation plan (with Approve / Execute "
-                                     "buttons) posted to the thread", "ok": ok})
+                                         self.s.namespace, time.time(), execution=self.execution,
+                                         investigation=slack_ai.investigation(inc, report, ai),
+                                         details=slack_ai.details(inc, report, ai),
+                                         note=slack_ai.plan_note(proposal, gate))
+        self._emit("slack", {"text": "Investigation and Remediation (with Approve / Execute buttons) posted",
+                             "ok": ok})
         entry = self.registry.get(inc["id"])
         if entry.get("channel") and entry.get("root_ts"):
             # chat.getPermalink rejects a JSON body (invalid_arguments), so it is sent as query arguments
