@@ -114,7 +114,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
 .route.verify { background: var(--soft); }
 .fix ol, .approval ol { margin: 6px 0 0; padding-left: 20px; }
 /* hand-off strip: who is on the incident right now */
-.actors { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; padding: 12px 16px; }
+.actors { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; padding: 12px 16px; }
 @media (max-width: 1250px) { .actors { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 640px) { .actors { grid-template-columns: 1fr; } }
 .actor { border: 1px solid var(--rule); border-radius: 8px; padding: 9px 10px; display: grid; gap: 4px; align-content: start;
@@ -147,7 +147,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
 <header>
   <div>
     <h1>Incident Response Console</h1>
-    <div class="sub" id="sub">Kubernetes shop · Investigator Agent · remediation approved by an engineer in Slack</div>
+    <div class="sub" id="sub">Kubernetes shop · Investigator Agent + Reviewer Agent · remediation approved by an engineer in Slack</div>
   </div>
   <span class="pill" id="phase">loading…</span>
   <div class="spacer"></div>
@@ -218,6 +218,7 @@ let I = null;   // the current incident view model, built only from events
 
 function resetIncident() {
   I = {id: null, signals: [], ruleSteps: [], rule: null, agent: {model: null, steps: [], result: null, error: null, thinking: false},
+       reviewer: {model: null, steps: [], result: null, error: null, thinking: false},
        proposal: null, decision: null, remediation: [], lastRem: null, outcome: null, slack: [], phase: null, detected_at: null,
        actors: {}, actorLog: [], gate: null, auto: null};
 }
@@ -227,6 +228,7 @@ const ACTORS = [
   ["detector", "Detector", "deterministic · always on"],
   ["rules", "Rule engine", "deterministic · read-only"],
   ["investigator", "Investigator Agent", "LLM · read-only tools"],
+  ["reviewer", "Reviewer Agent", "LLM · read-only tools · can only block"],
   ["remediation", "Remediation Agent", "deterministic · executes via policy"],
   ["engineer", "Engineer", "human · in Slack"]];
 const STATE_TEXT = {working: "● working", done: "✓ done", offline: "○ offline — finished", standby: "standby",
@@ -236,6 +238,7 @@ function defaultActor(name) {
   return {detector: {state: on ? "working" : "idle", text: on ? "watching the system every 5 s" : "not started"},
     rules: {state: "idle", text: "starts when an incident opens"},
     investigator: {state: "idle", text: "offline until the rule engine hands over"},
+    reviewer: {state: "idle", text: "checks the Investigator Agent's conclusion before any fix"},
     remediation: {state: "idle", text: auto ? "automatic mode: acts only if the policy gate passes" : "manual mode: runs only after an engineer's Approve + Execute"},
     engineer: {state: "idle", text: "notified in Slack when needed"}}[name];
 }
@@ -243,8 +246,8 @@ function renderActors() {
   const A = (I && I.actors) || {};
   $("#actors").innerHTML = ACTORS.map(([k, label, kind]) => {
     const a = A[k] || defaultActor(k);
-    const ai = k === "investigator" ? " ai" : "";
-    return `<div class="actor ${a.state}${ai}"><div class="who">${a.state === "working" ? `<span class="dot pulse ${k === "investigator" ? "" : "warn"}" style="${k === "investigator" ? "background:var(--ai)" : ""}"></span>` : ""}${esc(label)}</div>
+    const llm = k === "investigator" || k === "reviewer", ai = llm ? " ai" : "";
+    return `<div class="actor ${a.state}${ai}"><div class="who">${a.state === "working" ? `<span class="dot pulse ${llm ? "" : "warn"}" style="${llm ? "background:var(--ai)" : ""}"></span>` : ""}${esc(label)}</div>
       <div class="kind">${esc(kind)}</div><div class="state">${esc(STATE_TEXT[a.state] || a.state)}</div><div class="what">${esc(a.text)}</div></div>`;
   }).join("");
   const log = (I && I.actorLog) || [], box = $("#handoffs");
@@ -337,6 +340,18 @@ $("#filters").addEventListener("change", (e) => {
 });
 
 // ------------------------------------------------------------------ incident view
+function agentSteps(A) {
+  let h = `<div class="agent"><ul class="steps">`;
+  for (const s of A.steps) {
+    if (s.type === "call") h += `<li><span class="ic">${s.result ? (s.result.ok ? "✓" : "✗") : "⏳"}</span><span><code>${esc(s.tool)}</code>${Object.keys(s.args || {}).length ? " <span class='mono'>" + esc(JSON.stringify(s.args)) + "</span>" : ""}
+      ${s.purpose ? `<div class="why">${esc(s.purpose)}</div>` : ""}${s.result ? `<div>${s.result.evidence_id ? `<span class="ev">${esc(s.result.evidence_id)}</span> ` : ""}${esc(s.result.summary)}</div>` : ""}</span></li>`;
+    else if (s.type === "note") h += `<li><span class="ic">💭</span><span><div class="note">${esc(s.text)}</div></span></li>`;
+  }
+  if (A.thinking) h += `<li><span class="ic">⏳</span><span class="muted">Reasoning…</span></li>`;
+  if (A.error) h += `<li><span class="ic">⚠️</span><span class="err">${esc(A.error)}</span></li>`;
+  return h + `</ul></div>`;
+}
+
 function renderIncident() {
   const el = $("#incident");
   if (!I || !I.id) { el.innerHTML = `<div class="empty">No incident. Trigger one from the Incident lab; detection is automatic.</div>`; return; }
@@ -371,15 +386,7 @@ function renderIncident() {
   const A = I.agent;
   if (A.model || A.error || A.steps.length) {
     const role = I.route ? (I.route.mode === "verify" ? "verifying the rule engine" : "leading the investigation") : "";
-    h += `<div class="stage"><h3><span class="n">3</span> 🔍 Investigator Agent ${role ? "— " + role : ""} <span class="pill ai">${esc(A.model || "")}</span></h3><div class="agent"><ul class="steps">`;
-    for (const s of A.steps) {
-      if (s.type === "call") h += `<li><span class="ic">${s.result ? (s.result.ok ? "✓" : "✗") : "⏳"}</span><span><code>${esc(s.tool)}</code>${Object.keys(s.args || {}).length ? " <span class='mono'>" + esc(JSON.stringify(s.args)) + "</span>" : ""}
-        ${s.purpose ? `<div class="why">${esc(s.purpose)}</div>` : ""}${s.result ? `<div>${s.result.evidence_id ? `<span class="ev">${esc(s.result.evidence_id)}</span> ` : ""}${esc(s.result.summary)}</div>` : ""}</span></li>`;
-      else if (s.type === "note") h += `<li><span class="ic">💭</span><span><div class="note">${esc(s.text)}</div></span></li>`;
-    }
-    if (A.thinking) h += `<li><span class="ic">⏳</span><span class="muted">Reasoning…</span></li>`;
-    if (A.error) h += `<li><span class="ic">⚠️</span><span class="err">${esc(A.error)}</span></li>`;
-    h += `</ul></div></div>`;
+    h += `<div class="stage"><h3><span class="n">3</span> 🔍 Investigator Agent ${role ? "— " + role : ""} <span class="pill ai">${esc(A.model || "")}</span></h3>${agentSteps(A)}</div>`;
   }
   // 4 report
   if (A.result) {
@@ -398,6 +405,23 @@ function renderIncident() {
   } else if (A.error && I.rule) {
     h += `<div class="stage"><h3><span class="n">4</span> Findings (rule engine; the agent produced no report)</h3>
       <div class="rc">${esc(I.rule.root_cause)}</div><ul class="steps">${(I.rule.evidence || []).map(e => `<li><span class="ic">•</span><span><span class="ev">${esc(e.id)}</span> ${esc(e.text)}</span></li>`).join("")}</ul></div>`;
+  }
+  // 4b the Reviewer Agent
+  const R = I.reviewer;
+  if (R.model || R.error || R.steps.length) {
+    h += `<div class="stage"><h3><span class="n">4b</span> 🧐 Reviewer Agent — checking the Investigator's conclusion <span class="pill ai">${esc(R.model || "")}</span></h3>${agentSteps(R)}`;
+    if (R.result) {
+      const r = R.result, v = r.validation || {};
+      const head = {agree: ["ok", "✓ Agrees — the flow continues unchanged"],
+        challenge: ["warn", "⚠️ Challenges the conclusion — automatic remediation is off; an engineer decides"],
+        reject: ["bad", "⛔ Rejects the conclusion — the Investigator's fix is dropped (the rule engine's plan stands); an engineer decides"],
+        unsupported: ["warn", "? Objected without valid evidence — ignored, the flow continues unchanged"]}[r.effective] || ["", r.effective];
+      h += `<p class="banner ${head[0]}" style="margin-top:8px">${esc(head[1])}${r.summary ? `<span class="sub" style="font-weight:500">${esc(r.summary)}</span>` : ""}</p>`;
+      if (r.objections.length) h += `<ul class="steps">${r.objections.map(o => `<li><span class="ic">${o.supported ? "▲" : "?"}</span><span>${esc(o.statement)}
+        <div class="ev">${o.evidence.map(e => esc(e.id) + ": " + esc(e.text)).join("<br>") || "no valid evidence cited"}${o.invalid_citations.length ? "<br><span class='err'>rejected citations: " + esc(o.invalid_citations.join(", ")) + "</span>" : ""}</div></span></li>`).join("")}</ul>`;
+      h += `<div class="sub">evidence check: ${v.supported_objections}/${v.objections} objections supported · ${r.tool_calls} tool calls · ${r.seconds} s · model ${esc(r.model || "")}</div>`;
+    }
+    h += `</div>`;
   }
   // 5 approval - happens in Slack; this only mirrors the shared review / execution records
   const P = I.proposal, G = I.gate;
@@ -554,6 +578,14 @@ function onEvent(ev) {
     case "agent_report": I.agent.thinking = false; break;
     case "agent_result": I.agent.result = d; I.agent.thinking = false; break;
     case "agent_error": I.agent.error = d.error; I.agent.thinking = false; break;
+    case "reviewer_start": I.reviewer.model = d.model; break;
+    case "reviewer_thinking": I.reviewer.thinking = true; break;
+    case "reviewer_note": I.reviewer.thinking = false; I.reviewer.steps.push({type: "note", text: d.text}); break;
+    case "reviewer_tool_call": I.reviewer.thinking = false; I.reviewer.steps.push({type: "call", n: d.n, tool: d.tool, args: d.args, purpose: d.purpose}); break;
+    case "reviewer_tool_result": { const s = [...I.reviewer.steps].reverse().find(x => x.type === "call" && x.n === d.n); if (s) s.result = d; break; }
+    case "reviewer_report": I.reviewer.thinking = false; break;
+    case "review_result": I.reviewer.result = d; I.reviewer.thinking = false; break;
+    case "reviewer_error": I.reviewer.error = d.error; I.reviewer.thinking = false; break;
     case "proposal": I.proposal = d; break;
     case "decision": I.decision = d; break;
     case "remediation": I.remediation.push(d); I.lastRem = {...(I.lastRem || {}), ...Object.fromEntries(Object.entries(d).filter(([, v]) => v != null))}; break;

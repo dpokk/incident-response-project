@@ -94,6 +94,30 @@ def details(inc: dict, rule: dict, ai: dict | None) -> dict:
     return {"text": f"Investigation details for {inc['id']}", "blocks": blocks[:50]}
 
 
+REVIEW_HEAD = {"agree": ":white_check_mark: *Reviewer Agent agrees*",
+               "challenge": ":warning: *Reviewer Agent challenges the conclusion* — automatic remediation is off",
+               "reject": ":no_entry: *Reviewer Agent rejects the conclusion* — the AI agent's fix is not used; "
+                         "automatic remediation is off",
+               "unsupported": ":grey_question: *Reviewer Agent objected without valid evidence* — ignored"}
+
+
+def review(inc: dict, rv: dict) -> dict:
+    """The reply under the Investigation: the Reviewer Agent's verdict and its evidence-checked objections."""
+    if rv.get("status") != "ok":
+        return {"text": f"Reviewer Agent: no review for {inc['id']}", "blocks": [_section(
+            f":warning: *Reviewer Agent unavailable* ({rv.get('error') or rv.get('status')}) — no review; the flow "
+            f"continues as without one")]}
+    r = rv["review"]
+    lines = [REVIEW_HEAD[r["effective"]]]
+    if r.get("summary"):
+        lines.append(r["summary"][:500])
+    lines += [f"{':small_red_triangle:' if o['supported'] else ':grey_question:'} {o['statement'][:260]}  "
+              f"_({', '.join(e['id'] for e in o['evidence']) or 'no valid evidence'})_" for o in r["objections"][:4]]
+    return {"text": f"Reviewer Agent: {r['effective']} ({inc['id']})", "blocks": [
+        _section("\n".join(lines)),
+        _context(f"{rv.get('tool_calls')} tool calls in {rv.get('seconds')} s · model `{rv.get('model')}`")]}
+
+
 def plan_note(proposal: dict, gate: dict | None) -> str:
     """One line on the Remediation message: who acts next, and why."""
     par = proposal.get("parameter") or {}

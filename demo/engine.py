@@ -34,6 +34,7 @@ from investigator.review import PARAMETER_SPECS, InvalidParameter, ReviewService
 from . import agent_plan, slack_ai, slack_listener
 from .remediation_agent import AGENT_ID, AutoPolicy, AutoStore, RemediationAgent, gate, ladder
 from .agent.investigator import InvestigatorAgent
+from .agent.reviewer import review as run_review
 from .agent.llm import ChatModel
 from .agent.tools import ToolBox
 from .live import LogTailer, component_status, traffic
@@ -74,6 +75,7 @@ INCIDENTS = {
 }
 KNOWN_CONFIDENCE = 0.75          # rules at or above this confidence lead; below it, the agent leads
 BUDGETS = {"verify": (5, 150), "lead": (14, 300)}   # (tool calls, seconds)
+REVIEW_BUDGET = (4, 60)         # the Reviewer Agent: (tool calls, seconds), per model tried
 
 
 def route(report: dict) -> dict:
@@ -127,6 +129,8 @@ class Engine:
         self.cooldown_until = 0.0
         self.lock = threading.RLock()
         self.model = ChatModel.from_env()
+        self.reviewers = ChatModel.reviewers_from_env()   # the Reviewer's model, then the fallback
+        self._agent_tb: ToolBox | None = None         # the Investigator's tools and evidence, reused by the Reviewer
         self._monitor: threading.Thread | None = None
         self.auto_policy = AutoPolicy.load(AUTO_POLICY_PATH)
         self.auto_enabled = self.auto_policy.enabled
@@ -141,6 +145,7 @@ class Engine:
                 "logs": list(self.tailer.recent)[-150:], "ops": self.ops[-40:], "busy": self.busy,
                 "incidents": [{"id": k, **v} for k, v in INCIDENTS.items()],
                 "config": {"model": self.model.name if self.model else None,
+                           "reviewer_model": self.reviewers[0].name if self.reviewers else None,
                            "slack": self.transport.configured, "slack_threaded": self.transport.threaded,
                            "approvers": sorted(self.s.slack_approvers), "namespace": self.s.namespace,
                            "entry": f"{self.s.entry_service}{self.s.entry_path.split('?')[0]}",
@@ -307,20 +312,26 @@ class Engine:
                                          f"{float(report.get('confidence') or 0):.0%} confidence")
             self._emit("route", r)
             ai = self._agent(inc, report, r)
-            digest = self._agent_plan(inc, report, ai, r) or digest
-            proposal = self._proposal(report, ai, r)
+            rv = self._review(inc, report, ai)
+            # A supported reject drops the Investigator's own fix and plan: the rule engine's plan stands
+            rejected = rv.get("status") == "ok" and rv["review"]["effective"] == "reject"
+            used = {**ai, "status": "rejected_by_reviewer", "report": None} if rejected else ai
+            digest = self._agent_plan(inc, report, used, r) or digest
+            proposal = self._proposal(report, used, r)
             inc.update({"report_id": report["id"], "digest": digest, "proposal": proposal})
             self._emit("proposal", proposal)
-            g = gate(self.auto_policy, self.auto_enabled, r, ai, proposal, self.auto_store.locked())
+            g = gate(self.auto_policy, self.auto_enabled, r, ai, proposal, self.auto_store.locked(), review=rv)
             values = ladder(self.auto_policy, proposal, self.execution.policy.max_memory_bytes) if g["eligible"] else []
             if g["eligible"] and not values:
                 g["checks"].append({"check": "ladder", "ok": False, "detail": "no value can be tried within policy"})
                 g["eligible"] = False
             inc["gate"] = g
             self._emit("auto_gate", {**g, "ladder": [str(v) for v in values]})
-            inc["cause"] = slack_ai.headline(inc, report, ai)[0]
+            inc["cause"] = slack_ai.headline(inc, report, used)[0]
             inc["fix"] = proposal.get("summary")
             self._slack_report(inc, report, digest, ai, proposal, g)
+            if rv.get("status") != "skipped":
+                self._slack_reply(inc, slack_ai.review(inc, rv), under="investigation")
             if g["eligible"]:
                 self._slack_status(inc, ":robot_face: Remediation Agent is applying the fix")
                 self._auto_remediate(inc, proposal, values, g)
@@ -384,10 +395,9 @@ class Engine:
         caps = self.providers.capabilities(EvidenceStore(clock=self.providers.clock))
         tb = ToolBox(caps, self.s, report, self._window_start(inc), clock=self.providers.clock)
         inc["components"] = list(tb.components)
-        rcc = (report.get("root_cause_component") or {}).get("name")
-        summary = (f"{report.get('failure_category_label')} (root-cause component {rcc}; confidence "
-                   f"{float(report.get('confidence') or 0):.0%}): {report.get('likely_root_cause')}")
-        out = InvestigatorAgent(self.model, tb, lambda t, d: self._emit(t, d), mode=r["mode"], rule_summary=summary,
+        self._agent_tb = tb
+        out = InvestigatorAgent(self.model, tb, lambda t, d: self._emit(t, d), mode=r["mode"],
+                                rule_summary=_rule_summary(report),
                                 max_tool_calls=r["budget"]["tool_calls"],
                                 max_seconds=r["budget"]["seconds"]).run(inc)
         if out.get("status") == "ok":
@@ -407,6 +417,34 @@ class Engine:
         else:
             self._actor("investigator", "offline", f"no report ({out.get('error') or out.get('status')}): the rule "
                                                    f"engine's findings stand")
+        return out
+
+    def _review(self, inc: dict, report: dict, ai: dict) -> dict:
+        """The Reviewer Agent checks the Investigator Agent's report with read-only tools. Its events are the agent's
+        events renamed reviewer_*. It can only block automation; without a review the flow is unchanged."""
+        if (ai or {}).get("status") != "ok" or self._agent_tb is None:
+            self._actor("reviewer", "offline", "nothing to review: the Investigator Agent produced no report")
+            return {"status": "skipped", "error": "no Investigator Agent report to review"}
+        if not self.reviewers:
+            self._emit("reviewer_error", {"error": "no model configured (NVIDIA_API_KEY missing)"})
+            self._actor("reviewer", "offline", "no model configured: no review")
+            return {"status": "unavailable", "error": "no model configured"}
+        calls, secs = REVIEW_BUDGET
+        self._actor("reviewer", "working", f"checking the Investigator Agent's conclusion and fix (≤ {calls} "
+                                           f"read-only tool calls, {secs} s)")
+        out = run_review(self.reviewers, self._agent_tb,
+                         lambda t, d: self._emit("reviewer_" + t[len("agent_"):] if t.startswith("agent_") else t, d),
+                         ai["report"], ai["report"].get("led_by"), inc, _rule_summary(report), calls, secs)
+        if out.get("status") == "ok":
+            rv = out["review"]
+            inc["review"] = rv["effective"]
+            self._emit("review_result", {**rv, "usage": out.get("usage"), "seconds": out.get("seconds"),
+                                         "tool_calls": out.get("tool_calls"), "model": out.get("model")})
+            self._actor("reviewer", "offline", f"{rv['effective']} after {out.get('tool_calls')} tool calls, "
+                                               f"{out.get('seconds')} s; it has no further role")
+        else:
+            self._actor("reviewer", "offline", f"no review ({out.get('error') or out.get('status')}): the flow "
+                                               f"continues as without one")
         return out
 
     def _agent_plan(self, inc: dict, report: dict, ai: dict, r: dict) -> str | None:
@@ -744,7 +782,15 @@ INCIDENT_EVENTS = {"phase", "incident", "signals", "rule_start", "rule_step", "r
                    "agent_thinking", "agent_note", "agent_tool_call", "agent_tool_result", "agent_report",
                    "agent_result", "agent_error", "proposal", "decision", "remediation", "outcome", "slack",
                    "slack_link", "execute_refused", "route", "actor", "auto_gate", "auto_start", "auto_attempt",
-                   "auto_progress", "auto_revert", "auto_done", "auto_stop", "auto_ack", "agent_plan"}
+                   "auto_progress", "auto_revert", "auto_done", "auto_stop", "auto_ack", "agent_plan",
+                   "reviewer_start", "reviewer_thinking", "reviewer_note", "reviewer_tool_call",
+                   "reviewer_tool_result", "reviewer_report", "reviewer_error", "review_result"}
+
+
+def _rule_summary(report: dict) -> str:
+    rcc = (report.get("root_cause_component") or {}).get("name")
+    return (f"{report.get('failure_category_label')} (root-cause component {rcc}; confidence "
+            f"{float(report.get('confidence') or 0):.0%}): {report.get('likely_root_cause')}")
 
 
 def _public(rec: dict | None) -> dict | None:

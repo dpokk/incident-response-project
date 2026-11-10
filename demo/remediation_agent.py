@@ -96,8 +96,10 @@ def ladder(policy: AutoPolicy, proposal: dict, max_memory_bytes: float) -> list:
     return []
 
 
-def gate(policy: AutoPolicy, enabled: bool, route: dict, ai: dict, proposal: dict, locked: dict) -> dict:
-    """Whether the Remediation Agent may act without a human click. Every check is evaluated and shown."""
+def gate(policy: AutoPolicy, enabled: bool, route: dict, ai: dict, proposal: dict, locked: dict,
+         review: dict | None = None) -> dict:
+    """Whether the Remediation Agent may act without a human click. Every check is evaluated and shown. The Reviewer
+    Agent's verdict (review) can only block: no review, or one that failed, leaves the gate as it was without one."""
     checks = []
 
     def add(name: str, ok: bool, detail: str) -> None:
@@ -138,6 +140,13 @@ def gate(policy: AutoPolicy, enabled: bool, route: dict, ai: dict, proposal: dic
     add("not_locked", lock is None,
         f"{comp or 'the target'} has no unacknowledged failed automatic remediation" if lock is None
         else f"{comp} is locked: automatic remediation failed on {lock['incident_id']} and is not acknowledged")
+    rv = (review or {}).get("review") if (review or {}).get("status") == "ok" else None
+    eff = (rv or {}).get("effective")
+    add("reviewer_agrees", eff not in ("challenge", "reject"),
+        f"the Reviewer Agent {eff}s the Investigator Agent's conclusion" if eff in ("challenge", "reject") else
+        "the Reviewer Agent agrees" if eff == "agree" else
+        "the Reviewer Agent's objection cites no valid evidence: ignored" if eff == "unsupported" else
+        f"no review ({(review or {}).get('error') or (review or {}).get('status') or 'not run'})")
     return {"eligible": all(c["ok"] for c in checks), "checks": checks}
 
 

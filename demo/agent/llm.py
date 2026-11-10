@@ -9,6 +9,8 @@ import time
 import requests
 
 DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b"      # verified to support native tool calls on the NIM endpoint
+# Verified 2026-11-10 with this project's key: completed a two-step tool-calling review in ~7 s.
+DEFAULT_REVIEWER_MODEL = "nvidia/nemotron-3.5-super-vl-120b-a12b"
 
 
 class LLMError(RuntimeError):
@@ -26,6 +28,18 @@ class ChatModel:
             return None
         return cls(os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"), key,
                    os.getenv("DEMO_AGENT_MODEL", DEFAULT_MODEL), float(os.getenv("DEMO_AGENT_TIMEOUT_S", "90")))
+
+    @classmethod
+    def reviewers_from_env(cls) -> list["ChatModel"]:
+        """The Reviewer Agent's models, in order: DEMO_REVIEWER_MODEL, then the Investigator's model as the fallback.
+        DEMO_REVIEWER_MODEL set empty means: the Investigator's model only."""
+        agent = cls.from_env()
+        if agent is None:
+            return []
+        name = os.getenv("DEMO_REVIEWER_MODEL", DEFAULT_REVIEWER_MODEL).strip()
+        if not name or name == agent.model:
+            return [agent]
+        return [cls(agent.base_url, agent.api_key, name, float(os.getenv("DEMO_REVIEWER_TIMEOUT_S", "30"))), agent]
 
     @property
     def name(self) -> str:

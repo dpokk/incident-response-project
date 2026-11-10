@@ -1,15 +1,18 @@
 # Incident Response Demo
 
 A presentation console over the post-Iteration-7 incident investigator (copied from `dpokk/majorproject` @ `0bfa218`).
-It adds an **LLM Investigator Agent** that investigates with read-only tools. Everything else stays as built:
-deterministic detection, the rule engine, human approval, typed execution and verification.
+It adds two LLM agents with read-only tools: the **Investigator Agent**, which investigates, and the **Reviewer
+Agent**, which checks the Investigator's conclusion before any fix. Everything else stays as built: deterministic
+detection, the rule engine, human approval, typed execution and verification.
 
 ```
 Kubernetes (real injection) → Detector → rule engine (evidence collection + diagnosis)
   → hybrid routing (deterministic):
        known pattern  (rule confidence ≥ 75%)        → rules lead, the agent VERIFIES (≤ 5 tool calls)
        unfamiliar     (undetermined or < 75%)        → the Investigator Agent LEADS (≤ 14 tool calls)
-  → report (findings · cited evidence · root cause · suggested fix or manual steps) → web console + Slack
+  → report (findings · cited evidence · root cause · suggested fix or manual steps)
+  → Reviewer Agent: agree / challenge / reject, with cited evidence (≤ 4 tool calls; can only block)
+  → web console + Slack
   → engineer in Slack: Approve, then Execute → policy → live recheck → dry run → ONE typed change → validation
 ```
 
@@ -33,6 +36,29 @@ Safeguards in every route:
   execute it.
 - If the model fails, the rule engine's findings stand.
 
+## The Reviewer Agent (a second opinion that can only block)
+
+An LLM agent in `demo/agent/reviewer.py`. After the Investigator Agent reports, it checks that report with the same
+read-only tools, on the same evidence (it can cite the Investigator's E- and F-ids, and adds its own). It looks for
+evidence against the conclusion: a different cause, a fix that would not help, or an unjustified fix value. It runs
+the Investigator's loop with its own prompt and final tool (`submit_review`), within 4 tool calls and 60 s per model.
+
+| Verdict | Effect |
+|---|---|
+| **agree** | nothing changes |
+| **challenge** | the Remediation Agent may not act alone (gate check `reviewer_agrees`); an engineer decides in Slack |
+| **reject** | the same, and the Investigator's own fix and plan are dropped: the rule engine's plan stands |
+| objection without valid evidence | shown as "unsupported" and ignored |
+| model unavailable, or no Investigator report | no review: the flow is exactly as without the Reviewer |
+
+It never proposes a fix, never raises confidence, never approves and never changes anything. Its verdict is a
+reply under the Investigation message in Slack and its own section on the console.
+
+**Model:** `DEMO_REVIEWER_MODEL` (default `nvidia/nemotron-3.5-super-vl-120b-a12b`). If that model is unavailable
+(timeout, 404, error) the review runs once more with the Investigator's model (`DEMO_AGENT_MODEL`). Checked on
+2026-11-10 against the fake cluster: it agreed with a correct diagnosis (3 tool calls, 14.5 s) and rejected a planted
+wrong one, with both objections citing real evidence (4 tool calls, 18.2 s). Covered by `tests/test_demo_reviewer.py`.
+
 ## The Remediation Agent (graduated autonomy)
 
 A deterministic agent (no LLM), in `demo/remediation_agent.py`. When its policy gate passes, it replaces the
@@ -44,6 +70,7 @@ engineer's two Slack clicks. It drives the **same** executor an engineer would.
 - rule confidence ≥ 90%;
 - the Investigator Agent agrees;
 - every finding is evidence-checked;
+- the Reviewer Agent does not challenge or reject (with valid evidence);
 - the action is `scale_workload` or `adjust_resource_limit`;
 - a validated value exists;
 - the component isn't locked.
@@ -65,6 +92,7 @@ automation until an engineer acknowledges (circuit breaker).
 - Detector;
 - Rule engine;
 - Investigator Agent (working → offline when it submits its report);
+- Reviewer Agent (working → offline when it submits its verdict);
 - Remediation Agent;
 - Engineer.
 
@@ -109,7 +137,8 @@ python -m demo            # opens http://127.0.0.1:8800
    symptoms for 20 s.
 5. **The investigation runs:**
    - first, the rule engine's evidence collection (its decisions and capability calls);
-   - then the **Investigator Agent**'s tool calls, each with its purpose and result.
+   - then the **Investigator Agent**'s tool calls, each with its purpose and result;
+   - then the **Reviewer Agent**'s tool calls and its verdict.
 6. **Read the report.** It shows the root cause, the evidence-checked findings, the suggested fix, and whether the
    agent agrees with the rule engine. Slack gets the same, as headed messages: **Incident detected** (its status
    line kept current), **Investigation** (root cause, key evidence, the agent's verdict; details in a reply),
@@ -136,6 +165,8 @@ Nothing in the page is simulated:
 | Variable | Default | Meaning |
 |---|---|---|
 | `DEMO_AGENT_MODEL` | `nvidia/nemotron-3-super-120b-a12b` | Model on the NVIDIA NIM endpoint (native tool calling) |
+| `DEMO_REVIEWER_MODEL` | `nvidia/nemotron-3.5-super-vl-120b-a12b` | The Reviewer Agent's model; falls back to `DEMO_AGENT_MODEL`. Empty: use `DEMO_AGENT_MODEL` only |
+| `DEMO_REVIEWER_TIMEOUT_S` | `30` | Per-request timeout for the Reviewer's model, so a slow endpoint falls back quickly |
 | `INVESTIGATE_DELAY_S` | `20` | Symptom-collection time before investigating |
 | `EXECUTION_POLICY_PATH` | `demo/execution_policy.json` | The same limits as the main project, with a 60 s observation window |
 | `DEMO_PORT` | `8800` | Web port |
@@ -147,8 +178,8 @@ Nothing in the page is simulated:
 | `demo/server.py` | FastAPI routes and the Server-Sent Events stream |
 | `demo/engine.py` | Wires the existing components together and publishes each real step |
 | `demo/live.py` | Component status and log tailing |
-| `demo/agent/` | `llm.py` (model adapter), `tools.py` (read-only tools over capabilities), `investigator.py` (the loop and report validation) |
-| `demo/slack_ai.py` | The Investigation (rules + agent), the Remediation note, the Remediation Agent's replies and the final status |
+| `demo/agent/` | `llm.py` (model adapter), `tools.py` (read-only tools over capabilities), `investigator.py` (the loop and report validation), `reviewer.py` (the Reviewer Agent and review validation) |
+| `demo/slack_ai.py` | The Investigation (rules + agent), the Reviewer's verdict, the Remediation note, the Remediation Agent's replies and the final status |
 | `demo/web/index.html` | The console |
 
 The `investigator/` package matches the main project except for two changes: the `rollback_release` action (planner rule, recheck, `set_image` actuator, policy entry, Slack labels), and the Slack layout (`slack_view.py`, `slack.py`: headed channel messages instead of one thread, shorter content).

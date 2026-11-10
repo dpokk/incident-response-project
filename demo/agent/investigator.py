@@ -40,38 +40,58 @@ MODE_BRIEF = {
 
 
 class InvestigatorAgent:
+    """The loop is shared with the Reviewer Agent (reviewer.py), which overrides the prompt, the tools and the final
+    tool through _messages, _tools and _submit."""
+    final_tool = "submit_report"
+
     def __init__(self, model: ChatModel, toolbox: ToolBox, emit, mode: str = "lead", rule_summary: str = "",
                  max_tool_calls: int = 14, max_seconds: float = 240):
         self.model, self.tb, self.emit, self.mode, self.rule_summary = model, toolbox, emit, mode, rule_summary
         self.max_tool_calls, self.max_seconds = max_tool_calls, max_seconds
+        self._asked_steps = False
+
+    def _messages(self, incident: dict) -> list[dict]:
+        signals = "\n".join(f"- {s['text']}" for s in incident.get("signals", [])[:8])
+        return [{"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": f"Incident {incident['id']} was detected from these symptoms:\n"
+                                            f"{signals}\n\nComponents: {', '.join(self.tb.components)}.\n\n"
+                                            + MODE_BRIEF[self.mode].format(rule=self.rule_summary or "none")}]
+
+    def _tools(self) -> list[dict]:
+        return self.tb.specs()
+
+    def _submit(self, args: dict) -> tuple[dict | None, str | None]:
+        """The final tool's arguments -> (validated result, None), or (None, why it was not accepted)."""
+        fx = args.get("suggested_fix") or {}
+        if fx.get("action") == "investigate_only" and not args.get("manual_steps") and not self._asked_steps:
+            self._asked_steps = True
+            return None, ("Not accepted: manual_steps is required when the action is investigate_only. Call "
+                          "submit_report again with concrete, ordered manual_steps for an engineer.")
+        return validate_report(args, self.tb), None
 
     def run(self, incident: dict) -> dict:
         t0 = time.time()
-        signals = "\n".join(f"- {s['text']}" for s in incident.get("signals", [])[:8])
-        messages = [{"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": f"Incident {incident['id']} was detected from these symptoms:\n"
-                                                f"{signals}\n\nComponents: {', '.join(self.tb.components)}.\n\n"
-                                                + MODE_BRIEF[self.mode].format(rule=self.rule_summary or "none")}]
-        tools = self.tb.specs()
+        messages = self._messages(incident)
+        tools = self._tools()
         calls = turns = 0
         usage = {"prompt_tokens": 0, "completion_tokens": 0}
         self.emit("agent_start", {"model": self.model.name, "mode": self.mode,
                                    "budget": {"tool_calls": self.max_tool_calls,
                                                                          "seconds": self.max_seconds}})
         stalls = forced = 0
-        asked_steps = False
         while True:
             budget_hit = calls >= self.max_tool_calls or time.time() - t0 > self.max_seconds
             force = budget_hit or stalls > 0
-            choice = {"type": "function", "function": {"name": "submit_report"}} if force else "auto"
+            choice = {"type": "function", "function": {"name": self.final_tool}} if force else "auto"
             if force:
                 forced += 1
                 if forced > 3:
-                    self.emit("agent_error", {"error": "the model did not submit a report after 3 requests"})
+                    self.emit("agent_error", {"error": f"the model did not call {self.final_tool} after 3 requests"})
                     return {"status": "no_report", "evidence": list(self.tb.evidence.values()), "usage": usage,
                             "seconds": round(time.time() - t0, 1)}
                 messages.append({"role": "user", "content": ("Budget reached: " if budget_hit else "") +
-                                 "Call submit_report now with what you have, stating any uncertainty. Keep it concise."})
+                                 f"Call {self.final_tool} now with what you have, stating any uncertainty. "
+                                 f"Keep it concise."})
             self.emit("agent_thinking", {"turn": turns + 1})
             try:
                 out = self.model.chat(messages, tools, tool_choice=choice)
@@ -102,19 +122,15 @@ class InvestigatorAgent:
                     args = json.loads(tc.get("function", {}).get("arguments") or "{}")
                 except ValueError:
                     args = None
-                if name == "submit_report":
+                if name == self.final_tool:
                     if not isinstance(args, dict):
                         messages.append({"role": "tool", "tool_call_id": tc.get("id"), "content":
-                                         "Malformed JSON arguments; call submit_report again."})
+                                         f"Malformed JSON arguments; call {self.final_tool} again."})
                         continue
-                    fx = args.get("suggested_fix") or {}
-                    if fx.get("action") == "investigate_only" and not args.get("manual_steps") and not asked_steps:
-                        asked_steps = True
-                        messages.append({"role": "tool", "tool_call_id": tc.get("id"), "content": "Not accepted: "
-                                         "manual_steps is required when the action is investigate_only. Call submit_report "
-                                         "again with concrete, ordered manual_steps for an engineer."})
+                    report, refused = self._submit(args)
+                    if refused:
+                        messages.append({"role": "tool", "tool_call_id": tc.get("id"), "content": refused})
                         continue
-                    report = validate_report(args, self.tb)
                     self.emit("agent_report", {"turns": turns, "tool_calls": calls})
                     return {"status": "ok", "report": report, "evidence": list(self.tb.evidence.values()),
                             "usage": usage, "turns": turns, "tool_calls": calls,
