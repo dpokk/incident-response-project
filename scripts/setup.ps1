@@ -31,4 +31,4 @@ kubectl -n shop rollout status deploy/frontend --timeout=180s
 kubectl -n loadtest rollout status deploy/loadgen --timeout=180s
 
 kubectl get pods -n shop -o wide
-Write-Host "`nReady. Next: python -m investigator check" -ForegroundColor Green
+Write-Host "`nServices Ready" -ForegroundColor Green

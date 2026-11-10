@@ -4,3 +4,4 @@ __pycache__/
 state/
 reports/
 .pytest_cache/
+.venv/
