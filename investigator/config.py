@@ -51,6 +51,8 @@ class Settings:
     probe_failure_threshold: float = field(default_factory=lambda: _float("PROBE_FAILURE_THRESHOLD", 0.5))
     error_log_threshold: float = field(default_factory=lambda: _float("ERROR_LOG_THRESHOLD", 5))
     error_rate_threshold: float = field(default_factory=lambda: _float("ERROR_RATE_THRESHOLD", 0.05))
+    # error-log bursts and the 5xx ratio, with the live probe passing, must hold this long to open an incident
+    lagging_sustain_s: float = field(default_factory=lambda: _float("LAGGING_SIGNAL_SUSTAIN_S", 30))
     not_ready_grace_s: float = field(default_factory=lambda: _float("NOT_READY_GRACE_S", 20))
     investigate_delay_s: float = field(default_factory=lambda: _float("INVESTIGATE_DELAY_S", 40))
     resolve_stable_s: float = field(default_factory=lambda: _float("RESOLVE_STABLE_S", 45))
