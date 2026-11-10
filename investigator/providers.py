@@ -23,6 +23,8 @@ class Providers:
     history: object | None = None                    # the evidence history store, if enabled
     # The cluster writer (Iteration 7). Only the executor receives it; investigation never does.
     new_actuator: Callable[[], Actuator] | None = None
+    # Re-reads the cluster's connection details after the cluster restarts (its API endpoint can change).
+    reconnect: Callable[[], None] | None = None
 
     def capabilities(self, store: EvidenceStore) -> Capabilities:
         return Capabilities(self.new_resources(), store, self.metrics)
@@ -64,4 +66,4 @@ def connect(settings, log=print) -> Providers:
     def new_actuator() -> Actuator:
         from .actuators.kubernetes import KubernetesActuator
         return KubernetesActuator(kube, settings.namespace)
-    return Providers(new_resources, metrics, clock, offset, history, new_actuator)
+    return Providers(new_resources, metrics, clock, offset, history, new_actuator, reconnect=kube.reload)

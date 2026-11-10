@@ -28,8 +28,10 @@ from investigator import pipeline, slack
 from investigator.context import IncidentContext
 from investigator.detector import Detector
 from investigator.evidence import EvidenceStore
+from investigator.kube import unreachable
 from investigator.planner import plan_and_collect
 from investigator.review import PARAMETER_SPECS, InvalidParameter, ReviewService
+from investigator.slack_view import hms
 
 from . import agent_plan, slack_ai, slack_listener
 from .remediation_agent import AGENT_ID, AutoPolicy, AutoStore, RemediationAgent, gate, ladder
@@ -37,7 +39,7 @@ from .agent.investigator import InvestigatorAgent
 from .agent.reviewer import review as run_review
 from .agent.llm import ChatModel
 from .agent.tools import ToolBox
-from .live import LogTailer, component_status, traffic
+from .live import RECONNECT_EVERY_S, LogTailer, component_status, traffic
 
 ROOT = Path(__file__).resolve().parent.parent
 INCIDENTS = {
@@ -76,6 +78,7 @@ INCIDENTS = {
 KNOWN_CONFIDENCE = 0.75          # rules at or above this confidence lead; below it, the agent leads
 BUDGETS = {"verify": (5, 150), "lead": (14, 300)}   # (tool calls, seconds)
 REVIEW_BUDGET = (4, 60)         # the Reviewer Agent: (tool calls, seconds), per model tried
+CLUSTER_RESTART_SETTLE_S = 90   # after losing the cluster: no new incident until restart effects settle
 
 
 def route(report: dict) -> dict:
@@ -138,6 +141,8 @@ class Engine:
         self.auto: RemediationAgent | None = None
         self._auto_msgs: dict = {}                    # Slack (channel, ts) of the agent's evolving messages
         self.baseline_at = 0.0                        # when "Reset to healthy" last restored the baseline
+        self._reconnected_at = 0.0
+        self._lost_cluster = False                    # set when the cluster was unreachable, until it answers again
 
     # ----------------------------------------------------------------------------- page support
     def snapshot(self) -> dict:
@@ -252,22 +257,56 @@ class Engine:
 
     # ----------------------------------------------------------------------------- monitoring + detection
     def _monitor_loop(self) -> None:
-        det = Detector(self.s, self.providers.new_resources(), self.providers.metrics, clock=self.providers.clock)
+        det = self._new_detector()
         while True:
-            try:
-                sample = det.sample()
-                self.system = {"t": sample["t"], "components": component_status(sample, self.s.error_log_threshold),
-                               "probe": {"ok": sample["probe"]["ok"], "total": sample["probe"]["total"],
-                                         "last_status": (sample["probe"]["last"] or [None])[0]},
-                               "errors": sample["errors"], "unhealthy": sample["unhealthy"],
-                               "signals": [x["text"] for x in sample["signals"]],
-                               "traffic": traffic(self.providers.metrics, self.s.entry_app, sample["t"])}
-                self._emit("system", self.system, keep=False)
-                self._detect(sample)
-                self._mirror_slack()
-            except Exception as exc:  # noqa: BLE001 - keep monitoring through API hiccups
-                self._op(f"status sample failed: {type(exc).__name__}: {exc}", "warning")
+            det = self._monitor_once(det)
             time.sleep(self.s.poll_interval_s)
+
+    def _new_detector(self) -> Detector:
+        return Detector(self.s, self.providers.new_resources(), self.providers.metrics, clock=self.providers.clock)
+
+    def _monitor_once(self, det: Detector) -> Detector:
+        """One sample: status for the page, detection, the Slack mirror. Returns the detector to use next."""
+        try:
+            sample = det.sample()
+            if self._lost_cluster:
+                # Back after losing the cluster: it may have restarted, and every container restart would look like
+                # an incident. Start detection afresh, once the restart effects have settled.
+                self._lost_cluster = False
+                self.cooldown_until = time.time() + CLUSTER_RESTART_SETTLE_S
+                self._op(f"Cluster reachable again: detection resumes in {CLUSTER_RESTART_SETTLE_S} s, once the "
+                         f"restart effects have settled")
+                return self._new_detector()
+            self.system = {"t": sample["t"], "components": component_status(sample, self.s.error_log_threshold),
+                           "probe": {"ok": sample["probe"]["ok"], "total": sample["probe"]["total"],
+                                     "last_status": (sample["probe"]["last"] or [None])[0]},
+                           "errors": sample["errors"], "unhealthy": sample["unhealthy"],
+                           "signals": [x["text"] for x in sample["signals"]],
+                           "traffic": traffic(self.providers.metrics, self.s.entry_app, sample["t"])}
+            self._emit("system", self.system, keep=False)
+            if self.incident is not None and sample["unhealthy"]:
+                self.incident["last_unhealthy_at"] = sample["t"]
+            self._detect(sample)
+            self._mirror_slack()
+        except Exception as exc:  # noqa: BLE001 - keep monitoring through API hiccups
+            self._op(f"status sample failed: {type(exc).__name__}: {exc}", "warning")
+            self._reconnect(exc)
+        return det
+
+    def _reconnect(self, exc: Exception) -> None:
+        """The cluster could not be reached: after a restart its API endpoint can move, so the connection details
+        are read again from the kubeconfig (at most every RECONNECT_EVERY_S)."""
+        if not unreachable(exc):
+            return
+        self._lost_cluster = True
+        if not (self.providers and self.providers.reconnect) or time.time() - self._reconnected_at < RECONNECT_EVERY_S:
+            return
+        self._reconnected_at = time.time()
+        try:
+            self.providers.reconnect()
+            self._op("Cluster unreachable: connection details read again from the kubeconfig")
+        except Exception as e:  # noqa: BLE001 - the next failed sample tries again
+            self._op(f"Reconnect failed: {type(e).__name__}", "warning")
 
     def _detect(self, sample: dict) -> None:
         with self.lock:
@@ -311,6 +350,8 @@ class Engine:
             self._actor("rules", "done", f"{report.get('failure_category_label')} at "
                                          f"{float(report.get('confidence') or 0):.0%} confidence")
             self._emit("route", r)
+            inc["facts"], recovered = self._timing_facts(inc)
+            self._emit("timing", {"facts": inc["facts"], "recovered": recovered})
             ai = self._agent(inc, report, r)
             rv = self._review(inc, report, ai)
             # A supported reject drops the Investigator's own fix and plan: the rule engine's plan stands
@@ -383,6 +424,23 @@ class Engine:
         (already restored) incident's kills and errors would be read as evidence for this one."""
         return max(inc["detected_at"] - self.s.lookback_s, self.baseline_at)
 
+    def _timing_facts(self, inc: dict) -> tuple[list[str], bool]:
+        """Measured timing facts for both agents: the incident window, and whether the symptoms are still present
+        now (the detector's latest sample). Returns (facts, recovered)."""
+        start, sys = self._window_start(inc), self.system or {}
+        facts = [f"Incident window: {hms(start)} to detection at {hms(inc['detected_at'])}. Changes, restarts and "
+                 f"crashes before {hms(start)} are history."]
+        recovered = bool(sys) and not sys.get("unhealthy")
+        if recovered:
+            last = inc.get("last_unhealthy_at")
+            facts.append(f"Now ({hms(sys['t'])}) the system is healthy: every component is ready and synthetic "
+                         f"requests succeed." + (f" The symptoms were last seen at {hms(last)}." if last else "")
+                         + " The incident may have been transient.")
+        elif sys:
+            facts.append(f"Now ({hms(sys['t'])}) the symptoms are still present: "
+                         f"{(sys.get('signals') or ['the system is unhealthy'])[0]}.")
+        return facts, recovered
+
     def _agent(self, inc: dict, report: dict, r: dict) -> dict:
         self._phase("agent")
         if self.model is None:
@@ -393,13 +451,16 @@ class Engine:
                                                 "leading the investigation") + f" (≤ {r['budget']['tool_calls']} "
                                                f"read-only tool calls, {r['budget']['seconds']} s)")
         caps = self.providers.capabilities(EvidenceStore(clock=self.providers.clock))
-        tb = ToolBox(caps, self.s, report, self._window_start(inc), clock=self.providers.clock)
+        tb = ToolBox(caps, self.s, report, self._window_start(inc), clock=self.providers.clock,
+                     detected_at=inc["detected_at"])
         inc["components"] = list(tb.components)
         self._agent_tb = tb
+        # If the Investigator's model stops answering, the investigation continues with the Reviewer's model
+        fallback = next((m for m in self.reviewers if m.model != self.model.model), None)
         out = InvestigatorAgent(self.model, tb, lambda t, d: self._emit(t, d), mode=r["mode"],
                                 rule_summary=_rule_summary(report),
                                 max_tool_calls=r["budget"]["tool_calls"],
-                                max_seconds=r["budget"]["seconds"]).run(inc)
+                                max_seconds=r["budget"]["seconds"], fallback=fallback).run(inc)
         if out.get("status") == "ok":
             rep = out["report"]
             rule_rcc = (report.get("root_cause_component") or {}).get("name")
@@ -784,7 +845,7 @@ INCIDENT_EVENTS = {"phase", "incident", "signals", "rule_start", "rule_step", "r
                    "slack_link", "execute_refused", "route", "actor", "auto_gate", "auto_start", "auto_attempt",
                    "auto_progress", "auto_revert", "auto_done", "auto_stop", "auto_ack", "agent_plan",
                    "reviewer_start", "reviewer_thinking", "reviewer_note", "reviewer_tool_call",
-                   "reviewer_tool_result", "reviewer_report", "reviewer_error", "review_result"}
+                   "reviewer_tool_result", "reviewer_report", "reviewer_error", "review_result", "timing"}
 
 
 def _rule_summary(report: dict) -> str:

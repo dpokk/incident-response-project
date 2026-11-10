@@ -529,7 +529,9 @@ function renderIncident() {
   h += stage(waitingToInvestigate ? "working" : "done", "Detection", `<span class="pill bad">${I.signals.length} signal${I.signals.length === 1 ? "" : "s"}</span>`,
     `<div class="list">${I.signals.slice(0, 4).map(s => `<div class="signal"><span>${esc(s)}</span></div>`).join("")}</div>`
     + (I.signals.length > 4 ? det("signals", `More signals (${I.signals.length - 4})`, `<div class="list">${I.signals.slice(4).map(s => `<div class="signal"><span>${esc(s)}</span></div>`).join("")}</div>`) : "")
-    + (waitingToInvestigate ? `<p class="muted small">Collecting symptoms for ${I.investigate_in_s} s before the investigation starts.</p>` : ""));
+    + (waitingToInvestigate ? `<p class="muted small">Collecting symptoms for ${I.investigate_in_s} s before the investigation starts.</p>` : "")
+    + (I.timing ? (I.timing.recovered ? callout("ok", "Symptoms cleared before the investigation started", I.timing.facts.map(esc).join(" "))
+                                      : `<p class="muted small">${I.timing.facts.map(esc).join(" ")}</p>`) : ""));
 
   // rule engine
   if (I.ruleSteps.length || I.rule) {
@@ -824,6 +826,7 @@ function onEvent(ev) {
     case "slack": addSlack(d.text, ev.t, d.ok); return;
     case "slack_link": I.slack_url = d.url; break;
     case "route": I.route = d; break;
+    case "timing": I.timing = d; break;
     case "execute_refused": (I.refusals = I.refusals || []).push(d); break;
     case "actor": I.actors[d.name] = d; I.actorLog.push(d); renderActors(); break;
     case "auto_config": S.config.auto = d; renderConfig(); return;

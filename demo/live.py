@@ -9,7 +9,7 @@ import time
 from collections import deque
 
 from investigator.capabilities.base import TimeRange
-from investigator.kube import Kube
+from investigator.kube import Kube, unreachable
 
 NAMESPACES = ("shop", "loadtest")
 LOG_FIELDS = ("requests", "errors_5xx", "error_rate", "interval_s",
@@ -17,6 +17,7 @@ LOG_FIELDS = ("requests", "errors_5xx", "error_rate", "interval_s",
               "reason", "count", "target_rps", "outcomes_10s", "cgroup_mem_mb", "mem_limit_ratio", "upstream",
               "sample_error", "exc_type", "quantity", "order_id")
 MAX_LINES_PER_TICK = 40                     # per container; anything above is counted, never silently dropped
+RECONNECT_EVERY_S = 15                      # an unreachable cluster: read the kubeconfig again at most this often
 
 
 def component_status(sample: dict, error_threshold: float = 5) -> list[dict]:
@@ -95,6 +96,7 @@ class LogTailer(threading.Thread):
         self.last: dict[tuple, float] = {}
         self.recent: deque = deque(maxlen=250)     # for pages that connect later
         self.running = threading.Event()
+        self.reloaded_at = 0.0
 
     def run(self) -> None:
         while True:
@@ -102,9 +104,22 @@ class LogTailer(threading.Thread):
                 try:
                     self.tick()
                 except Exception as exc:  # noqa: BLE001 - keep tailing through API hiccups
-                    self.bus.publish("log", {"lines": [{"t": time.time(), "app": "demo", "pod": "-", "level": "warning",
-                                                        "text": f"log read failed: {type(exc).__name__}"}]}, keep=False)
+                    self.failed(exc)
             time.sleep(self.interval)
+
+    def failed(self, exc: Exception) -> None:
+        """Report a failed read. If the cluster was unreachable (its API endpoint can move when it restarts, and this
+        client may have been built before the demo started the cluster), read the kubeconfig again."""
+        text = f"log read failed: {type(exc).__name__}"
+        if unreachable(exc) and time.time() - self.reloaded_at >= RECONNECT_EVERY_S:
+            self.reloaded_at = time.time()
+            try:
+                self.kube.reload()
+                text += "; connection details read again from the kubeconfig"
+            except Exception:  # noqa: BLE001 - the next failed read tries again
+                pass
+        self.bus.publish("log", {"lines": [{"t": time.time(), "app": "demo", "pod": "-", "level": "warning",
+                                            "text": text}]}, keep=False)
 
     def tick(self) -> None:
         lines = []

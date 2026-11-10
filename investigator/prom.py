@@ -12,11 +12,23 @@ class PrometheusError(RuntimeError):
     pass
 
 
+RECONNECT_EVERY_S = 15     # at most one attempt to restore the connection per this many seconds
+
+
 class Prometheus:
-    def __init__(self, url: str):
+    def __init__(self, url: str, restore=None):
         self.url = url.rstrip("/")
         self.http = requests.Session()
         self.clock_offset = 0.0  # cluster clock - local clock, seconds
+        self.restore = restore   # re-establishes the connection (the port-forward), if this client made one
+        self._last_restore = 0.0
+
+    def _restored(self) -> bool:
+        """After the cluster restarts, the port-forward behind `url` is gone: start it again (rate-limited)."""
+        if self.restore is None or time.time() - self._last_restore < RECONNECT_EVERY_S:
+            return False
+        self._last_restore = time.time()
+        return self.restore()
 
     # -- connectivity -------------------------------------------------------
     def ready(self) -> bool:
@@ -40,7 +52,12 @@ class Prometheus:
         try:
             r = self.http.get(f"{self.url}/api/v1/{endpoint}", params=params, timeout=15)
         except requests.RequestException as exc:
-            raise PrometheusError(f"Prometheus unreachable at {self.url}: {exc}") from exc
+            if not self._restored():
+                raise PrometheusError(f"Prometheus unreachable at {self.url}: {exc}") from exc
+            try:
+                r = self.http.get(f"{self.url}/api/v1/{endpoint}", params=params, timeout=15)
+            except requests.RequestException as again:
+                raise PrometheusError(f"Prometheus unreachable at {self.url}: {again}") from again
         body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
         if r.status_code != 200 or body.get("status") != "success":
             raise PrometheusError(f"query failed ({r.status_code}): {body.get('error', r.text[:300])}")
@@ -69,9 +86,15 @@ class Prometheus:
 
 
 def connect(settings) -> Prometheus:
-    """Return a Prometheus client, starting `kubectl port-forward` if needed."""
+    """Return a Prometheus client, starting `kubectl port-forward` if needed. A client that started one restarts it
+    when Prometheus becomes unreachable (the forward dies when the cluster restarts)."""
     prom = Prometheus(settings.prometheus_url)
-    if not prom.ready() and settings.auto_port_forward:
+    procs: list = []
+
+    def port_forward() -> bool:
+        for p in procs:
+            if p.poll() is None:
+                p.terminate()
         port = urlparse(settings.prometheus_url).port or 9090
         kubectl = shutil.which("kubectl") or "kubectl"
         cmd = [kubectl]
@@ -80,11 +103,18 @@ def connect(settings) -> Prometheus:
         cmd += ["-n", settings.prometheus_namespace, "port-forward",
                 f"svc/{settings.prometheus_service}", f"{port}:9090"]
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        procs.append(proc)
         atexit.register(proc.terminate)
         for _ in range(40):
             if prom.ready():
-                break
+                return True
             time.sleep(0.5)
+        return False
+
+    if settings.auto_port_forward:
+        prom.restore = port_forward        # also when another process's forward is serving now: it can die too
+        if not prom.ready():
+            port_forward()
     if not prom.ready():
         raise PrometheusError(
             f"Prometheus not reachable at {settings.prometheus_url}. Is the monitoring stack deployed?"

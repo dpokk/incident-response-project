@@ -13,6 +13,7 @@ from pathlib import Path
 from kubernetes import client, config, watch
 from kubernetes.client.rest import ApiException
 from kubernetes.stream import stream
+from urllib3.exceptions import MaxRetryError, NewConnectionError
 
 
 def ts(dt) -> float | None:
@@ -63,9 +64,20 @@ _PROBE_SRC = (
 )
 
 
+def unreachable(exc: BaseException) -> bool:
+    """True when an API call failed because the cluster could not be reached (not because a request was refused)."""
+    return isinstance(exc, (MaxRetryError, NewConnectionError, ConnectionError)) or "Max retries exceeded" in str(exc)
+
+
 class Kube:
     def __init__(self, context: str = ""):
-        config.load_kube_config(context=context or None)
+        self.context = context
+        self.reload()
+
+    def reload(self) -> None:
+        """Read the kubeconfig again. When the cluster restarts (e.g. `minikube start`), its API endpoint can move to
+        a new port; a client built before that keeps calling the old one."""
+        config.load_kube_config(context=self.context or None)
         self.core = client.CoreV1Api()
         self.apps = client.AppsV1Api()
 

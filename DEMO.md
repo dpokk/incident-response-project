@@ -152,6 +152,26 @@ python -m demo            # opens http://127.0.0.1:8800
    (`scripts/restore-credentials.ps1`). For that incident there is no automatic fix: the console and Slack show the
    agent's manual steps.
 
+## Short blips, timing and reconnecting
+
+- **Short blips do not open incidents.** Error-log bursts and the 5xx ratio lag the system: one stall of a few
+  seconds stays in the 15 s rate window for several polls. On their own (the synthetic probe passing) they must hold
+  for `LAGGING_SIGNAL_SUSTAIN_S` (30 s). With the probe failing in the same poll, two polls are enough, so every
+  injected incident is detected as fast as before. Each error log line is counted in one poll only.
+- **Both agents get measured timing facts:** the incident window, and whether the symptoms are still present now
+  (from the detector's latest sample). Tool results say when each restart, change, event and rollout happened
+  relative to detection, and whether it is inside the incident window, so history is not read as the cause. The
+  console shows "Symptoms cleared before the investigation started" when that is the case.
+- **After a cluster restart** (its API endpoint can move), the monitor and the log reader read the kubeconfig
+  again, and the Prometheus client restarts its port-forward, each at most every 15 s. When the cluster answers
+  again, detection starts afresh after 90 s, so the restart of every container is not reported as an incident.
+- **If the Investigator's model stops answering** (NVIDIA timeouts), the same investigation, with every tool call so
+  far, continues with the Reviewer's model. The console and Slack show which model finished it.
+- Checked live on 2026-11-10: freezing both backend pods for 3 s (84 error lines, 5xx at 8.6%) opened no incident;
+  Database down was detected 6 s after the trigger and fixed automatically; a killed port-forward was restarted
+  with no gap in the traffic readings; `minikube stop` and `start` under the running demo (API port 65174 to 60147)
+  recovered without a restart of the demo and without a false incident.
+
 ## What is real
 
 Nothing in the page is simulated:
@@ -168,6 +188,7 @@ Nothing in the page is simulated:
 | `DEMO_REVIEWER_MODEL` | `nvidia/nemotron-3.5-super-vl-120b-a12b` | The Reviewer Agent's model; falls back to `DEMO_AGENT_MODEL`. Empty: use `DEMO_AGENT_MODEL` only |
 | `DEMO_REVIEWER_TIMEOUT_S` | `30` | Per-request timeout for the Reviewer's model, so a slow endpoint falls back quickly |
 | `INVESTIGATE_DELAY_S` | `20` | Symptom-collection time before investigating |
+| `LAGGING_SIGNAL_SUSTAIN_S` | `30` | How long error-log bursts or the 5xx ratio must hold on their own to open an incident |
 | `EXECUTION_POLICY_PATH` | `demo/execution_policy.json` | The same limits as the main project, with a 60 s observation window |
 | `DEMO_PORT` | `8800` | Web port |
 
@@ -182,4 +203,4 @@ Nothing in the page is simulated:
 | `demo/slack_ai.py` | The Investigation (rules + agent), the Reviewer's verdict, the Remediation note, the Remediation Agent's replies and the final status |
 | `demo/web/index.html` | The console |
 
-The `investigator/` package matches the main project except for two changes: the `rollback_release` action (planner rule, recheck, `set_image` actuator, policy entry, Slack labels), and the Slack layout (`slack_view.py`, `slack.py`: headed channel messages instead of one thread, shorter content).
+The `investigator/` package matches the main project except for three changes: the `rollback_release` action (planner rule, recheck, `set_image` actuator, policy entry, Slack labels), the Slack layout (`slack_view.py`, `slack.py`: headed channel messages instead of one thread, shorter content), and detection and reconnecting (`detector.py`: short blips; `kube.py`, `prom.py`, `providers.py`: reconnect after a cluster restart).

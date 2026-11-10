@@ -6,7 +6,9 @@ Rules enforced here, in code (never left to the prompt):
   * active probes (check_connectivity, probe_request) have a small separate budget;
   * secrets are never returned (sensitive configuration values are masked);
   * log text is returned as quoted, untrusted data;
-  * every result is stored as numbered evidence (E1, E2, ...) so the report can cite it and citations can be checked.
+  * every result is stored as numbered evidence (E1, E2, ...) so the report can cite it and citations can be checked;
+  * recorded moments carry when they happened relative to detection and whether they are inside the incident
+    window, so old restarts and changes are not mistaken for the cause.
 """
 import json
 import re
@@ -28,6 +30,11 @@ class ToolRejected(ValueError):
     pass
 
 
+def _span(seconds: float) -> str:
+    s = abs(seconds)
+    return f"{s:.0f} s" if s < 90 else f"{s / 60:.0f} min" if s < 5400 else f"{s / 3600:.1f} h"
+
+
 def _fn(name: str, description: str, props: dict, required: list[str]) -> dict:
     props = {**props, "purpose": {"type": "string", "description": "One short sentence: why you are calling this."}}
     return {"type": "function", "function": {"name": name, "description": description, "parameters": {
@@ -38,8 +45,10 @@ COMPONENT = {"type": "string", "description": "A component name returned by list
 
 
 class ToolBox:
-    def __init__(self, caps, settings, rule_report: dict | None, window_start: float, clock=time.time):
+    def __init__(self, caps, settings, rule_report: dict | None, window_start: float, clock=time.time,
+                 detected_at: float | None = None):
         self.caps, self.s, self.rule, self.start, self.clock = caps, settings, rule_report, window_start, clock
+        self.detected_at = detected_at if detected_at is not None else clock()
         self.evidence: dict[str, dict] = {}              # E-id -> {"id", "tool", "args", "summary"}
         self.rule_facts = {e["id"]: e for e in (rule_report or {}).get("evidence", [])}
         self.components = list(caps.list_components() or [])
@@ -127,6 +136,13 @@ class ToolBox:
     def _tr(self) -> TimeRange:
         return TimeRange(self.start, self.clock())
 
+    def _when(self, t) -> dict:
+        """When a recorded moment happened relative to detection, and whether it is inside the incident window."""
+        if t is None:
+            return {"when": "time unknown", "in_incident_window": None}
+        d = t - self.detected_at
+        return {"when": f"{_span(d)} {'before' if d < 0 else 'after'} detection", "in_incident_window": t >= self.start}
+
     def _component(self, c) -> str:
         if not isinstance(c, str) or c not in self.components:
             raise ToolRejected(f"unknown component {c!r}; known: {', '.join(self.components)}")
@@ -167,18 +183,25 @@ class ToolBox:
                   "processes": [{"name": p.name, "state": p.state, "waiting": p.waiting_reason,
                                  "last_termination": ({"reason": p.last_termination.reason,
                                                        "exit_code": p.last_termination.exit_code,
-                                                       "cause": p.last_termination.cause}
+                                                       "cause": p.last_termination.cause,
+                                                       **self._when(p.last_termination.finished_at)}
                                                       if p.last_termination else None)} for p in i.processes]}
                  for i in rs.instances]
         terms = [{"instance": h.instance, "reason": h.termination.reason, "cause": h.termination.cause,
-                  "at": h.termination.finished_at} for h in rs.history[-6:]]
+                  "at": h.termination.finished_at, **self._when(h.termination.finished_at)} for h in rs.history[-6:]]
+        ended = [t for t in [h.termination.finished_at for h in rs.history]
+                 + [p.last_termination.finished_at for i in rs.instances for p in i.processes if p.last_termination]
+                 if t is not None]
+        last = self._when(max(ended)) if ended else None
         res = {"kind": rs.kind, "desired": rs.desired, "ready": rs.ready, "limits": rs.limits, "instances": insts,
                "recent_terminations": terms}
         restarts = sum(i["restarts"] for i in insts)
         waiting = sorted({p["waiting"] for i in insts for p in i["processes"] if p["waiting"]})
-        return res, (f"{c}: {rs.ready}/{rs.desired} ready, {restarts} restart(s)"
+        return res, (f"{c}: {rs.ready}/{rs.desired} ready, {restarts} restart(s) in total"
                      + (f", waiting: {', '.join(waiting)}" if waiting else "")
-                     + (f", {len(terms)} recent termination(s)" if terms else ""))
+                     + (f", {len(terms)} recent termination(s)" if terms else "")
+                     + (f"; last process end {last['when']}" + ("" if last["in_incident_window"]
+                                                               else " (before the incident window)") if last else ""))
 
     def _t_get_events(self, component=None):
         if component is not None:
@@ -186,7 +209,7 @@ class ToolBox:
         evs = [e for e in self.caps.get_events(self._tr()) or [] if component is None or e.component == component]
         evs = sorted(evs, key=lambda e: e.last or e.first or 0)[-15:]
         res = {"events": [{"component": e.component, "type": e.type, "reason": e.reason, "message": e.message[:200],
-                           "count": e.count, "category": e.category} for e in evs]}
+                           "count": e.count, "category": e.category, **self._when(e.last or e.first)} for e in evs]}
         warn = sum(1 for e in evs if e.type == "Warning")
         return res, f"{len(evs)} event(s){' for ' + component if component else ''}, {warn} warning(s)"
 
@@ -228,9 +251,11 @@ class ToolBox:
         ch = self.caps.get_configuration_history(c, TimeRange(self.start - 1800, self.clock())) or []
         res = {"changes": [{"source": x.source, "item": x.item,
                             "before": "***" if x.sensitive else x.before, "after": "***" if x.sensitive else x.after,
-                            "t": x.t or x.t_latest} for x in ch[-10:]]}
-        recent = [f"{x['item']} ({x['source']}): {x['before']} → {x['after']}" for x in res["changes"][-3:]]
-        return res, f"{c}: {len(ch)} recorded configuration change(s)" + (f"; latest: {'; '.join(recent)}" if recent else "")
+                            "t": x.t or x.t_latest, **self._when(x.t or x.t_latest)} for x in ch[-10:]]}
+        inside = sum(1 for x in ch if (x.t or x.t_latest or 0) >= self.start)
+        recent = [f"{x['item']} ({x['source']}): {x['before']} → {x['after']}, {x['when']}" for x in res["changes"][-3:]]
+        return res, (f"{c}: {len(ch)} recorded configuration change(s), {inside} inside the incident window"
+                     + (f"; latest: {'; '.join(recent)}" if recent else ""))
 
     def _t_get_dependencies(self, component):
         c = self._component(component)
@@ -252,8 +277,9 @@ class ToolBox:
         h, p = self._host(host, port)
         hist = self.caps.get_availability_history(h, p, TimeRange(self.start - 600, self.clock())) or []
         res = {"history": [{"name": a.name, "kind": a.kind, "ready": a.ready, "total": a.total,
-                            "from": a.t_earliest, "by": a.t_latest} for a in hist[-12:]]}
-        return res, f"{h}: {len(hist)} recorded availability change(s)"
+                            "from": a.t_earliest, "by": a.t_latest, **self._when(a.t_latest)} for a in hist[-12:]]}
+        inside = sum(1 for a in hist if a.t_latest >= self.start)
+        return res, f"{h}: {len(hist)} recorded availability change(s), {inside} inside the incident window"
 
     def _t_check_connectivity(self, from_component, host, port):
         c = self._component(from_component)
@@ -275,9 +301,10 @@ class ToolBox:
 
     def _t_get_deployment_history(self):
         ch = self.caps.get_deployment_history(TimeRange(self.start - 900, self.clock())) or []
-        res = {"changes": [{"component": x.component, "kind": x.kind, "at": x.at, "revision": x.revision}
-                           for x in ch[-10:]]}
-        return res, f"{len(ch)} rollout(s)/definition change(s)"
+        res = {"changes": [{"component": x.component, "kind": x.kind, "at": x.at, "revision": x.revision,
+                            **self._when(x.at)} for x in ch[-10:]]}
+        inside = sum(1 for x in ch if (x.at or 0) >= self.start)
+        return res, f"{len(ch)} rollout(s)/definition change(s), {inside} inside the incident window"
 
     def _t_get_metrics(self, metric, component=None):
         if metric not in ("request_rate", "error_ratio", "memory_working_set"):

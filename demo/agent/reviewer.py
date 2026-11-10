@@ -9,7 +9,7 @@ never raises confidence and never approves anything. An objection counts only if
 otherwise the verdict is "unsupported" and changes nothing. If the model fails, the result says so and the flow is
 the same as without a review.
 """
-from .investigator import InvestigatorAgent
+from .investigator import InvestigatorAgent, timing
 from .llm import ChatModel
 from .tools import ToolBox
 
@@ -31,6 +31,10 @@ BEFORE anything is changed. Be a skeptical senior SRE:
   fix or its value is doubtful; reject = the evidence points to a different cause, or the fix would not help or would
   cause harm.
 - Every objection must cite evidence ids. An objection without valid evidence is ignored.
+- Check timing: every change, restart or crash the conclusion relies on must fall inside the incident window (see
+  the measured timing facts and the "in_incident_window" field in tool results), unless the evidence links it to
+  these symptoms. Blaming something from before the window is a reason to challenge.
+- Objections state what is wrong. Points that support the conclusion belong in the summary, never in objections.
 - Do not propose a different fix. Use a few targeted tool calls, then call submit_review exactly once.
 - Write short, plain sentences for an engineer. Do not use em dashes."""
 
@@ -66,7 +70,7 @@ class ReviewerAgent(InvestigatorAgent):
         evidence = "\n".join(f"- {eid}: {tb.describe(eid)[:200]}" for eid in list(tb.evidence)[:20])
         who = ("It LED this investigation (the rule engine was not confident)." if self.led_by == "agent" else
                "It VERIFIED the deterministic rule engine's diagnosis.")
-        brief = (f"Incident {incident['id']} was detected from these symptoms:\n{signals}\n\n"
+        brief = (f"Incident {incident['id']} was detected from these symptoms:\n{signals}\n\n{timing(incident)}"
                  f"Components: {', '.join(tb.components)}.\nRule engine: {self.rule_summary or 'none'}\n\n"
                  f"The Investigator Agent's report. {who}\n"
                  f"- Category: {r.get('category')}; root-cause component: {r.get('root_cause_component')}; "

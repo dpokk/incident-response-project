@@ -108,6 +108,30 @@ def test_agent_loop_streams_real_steps_and_returns_a_validated_report():
     assert events.count("agent_tool_call") == 2 and events.count("agent_tool_result") == 2
 
 
+class StopsAnswering(ScriptedModel):
+    """Makes the two tool calls, then times out before the report."""
+    name = model = "primary"
+
+    def chat(self, messages, tools, tool_choice="auto", max_tokens=1500):
+        if self.turn == 2:
+            raise LLMError("model request failed twice: ReadTimeout")
+        return super().chat(messages, tools, tool_choice, max_tokens)
+
+
+class Fallback(ScriptedModel):
+    name = model = "fallback"
+
+
+def test_a_model_that_stops_answering_hands_the_same_investigation_to_the_fallback():
+    tb, _ = toolbox(fc.world_db_down())
+    events = []
+    fb = Fallback()
+    fb.turn = 2                                                      # its next turn is the report
+    out = InvestigatorAgent(StopsAnswering(), tb, lambda t, d: events.append((t, d)), fallback=fb).run({"id": "INC-T"})
+    assert out["status"] == "ok" and out["model"] == "fallback" and out["tool_calls"] == 2   # the work so far is kept
+    assert any(t == "agent_note" and "continuing with fallback" in d["text"] for t, d in events)
+
+
 def test_agent_unavailable_is_reported_not_hidden():
     tb, _ = toolbox(fc.world_db_down())
     events = []
