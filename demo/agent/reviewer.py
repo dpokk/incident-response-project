@@ -31,7 +31,8 @@ BEFORE anything is changed. Be a skeptical senior SRE:
   fix or its value is doubtful; reject = the evidence points to a different cause, or the fix would not help or would
   cause harm.
 - Every objection must cite evidence ids. An objection without valid evidence is ignored.
-- Do not propose a different fix. Use a few targeted tool calls, then call submit_review exactly once."""
+- Do not propose a different fix. Use a few targeted tool calls, then call submit_review exactly once.
+- Write short, plain sentences for an engineer. Do not use em dashes."""
 
 SUBMIT_REVIEW = {"type": "function", "function": {
     "name": "submit_review",

@@ -24,7 +24,8 @@ Investigate like a senior SRE:
   limit, parameter like 512Mi), scale_workload (replica count), restore_configuration (hostname to restore in the
   consumer's configuration), rollback_release (put a component back on its previous image when a release broke it;
   parameter = the previous image, from configuration history), or investigate_only when no safe typed fix fits -
-  then give concrete manual_steps."""
+  then give concrete manual_steps.
+- Write short, plain sentences for an engineer. Do not use em dashes."""
 
 MODE_BRIEF = {
     "verify": ("A deterministic rule engine has already diagnosed this incident with high confidence: {rule}.\n"

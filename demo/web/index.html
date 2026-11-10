@@ -8,154 +8,251 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
 <style>
-/* Layout: an operations console. Left column = the live system (status, lab); right = the incident story.
-   Colour encodes state only: green healthy, amber degraded/working, red failing, blue = the agent (AI). */
+/* An operations console. Left column: the live system and the lab. Right column: who is working, live logs and the
+   incident as a timeline of stages. Colour encodes state only: green healthy or done, amber working or waiting,
+   red failing, blue the LLM agents. */
 :root {
-  --bg: #f3f5f7; --panel: #ffffff; --fg: #17202a; --muted: #5d6b79; --rule: #dde3e9; --soft: #eef2f5;
-  --ok: #1f7a46; --ok-bg: #e2f3e8; --warn: #a15c00; --warn-bg: #fbf0dc; --bad: #b4261f; --bad-bg: #fbe5e3;
-  --ai: #2955c4; --ai-bg: #e7edfb; --accent: #17202a;
+  --bg: #f4f6f8; --panel: #ffffff; --fg: #18212b; --muted: #5f6c79; --faint: #8a96a2; --rule: #e1e6eb; --soft: #f1f4f7;
+  --ok: #1e7a45; --ok-bg: #e3f3e9; --warn: #9a5b00; --warn-bg: #fcf1dd; --bad: #b3261e; --bad-bg: #fce7e5;
+  --ai: #2c57c5; --ai-bg: #e9eefc; --accent: #18212b;
   --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif; --mono: "JetBrains Mono", Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) { :root {
-  --bg: #0f1418; --panel: #161d23; --fg: #e4eaef; --muted: #91a0ad; --rule: #26313a; --soft: #1c252c;
-  --ok: #5fd08e; --ok-bg: #16301f; --warn: #f0b356; --warn-bg: #33270f; --bad: #ff7b72; --bad-bg: #3a1b19;
-  --ai: #8eaaf5; --ai-bg: #1b2541; --accent: #e4eaef; color-scheme: dark } }
+  --bg: #0e1317; --panel: #151c22; --fg: #e3e9ee; --muted: #93a1ad; --faint: #6c7a86; --rule: #252f38; --soft: #1a2229;
+  --ok: #5fcf8c; --ok-bg: #15301f; --warn: #eeb256; --warn-bg: #31260f; --bad: #ff7d74; --bad-bg: #3a1c1a;
+  --ai: #90abf5; --ai-bg: #1b2440; --accent: #e3e9ee; color-scheme: dark } }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 var(--sans); }
-header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; padding: 14px 20px;
-  background: var(--panel); border-bottom: 1px solid var(--rule); position: sticky; top: 0; z-index: 5; }
-header h1 { font-size: 18px; margin: 0; font-weight: 700; letter-spacing: -.01em; }
-.sub { color: var(--muted); font-size: 12.5px; }
-.spacer { flex: 1; }
-button { font: 600 13px var(--sans); border-radius: 6px; border: 1px solid var(--rule); background: var(--panel);
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.55 var(--sans); }
+code, .mono { font: 12.5px var(--mono); }
+a { color: var(--ai); text-decoration: none; } a:hover { text-decoration: underline; }
+.muted { color: var(--muted); }
+.small { font-size: 12.5px; }
+
+/* header */
+header { position: sticky; top: 0; z-index: 5; background: var(--panel); border-bottom: 1px solid var(--rule);
+  padding: 20px 24px 18px; display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: center; }
+.brand { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
+.brand h1 { font-size: 20px; margin: 0; font-weight: 700; letter-spacing: -.01em; }
+.controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.meta { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 36px; }
+.mi { display: grid; gap: 2px; position: relative; }
+.mi .k { font-size: 11.5px; color: var(--faint); }
+.mi .v { font-size: 14px; font-weight: 600; color: var(--fg); display: flex; align-items: center; gap: 6px; }
+.mi .v.ok { color: var(--ok); } .mi .v.warn { color: var(--warn); }
+.mi.agents { margin-left: auto; grid-template-columns: auto auto; align-items: center; gap: 2px 14px;
+  padding: 7px 8px 7px 14px; border: 1px solid color-mix(in srgb, var(--ai) 45%, transparent); border-radius: 10px;
+  background: var(--ai-bg); }
+.mi.agents .k { color: var(--ai); font-weight: 600; grid-column: 1; }
+.mi.agents .v { color: var(--ai); grid-column: 1; }
+.mi.agents .view { grid-column: 2; grid-row: 1 / 3; color: var(--ai); border-color: color-mix(in srgb, var(--ai) 55%, transparent);
+  background: var(--panel); padding: 5px 14px; font-size: 12.5px; }
+.mi.agents .view:hover { border-color: var(--ai); }
+.pop { position: absolute; top: calc(100% + 10px); right: 0; z-index: 10; width: min(380px, calc(100vw - 32px));
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 12px; padding: 6px 14px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .25); }
+.pop .agent { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 10px 0; border-bottom: 1px solid var(--rule); }
+.pop .agent:last-child { border-bottom: 0; }
+.pop .name { font-weight: 600; }
+.pop .model { grid-column: 1 / -1; font: 12.5px var(--mono); color: var(--ai); overflow-wrap: anywhere; }
+.pop .note { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+@media (max-width: 760px) { header { grid-template-columns: 1fr; padding: 16px; } .controls { justify-content: flex-start; } .meta { gap: 10px 24px; } }
+
+button { font: 600 13px var(--sans); border-radius: 7px; border: 1px solid var(--rule); background: var(--panel);
   color: var(--fg); padding: 7px 14px; cursor: pointer; }
 button:hover:not(:disabled) { border-color: var(--muted); }
 button:disabled { opacity: .45; cursor: not-allowed; }
 button.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
-button.approve { background: var(--ok); color: #fff; border-color: var(--ok); }
-button.reject { color: var(--bad); border-color: var(--bad); }
-button:focus-visible, input:focus-visible { outline: 2px solid var(--ai); outline-offset: 2px; }
-.pill { display: inline-flex; align-items: center; gap: 6px; font: 600 12px var(--sans); padding: 3px 10px;
-  border-radius: 999px; background: var(--soft); color: var(--muted); white-space: nowrap; }
-.pill.ok { background: var(--ok-bg); color: var(--ok); } .pill.warn { background: var(--warn-bg); color: var(--warn); }
-.pill.bad { background: var(--bad-bg); color: var(--bad); } .pill.ai { background: var(--ai-bg); color: var(--ai); }
-.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
-.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
-.dot.pulse { animation: pulse 1.2s ease-in-out infinite; }
-@keyframes pulse { 50% { opacity: .35; } }
-@media (prefers-reduced-motion: reduce) { .dot.pulse { animation: none; } }
-main { display: grid; grid-template-columns: minmax(330px, 420px) 1fr; gap: 16px; padding: 16px 20px 40px; }
-@media (max-width: 980px) { main { grid-template-columns: 1fr; } }
-.col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-.panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; min-width: 0; }
-.panel > h2 { margin: 0; padding: 11px 16px; font-size: 11.5px; letter-spacing: .09em; text-transform: uppercase;
-  color: var(--muted); border-bottom: 1px solid var(--rule); display: flex; align-items: center; gap: 10px; }
-.panel > h2 .right { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; }
-.body { padding: 12px 16px; }
-.health { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--rule); }
-.health .big { font-size: 20px; font-weight: 700; }
-.comp { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; align-items: center; padding: 9px 0;
-  border-bottom: 1px dashed var(--rule); }
-.comp:last-child { border-bottom: 0; }
-.comp .name { font-weight: 600; }
-.comp .meta { color: var(--muted); font-size: 12.5px; text-align: right; }
-.pods { grid-column: 2 / 4; display: flex; flex-wrap: wrap; gap: 4px 12px; font: 12px var(--mono); color: var(--muted); }
-.pods span.bad { color: var(--bad); } .pods span.warn { color: var(--warn); }
-.kv { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-size: 13px; margin-top: 10px; }
-.kv .v { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
-.lab { display: flex; flex-direction: column; gap: 10px; }
-.card { border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; display: grid; gap: 6px; }
-.card .t { font-weight: 600; } .card .d { color: var(--muted); font-size: 12.5px; }
-.card .row { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
-.card code { font: 11.5px var(--mono); color: var(--muted); }
-.logs { height: 290px; overflow: auto; font: 12px/1.55 var(--mono); padding: 8px 12px; background: var(--soft);
-  border-radius: 0 0 10px 10px; }
-.logline { display: grid; grid-template-columns: 64px 74px 1fr; gap: 8px; white-space: pre-wrap; word-break: break-word; }
-.logline .ts { color: var(--muted); } .logline.error { color: var(--bad); } .logline.warning { color: var(--warn); }
-.logline .app { font-weight: 500; }
-.filters { display: flex; gap: 6px; flex-wrap: wrap; }
-.filters label { font: 500 11.5px var(--sans); color: var(--muted); display: flex; gap: 4px; align-items: center; }
-.empty { color: var(--muted); padding: 18px 16px; }
-.incident-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 14px 16px;
-  border-bottom: 1px solid var(--rule); }
-.incident-head .id { font: 600 15px var(--mono); }
-.stage { padding: 12px 16px; border-bottom: 1px solid var(--rule); }
-.stage:last-child { border-bottom: 0; }
-.stage h3 { margin: 0 0 8px; font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
-.stage h3 .n { font: 600 11px var(--mono); color: var(--muted); }
-.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
-.steps li { display: grid; grid-template-columns: 20px 1fr; gap: 6px; align-items: start; }
-.steps li .ic { text-align: center; }
-.steps .why { color: var(--muted); font-size: 12px; }
-.steps code, .mono { font: 12px var(--mono); }
-.agent { border-left: 3px solid var(--ai); background: var(--ai-bg); border-radius: 0 8px 8px 0; padding: 10px 12px; }
-.agent .note { white-space: pre-wrap; font-size: 12.5px; color: var(--fg); background: var(--panel);
-  border-radius: 6px; padding: 8px 10px; margin: 4px 0 2px; max-height: 160px; overflow: auto; }
-.report { display: grid; gap: 10px; }
-.report .rc { font-size: 15px; font-weight: 600; }
-.ev { font: 11.5px var(--mono); color: var(--muted); }
-.fix { border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; background: var(--soft); }
-.approval { border: 2px solid var(--warn); border-radius: 10px; padding: 12px 14px; display: grid; gap: 10px; }
-.approval input { font: 13px var(--mono); padding: 6px 8px; border: 1px solid var(--rule); border-radius: 6px;
-  background: var(--panel); color: var(--fg); width: 160px; }
-.approval .btns { display: flex; gap: 10px; flex-wrap: wrap; }
-.banner { margin: 0; padding: 14px 16px; font-size: 17px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
-.banner.ok { background: var(--ok-bg); color: var(--ok); } .banner.bad { background: var(--bad-bg); color: var(--bad); }
-.banner.warn { background: var(--warn-bg); color: var(--warn); }
-.feed { font-size: 12.5px; display: grid; gap: 3px; max-height: 170px; overflow: auto; }
-.feed .ts { color: var(--muted); font: 11.5px var(--mono); margin-right: 6px; }
-.ops { font: 11.5px/1.5 var(--mono); max-height: 170px; overflow: auto; color: var(--muted); }
-.ops .error { color: var(--bad); } .ops .warning { color: var(--warn); }
-.muted { color: var(--muted); }
-details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
-.err { color: var(--bad); font-size: 12.5px; }
-.route { margin-top: 10px; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--rule); }
-.route.lead { border-color: var(--ai); background: var(--ai-bg); }
-.route.verify { background: var(--soft); }
-.fix ol, .approval ol { margin: 6px 0 0; padding-left: 20px; }
-/* hand-off strip: who is on the incident right now */
-.actors { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; padding: 12px 16px; }
-@media (max-width: 1250px) { .actors { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 640px) { .actors { grid-template-columns: 1fr; } }
-.actor { border: 1px solid var(--rule); border-radius: 8px; padding: 9px 10px; display: grid; gap: 4px; align-content: start;
-  transition: border-color .2s, background .2s; }
-.actor .who { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 6px; }
-.actor .kind { font: 500 10.5px var(--sans); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
-.actor .what { font-size: 12px; color: var(--muted); min-height: 2.6em; }
-.actor .state { font: 600 11px var(--sans); }
-.actor.working { border-color: var(--warn); background: var(--warn-bg); } .actor.working .state { color: var(--warn); }
-.actor.working.ai { border-color: var(--ai); background: var(--ai-bg); } .actor.working.ai .state { color: var(--ai); }
-.actor.waiting { border-color: var(--bad); } .actor.waiting .state { color: var(--bad); }
-.actor.done .state, .actor.offline .state { color: var(--ok); }
-.actor.offline { opacity: .8; } .actor.idle { opacity: .6; }
-.handoffs { border-top: 1px solid var(--rule); padding: 8px 16px 12px; font-size: 12.5px; display: grid; gap: 2px;
-  max-height: 150px; overflow: auto; }
-.handoffs .ts { font: 11.5px var(--mono); color: var(--muted); margin-right: 6px; }
-.switch { display: inline-flex; align-items: center; gap: 8px; font: 600 12.5px var(--sans); cursor: pointer;
-  border: 1px solid var(--rule); border-radius: 999px; padding: 4px 12px 4px 6px; background: var(--panel); color: var(--fg); }
+button.small { padding: 5px 12px; font-size: 12.5px; }
+button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid var(--ai); outline-offset: 2px; }
+.switch { display: inline-flex; align-items: center; gap: 8px; font: 600 12.5px var(--sans);
+  border-radius: 999px; padding: 5px 12px 5px 6px; }
 .switch .knob { width: 30px; height: 17px; border-radius: 999px; background: var(--rule); position: relative; transition: background .2s; }
 .switch .knob::after { content: ""; position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%;
   background: #fff; transition: left .2s; }
 .switch.on .knob { background: var(--ok); } .switch.on .knob::after { left: 15px; }
-.autobox { border: 2px solid var(--ok); border-radius: 10px; padding: 12px 14px; display: grid; gap: 10px; }
-.autobox.failed { border-color: var(--bad); }
-.attempt { border: 1px solid var(--rule); border-radius: 8px; padding: 8px 10px; }
-.attempt .h { font-weight: 600; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.pill { display: inline-flex; align-items: center; gap: 6px; font: 600 12px var(--sans); padding: 2px 10px;
+  border-radius: 999px; background: var(--soft); color: var(--muted); white-space: nowrap; }
+.pill.ok { background: var(--ok-bg); color: var(--ok); } .pill.warn { background: var(--warn-bg); color: var(--warn); }
+.pill.bad { background: var(--bad-bg); color: var(--bad); } .pill.ai { background: var(--ai-bg); color: var(--ai); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; display: inline-block; }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); } .dot.ai { background: var(--ai); }
+.pulse { animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
+
+/* layout */
+main { display: grid; grid-template-columns: minmax(320px, 400px) 1fr; gap: 16px; padding: 16px 20px 40px; }
+@media (max-width: 980px) { main { grid-template-columns: 1fr; padding: 12px 16px 32px; } }
+.col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 12px; min-width: 0; }
+.panel > h2 { margin: 0; padding: 12px 16px; font-size: 13.5px; font-weight: 600; border-bottom: 1px solid var(--rule);
+  display: flex; align-items: center; gap: 10px; }
+.panel > h2 .right { margin-left: auto; font-weight: 400; font-size: 12.5px; color: var(--muted); }
+.body { padding: 12px 16px; }
+.empty { color: var(--muted); padding: 20px 16px; }
+
+/* status marks: one small glyph per item, never emoji */
+.mk { width: 18px; height: 18px; border-radius: 50%; display: inline-grid; place-items: center; flex: none;
+  font: 700 11px/1 var(--sans); background: var(--soft); color: var(--muted); margin-top: 1px; }
+.mk.ok { background: var(--ok-bg); color: var(--ok); } .mk.bad { background: var(--bad-bg); color: var(--bad); }
+.mk.warn { background: var(--warn-bg); color: var(--warn); } .mk.ai { background: var(--ai-bg); color: var(--ai); }
+.mk.wait::after { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); animation: pulse 1.2s infinite; }
+.mk.info::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
+
+/* system status */
+.health { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--rule); }
+.health .big { font-size: 19px; font-weight: 700; line-height: 1.2; }
+.comp { padding: 10px 0; border-bottom: 1px solid var(--rule); display: grid; gap: 4px; }
+.comp:last-child { border-bottom: 0; }
+.comp .top { display: flex; align-items: center; gap: 8px; }
+.comp .name { font-weight: 600; }
+.comp .top .right { margin-left: auto; color: var(--muted); font-size: 12.5px; }
+.pod { font: 12px var(--mono); color: var(--muted); display: flex; flex-wrap: wrap; gap: 2px 14px; padding-left: 16px; }
+.pod.bad { color: var(--bad); } .pod.warn { color: var(--warn); }
+.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+.tile { background: var(--soft); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+.tile .k { font-size: 12px; color: var(--muted); }
+.tile .v { font: 500 14px var(--mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.tile .v.bad { color: var(--bad); }
+
+/* incident lab */
+.lab { display: grid; }
+.labrow { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 10px 0; border-bottom: 1px solid var(--rule); align-items: start; }
+.labrow:last-child { border-bottom: 0; }
+.labrow .t { font-weight: 600; }
+.labrow .d { grid-column: 1 / -1; color: var(--muted); font-size: 12.5px; display: -webkit-box; -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical; overflow: hidden; }
+
+/* feeds */
+.feed { display: grid; gap: 4px; max-height: 180px; overflow: auto; font-size: 12.5px; }
+.feed .row { display: grid; grid-template-columns: 62px 10px 1fr; gap: 8px; align-items: center; }
+.ts { font: 11.5px var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
+.ops { font: 11.5px/1.6 var(--mono); max-height: 180px; overflow: auto; color: var(--muted); }
+.ops .error { color: var(--bad); } .ops .warning { color: var(--warn); }
+
+/* agents strip */
+.actors { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; padding: 12px 16px; }
+@media (max-width: 1300px) { .actors { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .actors { grid-template-columns: 1fr 1fr; } }
+.actor { border: 1px solid var(--rule); border-radius: 10px; padding: 10px; display: grid; gap: 4px; align-content: start;
+  transition: border-color .2s, background .2s; }
+.actor .who { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.actor .kind { font-size: 11.5px; color: var(--faint); }
+.actor .state { font: 600 11.5px var(--sans); color: var(--muted); }
+.actor .what { font-size: 12px; color: var(--muted); }
+.actor.working { border-color: var(--warn); background: var(--warn-bg); } .actor.working .state { color: var(--warn); }
+.actor.working.ai { border-color: var(--ai); background: var(--ai-bg); } .actor.working.ai .state { color: var(--ai); }
+.actor.waiting { border-color: var(--bad); } .actor.waiting .state { color: var(--bad); }
+.actor.done .state, .actor.offline .state { color: var(--ok); }
+.actor.idle { opacity: .6; }
+.handoffs { border-top: 1px solid var(--rule); padding: 10px 16px 12px; }
+.handoffs .list { display: grid; gap: 3px; font-size: 12.5px; max-height: 160px; overflow: auto; margin-top: 8px; }
+.handoffs .list div { display: grid; grid-template-columns: 62px 140px 1fr; gap: 8px; }
+
+/* logs */
+.filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.filters label { font: 500 12px var(--sans); color: var(--muted); display: inline-flex; gap: 5px; align-items: center;
+  padding: 2px 8px; border: 1px solid var(--rule); border-radius: 999px; cursor: pointer; }
+.filters input { margin: 0; }
+.logs { height: 280px; overflow: auto; font: 12px/1.6 var(--mono); padding: 8px 12px; background: var(--soft);
+  border-radius: 0 0 12px 12px; }
+.logline { display: grid; grid-template-columns: 62px 70px 1fr; gap: 8px; white-space: pre-wrap; word-break: break-word; }
+.logline.error { color: var(--bad); } .logline.warning { color: var(--warn); }
+.logline .app { font-weight: 500; }
+
+/* incident */
+.inc-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 14px 16px; border-bottom: 1px solid var(--rule); }
+.inc-head .id { font: 600 15px var(--mono); }
+.inc-head .right { margin-left: auto; color: var(--muted); font-size: 12.5px; }
+.outcome { margin: 14px 16px 0; padding: 12px 14px; border-radius: 10px; border: 1px solid; display: grid; gap: 2px; }
+.outcome .t { font-size: 16px; font-weight: 700; }
+.outcome .s { font-size: 13px; color: var(--fg); opacity: .85; }
+.outcome.ok { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
+.outcome.bad { background: var(--bad-bg); border-color: var(--bad); color: var(--bad); }
+.outcome.warn { background: var(--warn-bg); border-color: var(--warn); color: var(--warn); }
+
+.timeline { padding: 16px 16px 4px; }
+.stage { display: grid; grid-template-columns: 26px 1fr; gap: 14px; position: relative; padding-bottom: 20px; }
+.stage::before { content: ""; position: absolute; left: 12px; top: 30px; bottom: 4px; width: 2px; background: var(--rule); }
+.stage:last-child::before { display: none; }
+.stage .num { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font: 600 12px var(--mono);
+  background: var(--soft); color: var(--muted); border: 1px solid var(--rule); }
+.stage.done .num { background: var(--ok-bg); color: var(--ok); border-color: transparent; }
+.stage.working .num { background: var(--warn-bg); color: var(--warn); border-color: var(--warn); }
+.stage.ai.working .num { background: var(--ai-bg); color: var(--ai); border-color: var(--ai); }
+.stage.waiting .num { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+.stage.fail .num { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
+.stage .content { min-width: 0; display: grid; gap: 10px; align-content: start; }
+.shead { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-height: 26px; }
+.shead h3 { margin: 0; font-size: 14.5px; font-weight: 600; }
+.shead .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.lead { font-size: 15px; font-weight: 600; line-height: 1.45; margin: 0; }
+p { margin: 0; }
+
+.facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
+.fact { background: var(--soft); border-radius: 8px; padding: 7px 10px; min-width: 0; }
+.fact .k { font-size: 11.5px; color: var(--muted); }
+.fact .v { font-weight: 500; overflow-wrap: anywhere; }
+.metaline { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12px; color: var(--faint); }
+
+.callout { border: 1px solid var(--rule); border-left: 3px solid var(--faint); border-radius: 8px; padding: 9px 12px;
+  background: var(--soft); display: grid; gap: 2px; }
+.callout .t { font-weight: 600; }
+.callout .s { font-size: 13px; color: var(--muted); }
+.callout.ok { border-left-color: var(--ok); } .callout.warn { border-left-color: var(--warn); }
+.callout.bad { border-left-color: var(--bad); } .callout.ai { border-left-color: var(--ai); background: var(--ai-bg); }
+.callout.ok .t { color: var(--ok); } .callout.warn .t { color: var(--warn); } .callout.bad .t { color: var(--bad); }
+
+.list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.list li { display: grid; grid-template-columns: 18px 1fr; gap: 10px; align-items: start; }
+.list .sub { color: var(--muted); font-size: 12.5px; }
+.list .ev { font: 11.5px/1.5 var(--mono); color: var(--faint); margin-top: 2px; }
+.list .err { color: var(--bad); }
+.calls li .tool { font: 500 12.5px var(--mono); }
+.calls li .args { font: 12px var(--mono); color: var(--faint); margin-left: 6px; overflow-wrap: anywhere; }
+.ids { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.ids .badge { cursor: help; margin: 0; }
+.signal { display: grid; grid-template-columns: 18px 1fr; gap: 10px; align-items: start; }
+.signal::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--bad); margin: 7px 0 0 5px; }
+.badge { font: 600 11px var(--mono); color: var(--muted); background: var(--soft); border: 1px solid var(--rule);
+  border-radius: 5px; padding: 0 5px; margin-right: 6px; }
+.thought { font-size: 13px; color: var(--muted); border-left: 2px solid var(--ai); padding: 2px 0 2px 10px;
+  white-space: pre-wrap; max-height: 140px; overflow: auto; }
+
+.card { border: 1px solid var(--rule); border-radius: 10px; padding: 12px 14px; display: grid; gap: 8px; }
+.card .label { font-size: 11.5px; color: var(--muted); font-weight: 600; letter-spacing: .02em; }
+.card.fix { background: var(--soft); }
+ol.steps { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+
+details { border-top: 1px solid var(--rule); padding-top: 8px; }
+details > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; font-weight: 500; list-style: none;
+  display: inline-flex; align-items: center; gap: 6px; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: ""; width: 6px; height: 6px; border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .15s; margin-right: 2px; }
+details[open] > summary::before { transform: rotate(45deg); }
+details > .inner { margin-top: 10px; }
+dl.plan { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; font-size: 13px; }
+dl.plan dt { color: var(--muted); }
+dl.plan dd { margin: 0; }
+.attempt { border: 1px solid var(--rule); border-radius: 10px; padding: 10px 12px; display: grid; gap: 8px; }
+.attempt .h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-weight: 600; }
+.attempt .h .pill { margin-left: auto; }
 </style>
 </head>
 <body>
 <header>
-  <div>
+  <div class="brand">
     <h1>Incident Response Console</h1>
-    <div class="sub" id="sub">Kubernetes shop · Investigator Agent + Reviewer Agent · remediation approved by an engineer in Slack</div>
+    <span class="pill" id="phase">Loading</span>
   </div>
-  <span class="pill" id="phase">loading…</span>
-  <div class="spacer"></div>
-  <button class="switch" id="auto-switch" role="switch" aria-checked="false" title="When on, the deterministic Remediation Agent may fix known, high-confidence incidents without a human click (scale and memory only)"><span class="knob"></span><span id="auto-label">Automatic remediation</span></button>
-  <span class="pill" id="model-pill" title="Investigator Agent model"></span>
-  <span class="pill" id="slack-pill"></span>
-  <button class="primary" id="btn-start">Start services</button>
-  <button id="btn-reset" title="Run scripts/restore.ps1 and return to monitoring">Reset to healthy</button>
+  <div class="controls">
+    <button class="switch" id="auto-switch" role="switch" aria-checked="false" title="When on, the Remediation Agent may fix known, high-confidence incidents without a human click (memory limit and replicas only)"><span class="knob"></span><span id="auto-label">Automatic remediation</span></button>
+    <button class="primary" id="btn-start">Start services</button>
+    <button id="btn-reset" title="Runs scripts/restore.ps1 and returns to monitoring">Reset to healthy</button>
+  </div>
+  <div class="meta" id="meta"></div>
 </header>
 
 <main>
@@ -163,13 +260,12 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
     <section class="panel" aria-labelledby="h-status">
       <h2 id="h-status">System status <span class="right" id="status-time"></span></h2>
       <div class="health"><span class="dot" id="health-dot"></span><div><div class="big" id="health-text">Not started</div>
-        <div class="sub" id="health-sub">Press “Start services” to connect to the cluster.</div></div></div>
-      <div class="body"><div id="components"></div>
-        <div class="kv" id="kv"></div></div>
+        <div class="muted small" id="health-sub">Press Start services to connect to the cluster.</div></div></div>
+      <div class="body"><div id="components"></div><div class="tiles" id="tiles"></div></div>
     </section>
 
     <section class="panel" aria-labelledby="h-lab">
-      <h2 id="h-lab">Incident lab <span class="right">real failures, injected into Kubernetes</span></h2>
+      <h2 id="h-lab">Incident lab <span class="right">Real failures injected into Kubernetes</span></h2>
       <div class="body lab" id="lab"></div>
     </section>
 
@@ -186,9 +282,9 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
 
   <div class="col">
     <section class="panel" aria-labelledby="h-actors">
-      <h2 id="h-actors">On the incident <span class="right" id="actors-sub">who is working right now</span></h2>
+      <h2 id="h-actors">On the incident <span class="right">Who is working right now</span></h2>
       <div class="actors" id="actors"></div>
-      <div class="handoffs" id="handoffs" hidden></div>
+      <details class="handoffs" id="handoffs" hidden><summary id="handoffs-sum">Hand-off log</summary><div class="list" id="handoffs-list"></div></details>
     </section>
 
     <section class="panel" aria-labelledby="h-logs">
@@ -207,76 +303,116 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/<@([A-Z0-9]+)>/g, "@$1").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const hms = (t) => t ? new Date(t * 1000).toLocaleTimeString([], {hour12: false}) : "";
+const pct = (x) => Math.round((Number(x) || 0) * 100) + "%";
+const cap = (s) => { s = String(s || ""); return s.charAt(0).toUpperCase() + s.slice(1); };
+const shortModel = (m) => String(m || "").replace(/^nvidia\//, "").replace(/ \(NVIDIA NIM\)$/, "");
+const mark = (kind, ch) => `<span class="mk ${kind}">${ch || ""}</span>`;
+const OK = mark("ok", "✓"), FAIL = mark("bad", "✕"), WAIT = mark("wait"), INFO = mark("info"), WARN = mark("warn", "!");
+const ACTION = {adjust_resource_limit: "Adjust memory limit", scale_workload: "Scale workload",
+  restore_configuration: "Restore configuration", rollback_release: "Roll back release", investigate_only: "Investigate only (no change)"};
+
 const PHASE = {stopped: ["Stopped", ""], monitoring: ["Monitoring", "ok"], detected: ["Incident detected", "bad"],
-  investigating: ["Investigating", "warn"], agent: ["Agent investigating", "ai"], awaiting_approval: ["Waiting for approval in Slack", "warn"], approved: ["Approved — waiting for Execute in Slack", "warn"],
-  investigated: ["Manual fix — waiting for Acknowledge in Slack", "warn"], remediating: ["Remediating", "warn"],
-  resolved: ["Resolved", "ok"], not_resolved: ["Not resolved", "bad"], rejected: ["Rejected", "bad"], failed: ["Failed", "bad"],
-  auto_remediating: ["Remediation Agent fixing it (automatic)", "warn"], handed_over: ["Handed over: engineer must fix it", "bad"],
+  investigating: ["Investigating", "warn"], agent: ["Agents investigating", "ai"],
+  awaiting_approval: ["Waiting for approval in Slack", "warn"], approved: ["Approved, waiting for Execute", "warn"],
+  investigated: ["Manual fix, waiting for Acknowledge", "warn"], remediating: ["Remediating", "warn"],
+  resolved: ["Resolved", "ok"], not_resolved: ["Not resolved", "bad"], rejected: ["Fix rejected", "bad"], failed: ["Failed", "bad"],
+  auto_remediating: ["Remediation Agent fixing it", "warn"], handed_over: ["Handed to an engineer", "bad"],
   acknowledged: ["Engineer owns the fix", "warn"]};
 let S = {phase: "stopped", busy: null, config: {}, incidents: [], hidden: new Set()};
-let I = null;   // the current incident view model, built only from events
+let I = null;            // the current incident view model, built only from events
+const OPEN = new Map();  // details the user opened or closed (key -> open), so live re-renders keep them
 
 function resetIncident() {
   I = {id: null, signals: [], ruleSteps: [], rule: null, agent: {model: null, steps: [], result: null, error: null, thinking: false},
        reviewer: {model: null, steps: [], result: null, error: null, thinking: false},
        proposal: null, decision: null, remediation: [], lastRem: null, outcome: null, slack: [], phase: null, detected_at: null,
        actors: {}, actorLog: [], gate: null, auto: null};
+  OPEN.clear();
 }
+
+// small builders
+function det(key, label, inner, dflt) {
+  const open = OPEN.has(key) ? OPEN.get(key) : !!dflt;
+  return `<details data-k="${key}"${open ? " open" : ""}><summary>${label}</summary><div class="inner">${inner}</div></details>`;
+}
+const facts = (rows) => `<div class="facts">${rows.filter(Boolean).map(([k, v]) => `<div class="fact"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("")}</div>`;
+const callout = (cls, t, s) => `<div class="callout ${cls}"><div class="t">${t}</div>${s ? `<div class="s">${s}</div>` : ""}</div>`;
+const metaline = (items) => `<div class="metaline">${items.filter(Boolean).map(x => `<span>${x}</span>`).join("")}</div>`;
+const item = (m, main, sub) => `<li>${m}<div>${main}${sub ? `<div class="sub">${sub}</div>` : ""}</div></li>`;
+let SN = 0;              // stage number, counted while the incident view renders
+function stage(state, title, chips, body) {
+  return `<section class="stage ${state}"><div class="num">${++SN}</div><div class="content">
+    <div class="shead"><h3>${title}</h3>${chips ? `<div class="chips">${chips}</div>` : ""}</div>${body}</div></section>`;
+}
+const slackLink = () => I.slack_url ? `<a href="${esc(I.slack_url)}" target="_blank" rel="noopener">Open in Slack</a>` : "";
 
 // ------------------------------------------------------------------ who is on the incident
 const ACTORS = [
-  ["detector", "Detector", "deterministic · always on"],
-  ["rules", "Rule engine", "deterministic · read-only"],
-  ["investigator", "Investigator Agent", "LLM · read-only tools"],
-  ["reviewer", "Reviewer Agent", "LLM · read-only tools · can only block"],
-  ["remediation", "Remediation Agent", "deterministic · executes via policy"],
-  ["engineer", "Engineer", "human · in Slack"]];
-const STATE_TEXT = {working: "● working", done: "✓ done", offline: "○ offline — finished", standby: "standby",
-  waiting: "⏳ action needed", idle: "idle"};
+  ["detector", "Detector", "Deterministic"],
+  ["rules", "Rule engine", "Deterministic"],
+  ["investigator", "Investigator Agent", "LLM, read-only"],
+  ["reviewer", "Reviewer Agent", "LLM, read-only"],
+  ["remediation", "Remediation Agent", "Deterministic"],
+  ["engineer", "Engineer", "Human, in Slack"]];
+const STATE_TEXT = {working: "Working", done: "Done", offline: "Finished", standby: "Standby", waiting: "Action needed", idle: "Idle"};
 function defaultActor(name) {
   const auto = (S.config.auto || {}).enabled, on = S.phase !== "stopped";
-  return {detector: {state: on ? "working" : "idle", text: on ? "watching the system every 5 s" : "not started"},
-    rules: {state: "idle", text: "starts when an incident opens"},
-    investigator: {state: "idle", text: "offline until the rule engine hands over"},
-    reviewer: {state: "idle", text: "checks the Investigator Agent's conclusion before any fix"},
-    remediation: {state: "idle", text: auto ? "automatic mode: acts only if the policy gate passes" : "manual mode: runs only after an engineer's Approve + Execute"},
-    engineer: {state: "idle", text: "notified in Slack when needed"}}[name];
+  return {detector: {state: on ? "working" : "idle", text: on ? "Watching the system every 5 s" : "Not started"},
+    rules: {state: "idle", text: "Starts when an incident opens"},
+    investigator: {state: "idle", text: "Starts after the rule engine"},
+    reviewer: {state: "idle", text: "Checks the Investigator's conclusion before any fix"},
+    remediation: {state: "idle", text: auto ? "Acts alone only if the policy gate passes" : "Acts only after Approve and Execute in Slack"},
+    engineer: {state: "idle", text: "Notified in Slack when needed"}}[name];
 }
 function renderActors() {
   const A = (I && I.actors) || {};
   $("#actors").innerHTML = ACTORS.map(([k, label, kind]) => {
     const a = A[k] || defaultActor(k);
-    const llm = k === "investigator" || k === "reviewer", ai = llm ? " ai" : "";
-    return `<div class="actor ${a.state}${ai}"><div class="who">${a.state === "working" ? `<span class="dot pulse ${llm ? "" : "warn"}" style="${llm ? "background:var(--ai)" : ""}"></span>` : ""}${esc(label)}</div>
-      <div class="kind">${esc(kind)}</div><div class="state">${esc(STATE_TEXT[a.state] || a.state)}</div><div class="what">${esc(a.text)}</div></div>`;
+    const llm = k === "investigator" || k === "reviewer";
+    return `<div class="actor ${a.state}${llm ? " ai" : ""}"><div class="who">${a.state === "working" ? `<span class="dot pulse ${llm ? "ai" : "warn"}"></span>` : ""}${esc(label)}</div>
+      <div class="kind">${esc(kind)}</div><div class="state">${esc(STATE_TEXT[a.state] || cap(a.state))}</div><div class="what">${esc(cap(a.text))}</div></div>`;
   }).join("");
-  const log = (I && I.actorLog) || [], box = $("#handoffs");
+  const log = (I && I.actorLog) || [], box = $("#handoffs"), list = $("#handoffs-list");
   box.hidden = !log.length;
+  $("#handoffs-sum").textContent = `Hand-off log (${log.length})`;
   const names = Object.fromEntries(ACTORS.map(([k, l]) => [k, l]));
-  box.innerHTML = log.map(e => `<div><span class="ts">${hms(e.t)}</span><b>${esc(names[e.name] || e.name)}</b> — ${esc(STATE_TEXT[e.state] || e.state)}: ${esc(e.text)}</div>`).join("");
-  box.scrollTop = box.scrollHeight;
+  list.innerHTML = log.map(e => `<div><span class="ts">${hms(e.t)}</span><b>${esc(names[e.name] || e.name)}</b><span class="muted">${esc(STATE_TEXT[e.state] || e.state)}. ${esc(cap(e.text))}</span></div>`).join("");
+  list.scrollTop = list.scrollHeight;
 }
 
-// ------------------------------------------------------------------ status
+// ------------------------------------------------------------------ header and status
 function renderPhase() {
-  const [label, cls] = PHASE[S.phase] || [S.phase, ""];
-  $("#phase").className = "pill " + cls; $("#phase").textContent = label + (S.busy ? " · " + S.busy : "");
+  const [label, cls] = PHASE[S.phase] || [cap(S.phase), ""];
+  $("#phase").className = "pill " + cls;
+  $("#phase").innerHTML = (cls === "ai" || cls === "warn" ? `<span class="dot pulse ${cls}"></span>` : "") + esc(label) + (S.busy ? ` (${esc(S.busy.split(":")[0])})` : "");
   $("#btn-start").disabled = S.phase !== "stopped" || !!S.busy;
-  $("#btn-start").textContent = S.busy === "start" ? "Starting…" : (S.phase === "stopped" ? "Start services" : "Running");
+  $("#btn-start").textContent = S.busy === "start" ? "Starting" : (S.phase === "stopped" ? "Start services" : "Running");
   $("#btn-reset").disabled = S.phase === "stopped" || !!S.busy || ["detected","investigating","agent","remediating","auto_remediating"].includes(S.phase);
   renderLab(); renderActors();
 }
+function agentsPop(c) {
+  const model = (m) => m ? `<div class="model">${esc(shortModel(m))}</div>` : `<div class="note">No model configured</div>`;
+  const fallback = c.reviewer_model && c.model && shortModel(c.reviewer_model) !== shortModel(c.model)
+    ? `<div class="note">Falls back to ${esc(shortModel(c.model))} if unavailable</div>` : "";
+  return `<div class="pop" id="agents-pop" role="dialog" aria-label="Agents and models">
+    <div class="agent"><span class="name">Investigator Agent</span><span class="pill ai">LLM</span>${model(c.model)}</div>
+    <div class="agent"><span class="name">Reviewer Agent</span><span class="pill ai">LLM</span>${model(c.reviewer_model)}${fallback}</div>
+    <div class="agent"><span class="name">Remediation Agent</span><span class="pill">Deterministic</span><div class="note">No LLM. Acts only through the policy gate and the executor.</div></div></div>`;
+}
 function renderConfig() {
-  const c = S.config;
-  $("#model-pill").className = "pill " + (c.model ? "ai" : "warn");
-  $("#model-pill").textContent = c.model ? "Agent: " + c.model : "Agent: no model configured";
-  $("#slack-pill").className = "pill " + (c.slack ? "ok" : "warn");
-  $("#slack-pill").textContent = c.slack ? (c.slack_threaded ? "Slack connected" : "Slack (webhook)") : "Slack off";
-  $("#sub").textContent = `namespace ${c.namespace || "?"} · entry ${c.entry || "?"} · approvers (Slack): ${(c.approvers || []).join(", ") || "none configured"}`;
-  const au = c.auto || {}, sw = $("#auto-switch");
+  const c = S.config, au = c.auto || {};
+  const m = (k, v, cls) => `<div class="mi"><div class="k">${k}</div><div class="v ${cls || ""}">${v}</div></div>`;
+  $("#meta").innerHTML = [
+    m("Namespace", esc(c.namespace || "?")), m("Entry", esc(c.entry || "?")),
+    m("Slack", c.slack ? (c.slack_threaded ? "Connected" : "Webhook only") : "Off", c.slack ? "ok" : "warn"),
+    m("Approvers", String((c.approvers || []).length)),
+    `<div class="mi agents"><div class="k">Agents</div><div class="v">3</div>
+      <button class="view" id="agents-btn" aria-expanded="${S.agentsOpen ? "true" : "false"}" aria-controls="agents-pop">${S.agentsOpen ? "Hide" : "View"}</button>
+      ${S.agentsOpen ? agentsPop(c) : ""}</div>`].join("");
+  const sw = $("#auto-switch");
   sw.classList.toggle("on", !!au.enabled); sw.setAttribute("aria-checked", au.enabled ? "true" : "false");
-  $("#auto-label").textContent = (au.enabled ? "Automatic remediation: ON" : "Automatic remediation: OFF")
-    + ((au.locked || []).length ? ` · locked: ${au.locked.join(", ")}` : "");
+  $("#auto-label").textContent = "Automatic remediation " + (au.enabled ? "on" : "off")
+    + ((au.locked || []).length ? ` (locked: ${au.locked.join(", ")})` : "");
   renderActors();
 }
 function renderSystem(sys) {
@@ -286,31 +422,36 @@ function renderSystem(sys) {
   const healthy = !sys.unhealthy && comps.every(c => c.status === "healthy");
   $("#health-dot").className = "dot " + (healthy ? "ok" : "bad pulse");
   $("#health-text").textContent = healthy ? "Healthy" : "Unhealthy";
-  $("#health-sub").textContent = healthy ? "All components ready, user requests succeeding."
-    : (sys.signals && sys.signals.length ? sys.signals[0] : "Symptoms present (see components and logs)");
-  $("#status-time").textContent = "sampled " + hms(sys.t);
+  $("#health-sub").textContent = healthy ? "All components ready and user requests succeeding."
+    : (sys.signals && sys.signals.length ? sys.signals[0] : "Symptoms present. See components and logs.");
+  $("#status-time").textContent = "Sampled " + hms(sys.t);
   $("#components").innerHTML = comps.map(c => `
-    <div class="comp"><span class="dot ${cls(c.status)}"></span>
-      <span class="name">${esc(c.name)}</span>
-      <span class="meta">${esc(c.status)}${c.note ? " (" + esc(c.note) + ")" : ""} · ${c.ready}/${c.desired} ready</span>
-      <div class="pods">${c.instances.map(i => `<span class="${i.ready ? "" : (i.waiting ? "bad" : "warn")}">${esc(i.name.slice(-5))} ${i.ready ? "ready" : (i.waiting ? esc(i.waiting) : esc(i.phase || "not ready"))} · ${i.restarts} restarts${i.last_termination ? " · last: " + esc(i.last_termination) : ""}${i.memory_limit ? " · mem " + esc(i.memory_limit) : ""}</span>`).join("") || "<span>no pods</span>"}</div>
+    <div class="comp"><div class="top"><span class="dot ${cls(c.status)}"></span><span class="name">${esc(c.name)}</span>
+      <span class="pill ${cls(c.status)}">${esc(cap(c.status))}</span><span class="right">${c.ready}/${c.desired} ready</span></div>
+      ${c.note ? `<div class="muted small" style="padding-left:16px">${esc(cap(c.note))}</div>` : ""}
+      ${c.instances.map(i => `<div class="pod ${i.ready ? "" : (i.waiting ? "bad" : "warn")}"><span>${esc(i.name.slice(-5))}</span>
+        <span>${i.ready ? "ready" : esc(i.waiting || i.phase || "not ready")}</span><span>${i.restarts} restarts</span>
+        ${i.last_termination ? `<span>last exit ${esc(i.last_termination)}</span>` : ""}${i.memory_limit ? `<span>mem ${esc(i.memory_limit)}</span>` : ""}</div>`).join("")
+        || `<div class="pod">no pods</div>`}
     </div>`).join("");
   const t = sys.traffic || {}, p = sys.probe || {};
-  const errs = Object.entries(sys.errors || {}).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`).join(", ") || "none";
-  $("#kv").innerHTML = `
-    <span>Synthetic user requests</span><span class="v">${p.ok}/${p.total} ok${p.last_status ? " · HTTP " + p.last_status : ""}</span>
-    <span>Traffic at ${esc(S.config.entry ? S.config.entry.split("/")[0] : "entry")}</span><span class="v">${t.request_rate == null ? "n/a" : t.request_rate.toFixed(1) + " req/s"}</span>
-    <span>HTTP 5xx ratio</span><span class="v">${t.error_ratio == null ? "n/a" : (t.error_ratio * 100).toFixed(1) + " %"}</span>
-    <span>Error log lines (last poll)</span><span class="v">${esc(errs)}</span>`;
+  const errs = Object.entries(sys.errors || {}).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`).join(", ");
+  const er = t.error_ratio;
+  $("#tiles").innerHTML = [
+    ["Synthetic requests", `${p.ok}/${p.total} ok${p.last_status ? ` (HTTP ${p.last_status})` : ""}`, p.ok < p.total],
+    ["Traffic", t.request_rate == null ? "n/a" : t.request_rate.toFixed(1) + " req/s", false],
+    ["HTTP 5xx ratio", er == null ? "n/a" : (er * 100).toFixed(1) + "%", er >= 0.05],
+    ["Error log lines", errs || "none", !!errs]]
+    .map(([k, v, bad]) => `<div class="tile"><div class="k">${k}</div><div class="v ${bad ? "bad" : ""}">${esc(v)}</div></div>`).join("");
 }
 
 // ------------------------------------------------------------------ lab
 function renderLab() {
   const can = S.phase === "monitoring" && !S.busy;
   $("#lab").innerHTML = (S.incidents || []).map(x => `
-    <div class="card"><div class="row"><span class="t">${esc(x.title)}</span>
-      <button data-trigger="${esc(x.id)}" ${can ? "" : "disabled"}>${S.busy === "trigger:" + x.id ? "Triggering…" : "Trigger"}</button></div>
-      <div class="d">${esc(x.what)}</div><code>${esc(x.script)}</code></div>`).join("");
+    <div class="labrow" title="${esc(x.what)}&#10;&#10;${esc(x.script)}"><span class="t">${esc(x.title)}</span>
+      <button class="small" data-trigger="${esc(x.id)}" ${can ? "" : "disabled"}>${S.busy === "trigger:" + x.id ? "Triggering" : "Trigger"}</button>
+      <div class="d">${esc(x.what)}</div></div>`).join("");
 }
 
 // ------------------------------------------------------------------ logs
@@ -331,7 +472,7 @@ function addLogs(lines) {
 }
 S.apps = new Set();
 function renderFilters() {
-  $("#filters").innerHTML = [...S.apps].sort().map(a => `<label><input type="checkbox" data-app="${esc(a)}" ${S.hidden.has(a) ? "" : "checked"}> ${esc(a)}</label>`).join("");
+  $("#filters").innerHTML = [...S.apps].sort().map(a => `<label><input type="checkbox" data-app="${esc(a)}" ${S.hidden.has(a) ? "" : "checked"}>${esc(a)}</label>`).join("");
 }
 $("#filters").addEventListener("change", (e) => {
   const a = e.target.dataset.app; if (!a) return;
@@ -340,204 +481,275 @@ $("#filters").addEventListener("change", (e) => {
 });
 
 // ------------------------------------------------------------------ incident view
-function agentSteps(A) {
-  let h = `<div class="agent"><ul class="steps">`;
+function callsList(A) {
+  let h = `<ul class="list calls">`;
   for (const s of A.steps) {
-    if (s.type === "call") h += `<li><span class="ic">${s.result ? (s.result.ok ? "✓" : "✗") : "⏳"}</span><span><code>${esc(s.tool)}</code>${Object.keys(s.args || {}).length ? " <span class='mono'>" + esc(JSON.stringify(s.args)) + "</span>" : ""}
-      ${s.purpose ? `<div class="why">${esc(s.purpose)}</div>` : ""}${s.result ? `<div>${s.result.evidence_id ? `<span class="ev">${esc(s.result.evidence_id)}</span> ` : ""}${esc(s.result.summary)}</div>` : ""}</span></li>`;
-    else if (s.type === "note") h += `<li><span class="ic">💭</span><span><div class="note">${esc(s.text)}</div></span></li>`;
+    if (s.type === "call") {
+      const args = Object.entries(s.args || {}).map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`).join(" ");
+      const r = s.result;
+      h += item(r ? (r.ok ? OK : FAIL) : WAIT, `<span class="tool">${esc(s.tool)}</span>${args ? `<span class="args">${esc(args)}</span>` : ""}`,
+        (s.purpose ? esc(cap(s.purpose)) : "") + (r ? `<div class="ev">${r.evidence_id ? `<span class="badge">${esc(r.evidence_id)}</span>` : ""}${esc(r.summary)}</div>` : ""));
+    } else if (s.type === "note") h += `<li>${mark("ai", "i")}<div class="thought">${esc(s.text)}</div></li>`;
   }
-  if (A.thinking) h += `<li><span class="ic">⏳</span><span class="muted">Reasoning…</span></li>`;
-  if (A.error) h += `<li><span class="ic">⚠️</span><span class="err">${esc(A.error)}</span></li>`;
-  return h + `</ul></div>`;
+  if (A.thinking) h += item(WAIT, `<span class="muted">Reasoning</span>`);
+  return h + `</ul>`;
+}
+const evLine = (list, bad) => `<div class="ids">${list.map(e => `<span class="badge" title="${esc(e.text)}">${esc(e.id)}</span>`).join("") || `<span class="sub">No valid evidence cited</span>`}</div>${(bad || []).length ? `<div class="sub err">Rejected citations: ${esc(bad.join(", "))}</div>` : ""}`;
+function evidenceIndex(key, groups) {
+  const seen = new Map();
+  for (const g of groups) for (const e of g) if (!seen.has(e.id)) seen.set(e.id, e.text);
+  if (!seen.size) return "";
+  return det(key, `Evidence cited (${seen.size})`, `<ul class="list">${[...seen].map(([id, t]) => `<li><span class="badge">${esc(id)}</span><div class="sub">${esc(t)}</div></li>`).join("")}</ul>`);
+}
+function agentStage(A, title, roleChip, key) {
+  const working = !A.result && !A.error && (A.model || A.steps.length);
+  const state = "ai " + (A.error ? "fail" : A.result ? "done" : "working");
+  const calls = A.steps.filter(s => s.type === "call").length;
+  let b = "";
+  if (A.error) b += callout("bad", "No result", esc(cap(A.error)));
+  else if (working) b += `<p class="muted small">Calling read-only tools. Each call and its result appear below as they happen.</p>`;
+  else if (A.result) b += `<p class="muted small">Finished after ${A.result.tool_calls} tool calls in ${A.result.seconds} s.</p>`;
+  if (A.steps.length || A.thinking) b += det(key, `Tool calls and reasoning (${calls})`, callsList(A), working);
+  const chips = (roleChip ? `<span class="pill">${roleChip}</span>` : "") + (A.model ? `<span class="pill ai">${esc(shortModel(A.model))}</span>` : "");
+  return stage(state, title, chips, b);
 }
 
 function renderIncident() {
   const el = $("#incident");
   if (!I || !I.id) { el.innerHTML = `<div class="empty">No incident. Trigger one from the Incident lab; detection is automatic.</div>`; return; }
   const ph = PHASE[I.phase || S.phase] || ["", ""];
-  let h = `<div class="incident-head"><span class="id">${esc(I.id)}</span><span class="pill ${ph[1]}">${esc(ph[0])}</span>
-    <span class="sub">detected ${hms(I.detected_at)}</span></div>`;
-  const AD = I.auto && I.auto.done;
-  if (AD) {
-    if (AD.result === "resolved") h += `<p class="banner ok">🟢 RESOLVED automatically<span class="sub" style="font-weight:500">by the Remediation Agent on attempt ${AD.resolved_by.n} of ${AD.resolved_by.of} — no human click was needed</span></p>`;
-    else if (AD.stopped_by) h += `<p class="banner warn">🛑 Stopped by ${esc(AD.stopped_by)}<span class="sub" style="font-weight:500">no further automatic change; the engineer owns the incident</span></p>`;
-    else h += `<p class="banner ${I.auto.ack ? "warn" : "bad"}">${I.auto.ack ? "🧑‍🔧 Engineer " + esc(I.auto.ack.by) + " acknowledged and is fixing it manually" : "🔴 Automatic remediation did not work — an engineer must fix this"}<span class="sub" style="font-weight:500">${esc(AD.reason || "")}</span></p>`;
-  } else if (I.outcome) {
-    const ok = I.outcome.code === "RESOLVED";
-    h += `<p class="banner ${ok ? "ok" : "bad"}">${ok ? "🟢 INCIDENT RESOLVED" : "🔴 " + esc(I.outcome.code)}<span class="sub" style="font-weight:500">${esc(I.outcome.message || "")}</span></p>`;
-  } else if (I.decision && I.decision.decision === "rejected") {
-    h += `<p class="banner bad">⛔ Remediation rejected — no change was made</p>`;
-  }
-  // 1 detection
-  h += `<div class="stage"><h3><span class="n">1</span> Detection</h3><ul class="steps">${I.signals.map(s => `<li><span class="ic">🔴</span><span>${esc(s)}</span></li>`).join("")}</ul>
-    ${I.investigate_in_s && !I.rule && !I.ruleSteps.length ? `<div class="sub">Collecting symptoms for ${I.investigate_in_s} s before investigating…</div>` : ""}</div>`;
-  // 2 rule engine
+  let h = `<div class="inc-head"><span class="id">${esc(I.id)}</span><span class="pill ${ph[1]}">${esc(ph[0])}</span>
+    <span class="right">Detected ${hms(I.detected_at)}</span></div>`;
+  h += outcomeBanner();
+  h += `<div class="timeline">`;
+  SN = 0;
+
+  // detection
+  const waitingToInvestigate = I.investigate_in_s && !I.rule && !I.ruleSteps.length;
+  h += stage(waitingToInvestigate ? "working" : "done", "Detection", `<span class="pill bad">${I.signals.length} signal${I.signals.length === 1 ? "" : "s"}</span>`,
+    `<div class="list">${I.signals.slice(0, 4).map(s => `<div class="signal"><span>${esc(s)}</span></div>`).join("")}</div>`
+    + (I.signals.length > 4 ? det("signals", `More signals (${I.signals.length - 4})`, `<div class="list">${I.signals.slice(4).map(s => `<div class="signal"><span>${esc(s)}</span></div>`).join("")}</div>`) : "")
+    + (waitingToInvestigate ? `<p class="muted small">Collecting symptoms for ${I.investigate_in_s} s before the investigation starts.</p>` : ""));
+
+  // rule engine
   if (I.ruleSteps.length || I.rule) {
     const decisions = I.ruleSteps.filter(s => s.kind === "decision"), calls = I.ruleSteps.filter(s => s.kind === "call");
-    h += `<div class="stage"><h3><span class="n">2</span> Evidence collection (deterministic rule engine)
-      <span class="pill">${decisions.length} decisions · ${calls.length} capability calls</span></h3>
-      <ul class="steps">${decisions.slice(-8).map(s => `<li><span class="ic">→</span><span>${esc(s.text)}<div class="why">${esc(s.reason)}</div></span></li>`).join("")}</ul>
-      <details><summary>All capability calls (${calls.length})</summary><ul class="steps">${calls.map(c => `<li><span class="ic">${c.status === "ok" ? "✓" : "✗"}</span><span><code>${esc(c.capability)}</code> ${esc((c.args || []).join(", "))} <span class="why">· ${esc(c.summary)} · ${c.ms} ms</span></span></li>`).join("")}</ul></details>
-      ${I.rule ? `<div style="margin-top:8px"><b>Rule engine:</b> ${esc(I.rule.label)} in <code>${esc(I.rule.affected)}</code> · ${esc(I.rule.confidence)} confidence (${Math.round((I.rule.confidence_value || 0) * 100)}%) · ${I.rule.facts} facts</div>` : `<div class="sub">⏳ collecting…</div>`}
-      ${I.route ? `<div class="route ${I.route.mode}"><b>${I.route.mode === "verify" ? "Known pattern → the rule engine leads, the agent verifies" : "Not a known pattern → the Investigator Agent leads"}</b><div class="sub">${esc(I.route.reason)} · agent budget ≤ ${I.route.budget.tool_calls} tool calls, ${I.route.budget.seconds} s · threshold: rules lead at ≥ 75% confidence</div></div>` : ""}</div>`;
+    let b = "";
+    if (I.rule) {
+      b += `<p class="lead">${esc(I.rule.label)}${I.rule.affected ? ` in ${esc(I.rule.affected)}` : ""}</p>`;
+      b += facts([["Confidence", `${pct(I.rule.confidence_value)} (${esc(I.rule.confidence)})`], ["Facts collected", I.rule.facts],
+                  ["Decisions", decisions.length], ["Capability calls", calls.length]]);
+    } else {
+      b += `<ul class="list">${decisions.slice(-3).map(s => item(INFO, esc(cap(s.text)), esc(cap(s.reason)))).join("")}${item(WAIT, `<span class="muted">Collecting evidence through read-only capabilities</span>`)}</ul>`;
+    }
+    if (I.route) {
+      const lead = I.route.mode !== "verify";
+      b += callout(lead ? "ai" : "", lead ? "Not a known pattern, so the Investigator Agent leads" : "Known pattern, so the rule engine leads and the Investigator Agent verifies",
+        `${esc(cap(I.route.reason))}. Agent budget: up to ${I.route.budget.tool_calls} tool calls in ${I.route.budget.seconds} s. The rule engine leads at 75% confidence or more.`);
+    }
+    if (I.rule) {
+      b += det("rule-dec", `Decisions (${decisions.length})`, `<ul class="list">${decisions.map(s => item(INFO, esc(cap(s.text)), esc(cap(s.reason)))).join("")}</ul>`);
+      b += det("rule-calls", `Capability calls (${calls.length})`, `<ul class="list calls">${calls.map(c => item(c.status === "ok" ? OK : FAIL,
+        `<span class="tool">${esc(c.capability)}</span>${(c.args || []).length ? `<span class="args">${esc(c.args.join(", "))}</span>` : ""}`,
+        `${esc(cap(c.summary))} <span class="ts">${c.ms} ms</span>`)).join("")}</ul>`);
+    }
+    h += stage(I.rule ? "done" : "working", "Rule engine", `<span class="pill">Deterministic</span>`, b);
   }
-  // 3 agent
+
+  // investigator agent
   const A = I.agent;
   if (A.model || A.error || A.steps.length) {
-    const role = I.route ? (I.route.mode === "verify" ? "verifying the rule engine" : "leading the investigation") : "";
-    h += `<div class="stage"><h3><span class="n">3</span> 🔍 Investigator Agent ${role ? "— " + role : ""} <span class="pill ai">${esc(A.model || "")}</span></h3>${agentSteps(A)}</div>`;
+    const role = I.route ? (I.route.mode === "verify" ? "Verifying" : "Leading") : "";
+    h += agentStage(A, "Investigator Agent", role, "inv-calls");
   }
-  // 4 report
+
+  // diagnosis
   if (A.result) {
-    const r = A.result, ag = r.agreement || {}, v = r.validation || {};
-    h += `<div class="stage"><h3><span class="n">4</span> Investigation complete <span class="pill ${r.led_by === "agent" ? "ai" : ""}">${r.led_by === "agent" ? "diagnosis led by the Investigator Agent" : "diagnosis by the rule engine, verified by the agent"}</span></h3><div class="report">
-      <div><div class="sub">Root cause · ${esc(r.confidence)} confidence · <code>${esc(r.category)}</code> in <code>${esc(r.root_cause_component)}</code></div><div class="rc">${esc(r.root_cause)}</div>
-        ${r.summary ? `<div>${esc(r.summary)}</div>` : ""}</div>
-      <div><b>Findings</b><ul class="steps">${r.findings.map(f => `<li><span class="ic">${f.supported ? "✓" : "⚠️"}</span><span>${esc(f.statement)}
-        <div class="ev">${f.evidence.map(e => esc(e.id) + ": " + esc(e.text)).join("<br>") || "no valid evidence cited"}${f.invalid_citations.length ? "<br><span class='err'>rejected citations: " + esc(f.invalid_citations.join(", ")) + "</span>" : ""}</div></span></li>`).join("")}</ul></div>
-      ${r.manual_steps && r.manual_steps.length ? `<div class="fix"><b>Recommended manual steps:</b><ol>${r.manual_steps.map(s => "<li>" + esc(s) + "</li>").join("")}</ol></div>` : ""}
-      <div class="fix"><b>Suggested remediation:</b> ${esc(r.suggested_fix.action)} → <code>${esc(r.suggested_fix.target)}</code>${r.suggested_fix.parameter_value ? " = <code>" + esc(r.suggested_fix.parameter_value) + "</code>" : ""}<div>${esc(r.suggested_fix.description)}</div></div>
-      <div class="sub">${ag.category && ag.component ? "✓ Agrees with the rule engine" : "≠ Rule engine said: " + esc(ag.rule_label) + " in " + esc(ag.rule_component)}
-        · evidence check: ${v.supported_findings}/${v.findings} findings supported${v.problems && v.problems.length ? " · " + esc(v.problems.join("; ")) : ""}
-        · ${r.tool_calls} tool calls · ${r.seconds} s${r.usage ? " · " + (r.usage.prompt_tokens + r.usage.completion_tokens) + " tokens" : ""}</div>
-    </div></div>`;
+    const r = A.result, ag = r.agreement || {}, v = r.validation || {}, fx = r.suggested_fix || {};
+    const agrees = ag.category && ag.component;
+    let b = `<p class="lead">${esc(r.root_cause)}</p>` + (r.summary ? `<p class="muted">${esc(r.summary)}</p>` : "");
+    b += facts([["Component", `<code>${esc(r.root_cause_component)}</code>`], ["Category", esc(cap(String(r.category || "").replace(/_/g, " ")))], ["Confidence", esc(cap(r.confidence))],
+      ["Supported", `${v.supported_findings} of ${v.findings} findings`],
+      ["Rule engine", agrees ? "Agrees" : `Differs: ${esc(ag.rule_label)}`]]);
+    if (v.problems && v.problems.length) b += callout("warn", "Validation problems", esc(v.problems.join("; ")));
+    b += `<ul class="list">${r.findings.map(f => item(f.supported ? OK : WARN, esc(f.statement), evLine(f.evidence, f.invalid_citations))).join("")}</ul>`;
+    b += evidenceIndex("diag-ev", r.findings.map(f => f.evidence));
+    if (r.manual_steps && r.manual_steps.length) b += `<div class="card"><div class="label">Recommended manual steps</div><ol class="steps">${r.manual_steps.map(s => "<li>" + esc(s) + "</li>").join("")}</ol></div>`;
+    b += `<div class="card fix"><div class="label">Suggested fix</div><div><b>${esc(ACTION[fx.action] || fx.action)}</b>${fx.target ? ` on <code>${esc(fx.target)}</code>` : ""}${fx.parameter_value ? `, value <code>${esc(fx.parameter_value)}</code>` : ""}</div>
+      ${fx.description ? `<div class="muted small">${esc(fx.description)}</div>` : ""}</div>`;
+    b += metaline([`${r.tool_calls} tool calls`, `${r.seconds} s`, r.usage ? `${(r.usage.prompt_tokens + r.usage.completion_tokens).toLocaleString()} tokens` : ""]);
+    h += stage("done", "Diagnosis", `<span class="pill ${r.led_by === "agent" ? "ai" : ""}">${r.led_by === "agent" ? "Led by the Investigator" : "Rule engine, verified by the agent"}</span>`, b);
   } else if (A.error && I.rule) {
-    h += `<div class="stage"><h3><span class="n">4</span> Findings (rule engine; the agent produced no report)</h3>
-      <div class="rc">${esc(I.rule.root_cause)}</div><ul class="steps">${(I.rule.evidence || []).map(e => `<li><span class="ic">•</span><span><span class="ev">${esc(e.id)}</span> ${esc(e.text)}</span></li>`).join("")}</ul></div>`;
+    h += stage("done", "Diagnosis", `<span class="pill">Rule engine only</span>`,
+      `<p class="lead">${esc(I.rule.root_cause)}</p><ul class="list">${(I.rule.evidence || []).map(e => item(INFO, esc(e.text), `<span class="badge">${esc(e.id)}</span>`)).join("")}</ul>`);
   }
-  // 4b the Reviewer Agent
+
+  // reviewer agent
   const R = I.reviewer;
   if (R.model || R.error || R.steps.length) {
-    h += `<div class="stage"><h3><span class="n">4b</span> 🧐 Reviewer Agent — checking the Investigator's conclusion <span class="pill ai">${esc(R.model || "")}</span></h3>${agentSteps(R)}`;
     if (R.result) {
       const r = R.result, v = r.validation || {};
-      const head = {agree: ["ok", "✓ Agrees — the flow continues unchanged"],
-        challenge: ["warn", "⚠️ Challenges the conclusion — automatic remediation is off; an engineer decides"],
-        reject: ["bad", "⛔ Rejects the conclusion — the Investigator's fix is dropped (the rule engine's plan stands); an engineer decides"],
-        unsupported: ["warn", "? Objected without valid evidence — ignored, the flow continues unchanged"]}[r.effective] || ["", r.effective];
-      h += `<p class="banner ${head[0]}" style="margin-top:8px">${esc(head[1])}${r.summary ? `<span class="sub" style="font-weight:500">${esc(r.summary)}</span>` : ""}</p>`;
-      if (r.objections.length) h += `<ul class="steps">${r.objections.map(o => `<li><span class="ic">${o.supported ? "▲" : "?"}</span><span>${esc(o.statement)}
-        <div class="ev">${o.evidence.map(e => esc(e.id) + ": " + esc(e.text)).join("<br>") || "no valid evidence cited"}${o.invalid_citations.length ? "<br><span class='err'>rejected citations: " + esc(o.invalid_citations.join(", ")) + "</span>" : ""}</div></span></li>`).join("")}</ul>`;
-      h += `<div class="sub">evidence check: ${v.supported_objections}/${v.objections} objections supported · ${r.tool_calls} tool calls · ${r.seconds} s · model ${esc(r.model || "")}</div>`;
+      const V = {agree: ["ok", "Agrees", "The conclusion holds. The flow continues unchanged."],
+        challenge: ["warn", "Challenges", "Automatic remediation is off for this incident. An engineer decides in Slack."],
+        reject: ["bad", "Rejects", "The Investigator's fix is dropped and the rule engine's plan stands. An engineer decides."],
+        unsupported: ["warn", "Objection ignored", "The objection cites no valid evidence, so it changes nothing."]}[r.effective] || ["", cap(r.effective), ""];
+      let b = callout(V[0], V[1] === "Agrees" ? "Agrees with the Investigator" : V[1] === "Objection ignored" ? V[1] : `${V[1]} the Investigator's conclusion`, V[2]);
+      if (r.summary) b += `<p>${esc(r.summary)}</p>`;
+      if (r.objections.length) b += `<ul class="list">${r.objections.map(o => item(o.supported ? mark("warn", "!") : INFO, esc(o.statement), evLine(o.evidence, o.invalid_citations))).join("")}</ul>`
+        + evidenceIndex("rev-ev", r.objections.map(o => o.evidence));
+      b += det("rev-calls", `Tool calls and reasoning (${R.steps.filter(s => s.type === "call").length})`, callsList(R));
+      b += metaline([`${r.tool_calls} tool calls`, `${r.seconds} s`, v.objections ? `${v.supported_objections} of ${v.objections} objections backed by evidence` : ""]);
+      h += stage("ai done", "Reviewer Agent", `<span class="pill ${V[0]}">${V[1]}</span>${R.model ? `<span class="pill ai">${esc(shortModel(R.model))}</span>` : ""}`, b);
+    } else {
+      h += agentStage(R, "Reviewer Agent", "Checking the conclusion", "rev-calls");
     }
-    h += `</div>`;
   }
-  // 5 approval - happens in Slack; this only mirrors the shared review / execution records
+
+  // remediation: automatic, engineer approval, or manual
   const P = I.proposal, G = I.gate;
-  if (P && G && G.eligible) {
-    h += renderAuto(P, G);
-  } else if (P) {
-    const slackLink = I.slack_url ? ` <a href="${esc(I.slack_url)}" target="_blank" rel="noopener">Open the Slack thread ↗</a>` : "";
-    h += `<div class="stage"><h3><span class="n">5</span> ${P.executable ? "Human approval — in Slack" : "Handed to an engineer — manual fix"}</h3>`;
-    if (G) h += `<details style="margin-bottom:8px"><summary>Why a human is needed: the Remediation Agent's policy gate did not pass (${G.checks.filter(c => !c.ok).length} check(s) failed)</summary>${gateList(G)}</details>`;
-    if (P.executable && P.source === "agent" && P.led_by === "agent") h += `<div class="route lead" style="margin:0 0 8px"><b>Fix proposed by the Investigator Agent</b><div class="sub">The rule engine found no established cause, so its plan had no typed change. The agent's evidence-checked fix was made into a typed action deterministically (current value read live, value bounded, standard verification). It still needs an engineer's Approve + Execute.</div></div>`;
-    if (!P.executable) {
-      const d = I.decision;
-      h += `<div class="approval"><div><b>Nothing to approve:</b> no typed action fits this cause (${esc(P.reason)}). An engineer fixes it manually.</div>
-        ${(P.manual_steps || []).length ? `<div><b>Manual steps recommended by the agent:</b><ol>${P.manual_steps.map(s => "<li>" + esc(s) + "</li>").join("")}</ol></div>` : ""}
-        ${(P.investigate || []).map(q => `<div class="sub">• ${esc(q)}</div>`).join("")}
-        <ul class="steps"><li><span class="ic">${d ? "✓" : "⏳"}</span><span>${d ? "Acknowledged by " + esc(d.by) + " at " + hms(d.at) + " — the engineer owns the manual fix" : "Waiting for an engineer to press <b>Acknowledge</b> on the plan message in Slack (takes ownership; changes nothing)"}</span></li></ul>
-        ${slackLink ? `<div>${slackLink}</div>` : ""}
-        <div class="sub">The platform only executes typed, policy-checked actions (memory limit, replicas, one configuration value). Use “Reset to healthy” to undo the demo injection.</div></div>`;
-    }
-    else {
-      const par = P.parameter, d = I.decision, rec = (I.lastRem || {}).record;
-      const approved = d && d.decision === "approved", declined = d && d.decision !== "approved";
-      h += `<div class="approval"><div><b>Proposed action:</b> ${esc(P.summary)}
-          <div class="sub">typed action <code>${esc(P.action_type)}</code> · target <code>${esc(JSON.stringify(P.target))}</code> · ${P.source === "agent" ? "suggested by the Investigator Agent, mapped to the deterministic plan" : "from the rule engine"}</div>
-          ${par && par.value ? `<div class="sub">The agent suggests <b>${esc(par.name)} = <code>${esc(par.value)}</code></b>; the engineer types the value in Slack.</div>` : ""}
-          ${par && par.error ? `<div class="err">${esc(par.error)}</div>` : ""}</div>
-        <ul class="steps">
-          <li><span class="ic">${d ? (approved ? "✓" : "⛔") : "⏳"}</span><span>${!d ? "Waiting for an approver in Slack (Approve / Reject on the plan message)"
-            : (approved ? "Approved" : esc(d.decision.replace("_", " "))) + " by " + esc(d.by) + " at " + hms(d.at)
-              + (d.value && Object.keys(d.value).length ? " · " + Object.entries(d.value).map(([k, v]) => esc(k) + " = <code>" + esc(v) + "</code>").join(", ") : "")}</span></li>
-          ${approved ? `<li><span class="ic">${rec ? "✓" : "⏳"}</span><span>${rec ? "Execute clicked by " + esc(rec.executor) + " — the deterministic remediation started" : "Waiting for Execute in Slack (a separate click after approval)"}</span></li>` : ""}
-          ${(I.refusals || []).map(r => `<li><span class="ic">⛔</span><span class="err">Execute refused (${esc(r.code)}): ${esc(r.message)}</span></li>`).join("")}
-        </ul>
-        ${slackLink ? `<div>${slackLink}</div>` : ""}
-        <details><summary>Risks, verification and rollback (from the plan)</summary>
-          <div class="sub"><b>Risks:</b> ${P.risks.map(esc).join(" · ")}</div>
-          <div class="sub"><b>Verification:</b> ${P.verification.map(esc).join(" · ")}</div>
-          <div class="sub"><b>Rollback:</b> ${esc(P.rollback)}</div></details>
-        ${declined ? "" : `<div class="sub">Nothing changes until an engineer approves and executes in Slack. Then: policy check → live recheck → dry run → one typed change → validation.</div>`}
-      </div>`;
-    }
-    h += `</div>`;
-  }
-  // 6 remediation + 7 validation
+  if (P && G && G.eligible) h += renderAuto(P, G);
+  else if (P) h += renderHuman(P, G);
+
+  // execution and verification after an engineer's Execute
   if (I.remediation.length) {
     const L = I.lastRem || {}, rec = L.record || {};
-    h += `<div class="stage"><h3><span class="n">6</span> Deterministic remediation</h3><ul class="steps">`;
-    h += `<li><span class="ic">✓</span><span>Human approval received in Slack${I.decision ? " (" + esc(I.decision.by) + ")" : ""}</span></li>`;
-    if (rec.executor) h += `<li><span class="ic">✓</span><span>Execute requested in Slack by ${esc(rec.executor)}</span></li>`;
-    for (const c of (L.checks || [])) h += `<li><span class="ic">${c.ok ? "✓" : "✗"}</span><span>${esc(c.detail || c.check)}</span></li>`;
-    if (rec.dry_run) h += `<li><span class="ic">${rec.dry_run.accepted ? "✓" : "✗"}</span><span>Dry run ${rec.dry_run.accepted ? "accepted by the cluster" : "rejected: " + esc(rec.dry_run.error)}</span></li>`;
-    if (rec.applied && rec.applied.accepted) h += `<li><span class="ic">✓</span><span>Change applied at ${hms(rec.applied.at)}: <code>${esc(rec.applied.before)}</code> → <code>${esc(rec.applied.after)}</code>
-      <div class="ev">${(rec.applied.detail || []).map(esc).join("<br>")}</div></span></li>`;
-    if (rec.status === "refused" || rec.status === "apply_failed" || rec.status === "uncertain") h += `<li><span class="ic">✗</span><span class="err">${esc(rec.message)}</span></li>`;
-    h += `</ul></div>`;
+    let b = `<ul class="list">`;
+    if (I.decision) b += item(OK, `Approved in Slack by ${esc(I.decision.by)}`);
+    if (rec.executor) b += item(OK, `Execute requested by ${esc(rec.executor)}`);
+    for (const c of (L.checks || [])) b += item(c.ok ? OK : FAIL, esc(cap(c.detail || c.check)));
+    if (rec.dry_run) b += item(rec.dry_run.accepted ? OK : FAIL, rec.dry_run.accepted ? "Dry run accepted by the cluster" : `Dry run rejected: ${esc(rec.dry_run.error)}`);
+    if (rec.applied && rec.applied.accepted) b += item(OK, `Change applied at ${hms(rec.applied.at)}: <code>${esc(rec.applied.before)}</code> to <code>${esc(rec.applied.after)}</code>`,
+      (rec.applied.detail || []).length ? `<div class="ev">${rec.applied.detail.map(esc).join("<br>")}</div>` : "");
+    const failed = ["refused", "apply_failed", "uncertain"].includes(rec.status);
+    if (failed) b += item(FAIL, `<span class="err">${esc(rec.message)}</span>`);
+    b += `</ul>`;
+    const applied = rec.applied && rec.applied.accepted;
+    h += stage(failed ? "fail" : applied ? "done" : "working", "Execution", `<span class="pill">One typed change</span>`, b);
     const ver = rec.verification;
     if (L.window || ver) {
-      h += `<div class="stage"><h3><span class="n">7</span> Deterministic validation</h3>`;
-      if (!ver || !ver.criteria) h += `<div class="sub">⏳ ${L.settle ? "Observing for " + L.window.window_s + " s (settled after " + Math.round(L.settle.ended_at - L.settle.started_at) + " s)…" : "Waiting for the change to settle (pods ready on 3 consecutive samples, ≤ " + (L.window ? L.window.settle_max_s : "?") + " s)…"}</div>`;
-      else h += `<ul class="steps">${ver.criteria.map(c => `<li><span class="ic">${c.status === "pass" ? "✓" : c.status === "fail" ? "✗" : "?"}</span><span>${esc(c.statement)} <span class="why">· ${esc((c.evidence || []).slice(-1)[0] || "")} (${c.passed}/${c.samples} samples)</span></span></li>`).join("")}</ul>
-        <div class="sub">Settled after ${Math.round(ver.settle.ended_at - ver.settle.started_at)} s, observed ${Math.round(ver.window.ended_at - ver.window.started_at)} s · ${esc(ver.reason)}</div>`;
-      h += `</div>`;
+      let vb;
+      if (!ver || !ver.criteria) {
+        vb = `<ul class="list">${item(WAIT, L.settle ? `Observing for ${L.window.window_s} s` : "Waiting for the change to settle",
+          L.settle ? `Settled after ${Math.round(L.settle.ended_at - L.settle.started_at)} s.` : `Settled means pods ready on 3 consecutive samples, within ${L.window ? L.window.settle_max_s : "?"} s.`)}</ul>`;
+      } else {
+        vb = `<ul class="list">${ver.criteria.map(c => item(c.status === "pass" ? OK : c.status === "fail" ? FAIL : INFO, esc(c.statement),
+          `${esc((c.evidence || []).slice(-1)[0] || "")} (${c.passed} of ${c.samples} samples)`)).join("")}</ul>`
+          + metaline([`Settled after ${Math.round(ver.settle.ended_at - ver.settle.started_at)} s`, `Observed for ${Math.round(ver.window.ended_at - ver.window.started_at)} s`])
+          + `<p class="muted small">${esc(ver.reason)}</p>`;
+      }
+      const oc = I.outcome && I.outcome.code;
+      h += stage(oc ? (oc === "RESOLVED" ? "done" : "fail") : "working", "Verification",
+        oc ? `<span class="pill ${oc === "RESOLVED" ? "ok" : "bad"}">${esc(oc.replace("_", " "))}</span>` : "", vb);
     }
   }
+  h += `</div>`;
   el.innerHTML = h;
 }
 
-function gateList(G) {
-  return `<ul class="steps">${G.checks.map(c => `<li><span class="ic">${c.ok ? "✓" : "✗"}</span><span${c.ok ? "" : ' class="err"'}>${esc(c.detail)}</span></li>`).join("")}</ul>`;
+function outcomeBanner() {
+  const AD = I.auto && I.auto.done;
+  const b = (cls, t, s) => `<div class="outcome ${cls}"><div class="t">${t}</div>${s ? `<div class="s">${s}</div>` : ""}</div>`;
+  if (AD) {
+    if (AD.result === "resolved") return b("ok", "Resolved automatically", `The Remediation Agent fixed it on attempt ${AD.resolved_by.n} of ${AD.resolved_by.of}. No human click was needed.`);
+    if (AD.stopped_by) return b("warn", `Stopped by ${esc(AD.stopped_by)}`, "No further automatic change. The engineer owns the incident.");
+    return I.auto.ack ? b("warn", `Acknowledged by ${esc(I.auto.ack.by)}`, "The engineer is fixing it manually.")
+      : b("bad", "Automatic remediation did not resolve it", `${esc(cap(AD.reason || ""))} An engineer must fix it.`);
+  }
+  if (I.outcome) return I.outcome.code === "RESOLVED" ? b("ok", "Resolved", esc(I.outcome.message || ""))
+    : b("bad", esc(cap(String(I.outcome.code).replace("_", " ").toLowerCase())), esc(I.outcome.message || ""));
+  if (I.decision && I.decision.decision === "rejected") return b("bad", "Fix rejected", "No change was made.");
+  return "";
 }
-const STAGE_TEXT = {approved: "approved by the Remediation Agent — executing", checks_passed: "authorization ✓ · approval ✓ · plan age ✓ · policy ✓ · claimed",
-  applied: "live recheck ✓ · dry run ✓ · change applied — verifying", verifying: "verifying with the plan's criteria",
-  settling: "waiting for the change to settle", observing: "observing", stopped: "stopped", completed: "verified", done: "finished"};
+
+function gateList(G) {
+  const checks = [...G.checks].sort((a, b) => a.ok - b.ok);
+  return `<ul class="list">${checks.map(c => item(c.ok ? OK : FAIL, `<span${c.ok ? "" : ' class="err"'}>${esc(cap(c.detail))}</span>`)).join("")}</ul>`;
+}
+
+function renderHuman(P, G) {
+  const failedChecks = G ? G.checks.filter(c => !c.ok).length : 0;
+  const gate = G ? det("gate", `Why automation did not act (${failedChecks} of ${G.checks.length} checks failed)`, gateList(G)) : "";
+  const d = I.decision;
+  if (!P.executable) {
+    let b = callout("warn", "No typed action fits this cause", esc(cap(P.reason)) + ". An engineer fixes it manually.");
+    if ((P.manual_steps || []).length) b += `<div class="card"><div class="label">Manual steps from the Investigator Agent</div><ol class="steps">${P.manual_steps.map(s => "<li>" + esc(s) + "</li>").join("")}</ol></div>`;
+    if ((P.investigate || []).length) b += `<ul class="list">${P.investigate.map(q => item(INFO, esc(q))).join("")}</ul>`;
+    b += `<ul class="list">${item(d ? OK : WAIT, d ? `Acknowledged by ${esc(d.by)} at ${hms(d.at)}` : "Waiting for an engineer to press Acknowledge in Slack",
+      d ? "The engineer owns the manual fix." : "Acknowledge takes ownership and changes nothing.")}</ul>`;
+    b += gate + metaline([slackLink(), "The platform only runs typed, policy-checked actions. Reset to healthy undoes the demo injection."]);
+    return stage(d ? "done" : "waiting", "Handed to an engineer", `<span class="pill ${d ? "ok" : "warn"}">${d ? "Acknowledged" : "Waiting"}</span>`, b);
+  }
+  const par = P.parameter, rec = (I.lastRem || {}).record;
+  const approved = d && d.decision === "approved", declined = d && d.decision !== "approved";
+  let b = "";
+  if (P.source === "agent" && P.led_by === "agent")
+    b += callout("ai", "Fix proposed by the Investigator Agent", "The rule engine had no typed change for this cause. The agent's evidence-checked fix became a typed action: its current value is read live and the new value is bounded by policy.");
+  const tgt = P.target && P.target.component ? P.target.component : JSON.stringify(P.target);
+  b += `<div class="card fix"><div class="label">Proposed change</div><div><b>${esc(P.summary)}</b></div>`
+    + facts([["Action", esc(ACTION[P.action_type] || P.action_type)], ["Target", `<code>${esc(tgt)}</code>`],
+             par && par.value ? [esc(cap(par.name)), `<code>${esc(par.value)}</code> suggested`] : null,
+             ["Source", P.source === "agent" ? "Investigator Agent" : "Rule engine"]])
+    + (par && par.error ? `<div class="err small">${esc(par.error)}</div>` : "") + `</div>`;
+  b += `<ul class="list">`;
+  b += item(d ? (approved ? OK : FAIL) : WAIT, !d ? "Waiting for an approver to press Approve in Slack"
+    : `${approved ? "Approved" : esc(cap(d.decision.replace("_", " ")))} by ${esc(d.by)} at ${hms(d.at)}`,
+    d && d.value && Object.keys(d.value).length ? Object.entries(d.value).map(([k, v]) => `${esc(k)}: <code>${esc(v)}</code>`).join(", ") : "");
+  if (!declined) b += item(rec ? OK : approved ? WAIT : INFO, rec ? `Execute pressed by ${esc(rec.executor)}` : "Execute in Slack", rec ? "" : "A separate click after approval.");
+  for (const r of (I.refusals || [])) b += item(FAIL, `<span class="err">Execute refused (${esc(r.code)})</span>`, esc(r.message));
+  b += `</ul>`;
+  b += gate + det("plan", "Risks, verification and rollback", `<dl class="plan"><dt>Risks</dt><dd>${P.risks.map(esc).join("<br>") || "None listed"}</dd>
+    <dt>Verification</dt><dd>${P.verification.map(esc).join("<br>")}</dd><dt>Rollback</dt><dd>${esc(P.rollback) || "None"}</dd></dl>`);
+  if (!declined) b += metaline([slackLink(), "Nothing changes until an engineer approves and executes in Slack."]);
+  const st = declined ? "fail" : rec ? "done" : "waiting";
+  return stage(st, "Engineer approval", `<span class="pill ${declined ? "bad" : rec ? "ok" : "warn"}">${declined ? "Declined" : rec ? "Executed" : approved ? "Approved" : "Waiting"}</span>`, b);
+}
+
+const STAGE_TEXT = {approved: "Executing", checks_passed: "Checks passed", applied: "Applied, verifying", verifying: "Verifying",
+  settling: "Settling", observing: "Observing", stopped: "Stopped", completed: "Verified", done: "Finished"};
 function renderAttempt(a, total) {
-  const oc = a.outcome, cls = oc === "RESOLVED" ? "ok" : oc ? "bad" : a.stage === "done" || a.stage === "stopped" ? "bad" : "warn";
-  const label = oc || (a.stage === "done" || a.stage === "stopped" ? (a.code || "stopped") : STAGE_TEXT[a.stage] || a.stage);
+  const oc = a.outcome, ended = a.stage === "done" || a.stage === "stopped";
+  const cls = oc === "RESOLVED" ? "ok" : oc || ended ? "bad" : "warn";
+  const label = oc ? oc.replace("_", " ") : ended ? (a.code || "Stopped") : STAGE_TEXT[a.stage] || cap(a.stage);
   const v = a.verification;
-  return `<div class="attempt"><div class="h">${a.n === "revert" ? "↩ Revert" : "Attempt " + a.n + " of " + total} · value <code>${esc(a.value)}</code>
-      <span class="pill ${cls}">${a.stage !== "done" && a.stage !== "stopped" && !oc ? '<span class="dot pulse warn"></span>' : ""}${esc(label)}</span></div>
-    ${a.change ? `<div class="sub">change: ${esc(a.change)}</div>` : ""}
-    ${a.after ? `<div class="sub">applied <code>${esc(a.before)}</code> → <code>${esc(a.after)}</code></div>` : ""}
-    ${a.window && !v ? `<div class="sub">⏳ settle ≤ ${a.window.settle_max_s} s, then observe ${a.window.window_s} s — nothing is called resolved before that</div>` : ""}
-    ${v ? `<ul class="steps">${(v.criteria || []).map(c => `<li><span class="ic">${c.status === "pass" ? "✓" : c.status === "fail" ? "✗" : "?"}</span><span>${esc(c.statement)} <span class="why">· ${esc(c.evidence || "")}</span></span></li>`).join("")}</ul><div class="sub">${esc(v.reason || "")}</div>` : ""}
-    ${!oc && a.message && (a.stage === "done" || a.stage === "stopped") ? `<div class="err">${esc(a.message)}</div>` : ""}
-    ${a.checks ? `<details><summary>Safety checks (${a.checks.length})</summary>${gateList({checks: a.checks.map(c => ({ok: c.ok, detail: c.detail || c.check}))})}</details>` : ""}</div>`;
+  let b = `<div class="attempt"><div class="h">${a.n === "revert" ? "Revert" : `Attempt ${a.n} of ${total}`}<code>${esc(a.value)}</code>
+      <span class="pill ${cls}">${!oc && !ended ? `<span class="dot pulse warn"></span>` : ""}${esc(label)}</span></div>`;
+  if (a.after) b += `<div class="small">Applied <code>${esc(a.before)}</code> to <code>${esc(a.after)}</code></div>`;
+  else if (a.change) b += `<div class="small muted">${esc(cap(a.change))}</div>`;
+  if (a.window && !v) b += `<div class="small muted">Settles within ${a.window.settle_max_s} s, then observed for ${a.window.window_s} s. Nothing is called resolved before that.</div>`;
+  if (v) b += `<ul class="list">${(v.criteria || []).map(c => item(c.status === "pass" ? OK : c.status === "fail" ? FAIL : INFO, esc(c.statement), esc(c.evidence || ""))).join("")}</ul>`
+    + (v.reason ? `<p class="muted small">${esc(v.reason)}</p>` : "");
+  if (!oc && a.message && ended) b += `<div class="err small">${esc(a.message)}</div>`;
+  if (a.checks) b += det(`att-${a.n}`, `Safety checks (${a.checks.length})`, gateList({checks: a.checks.map(c => ({ok: c.ok, detail: c.detail || c.check}))}));
+  return b + `</div>`;
 }
 function renderAuto(P, G) {
-  const A = I.auto || {}, total = (A.ladder || G.ladder || []).length, done = A.done;
-  const slackLink = I.slack_url ? `<a href="${esc(I.slack_url)}" target="_blank" rel="noopener">Open the Slack thread ↗</a>` : "";
-  let h = `<div class="stage"><h3><span class="n">5</span> 🤖 Remediation Agent — automatic (no human click) <span class="pill">deterministic · no LLM</span></h3>
-    <div class="autobox ${done && done.result !== "resolved" ? "failed" : ""}">
-      <div><b>Policy gate passed</b> — the Investigator Agent is offline; the Remediation Agent takes over from here.
-        <div class="sub">Action: ${esc(P.summary)} · typed <code>${esc(P.action_type)}</code> on <code>${esc((P.target || {}).component)}</code></div>
-        <div class="sub">Attempt ladder (policy): ${(A.ladder || G.ladder || []).map(v => "<code>" + esc(v) + "</code>").join(" → ")}${total > 1 ? " — the next value only if the previous one was not verified as resolved" : ""}</div></div>
-      <details><summary>Why it may act alone (all ${G.checks.length} checks passed)</summary>${gateList(G)}</details>
-      <div class="sub">Every attempt goes through the same executor as an engineer's Execute: policy → claim → live recheck → dry run → one compare-and-set change → verification. If nothing is verified as resolved, every change is reverted and an engineer must acknowledge in Slack. An engineer can press <b>Stop</b> in Slack at any time.${slackLink ? " " + slackLink : ""}</div>
-    </div></div>`;
-  const atts = Object.values(A.attempts || {}).sort((a, b) => a.n - b.n);
+  const A = I.auto || {}, ladder = A.ladder || G.ladder || [], total = ladder.length, done = A.done;
+  let b = `<p class="lead">${esc(P.summary)}</p>`;
+  b += facts([["Action", esc(ACTION[P.action_type] || P.action_type)], ["Target", `<code>${esc((P.target || {}).component)}</code>`],
+              ["Values to try", ladder.map(v => `<code>${esc(v)}</code>`).join(", ")]]);
+  b += `<p class="muted small">The Remediation Agent acts without a human click, through the same executor as an engineer's Execute: policy, live recheck, dry run, one change, verification.${total > 1 ? " The next value is tried only if the previous one was not verified as resolved." : ""} If nothing resolves it, every change is reverted and an engineer must acknowledge in Slack. Press Stop in Slack at any time.</p>`;
+  b += det("gate", `Policy gate (all ${G.checks.length} checks passed)`, gateList(G)) + metaline([slackLink()]);
+  let h = stage(done ? (done.result === "resolved" ? "done" : "fail") : "working", "Automatic remediation",
+    `<span class="pill ok">Gate passed</span><span class="pill">Deterministic</span>`, b);
+  const atts = Object.values(A.attempts || {}).sort((x, y) => x.n - y.n);
   if (atts.length || A.revert) {
-    h += `<div class="stage"><h3><span class="n">6</span> Attempts</h3><div style="display:grid;gap:8px">${atts.map(a => renderAttempt(a, total)).join("")}
-      ${A.stop ? `<div class="err">🛑 Stop pressed by ${esc(A.stop.by)} at ${hms(A.stop.at)}: no further attempt, no revert.</div>` : ""}</div></div>`;
+    h += stage(done ? (done.result === "resolved" ? "done" : "fail") : "working", "Attempts", `<span class="pill">${atts.length} of ${total}</span>`,
+      atts.map(a => renderAttempt(a, total)).join("") + (A.stop ? callout("bad", `Stop pressed by ${esc(A.stop.by)} at ${hms(A.stop.at)}`, "No further attempt and no revert.") : ""));
   }
   if (A.revert) {
     const r = A.revert;
-    h += `<div class="stage"><h3><span class="n">7</span> ↩ Revert (policy: always revert a fix that did not work)</h3>
-      ${r.stage !== "done" ? `<div class="sub"><span class="dot pulse warn" style="display:inline-block"></span> Reverting <code>${esc(r.from)}</code> → <code>${esc(r.to)}</code> through the executor…</div>`
-        : r.ok ? `<div>✓ Reverted <code>${esc(r.before)}</code> → <code>${esc(r.after)}</code> — back to the state the investigation described${r.outcome ? ` <span class="sub">(post-revert check: ${esc(r.outcome)}, as expected while the original cause remains)</span>` : ""}</div>`
-        : `<div class="err">Revert not completed: ${esc(r.message)}</div>`}</div>`;
+    const rb = r.stage !== "done" ? `<ul class="list">${item(WAIT, `Reverting <code>${esc(r.from)}</code> to <code>${esc(r.to)}</code> through the executor`)}</ul>`
+      : r.ok ? `<ul class="list">${item(OK, `Reverted <code>${esc(r.before)}</code> to <code>${esc(r.after)}</code>`, `Back to the state the investigation described.${r.outcome ? ` Post-revert check: ${esc(r.outcome)}, as expected while the original cause remains.` : ""}`)}</ul>`
+      : callout("bad", "Revert not completed", esc(r.message));
+    h += stage(r.stage !== "done" ? "working" : r.ok ? "done" : "fail", "Revert", `<span class="pill">Policy: always revert a fix that did not work</span>`, rb);
   }
   if (done && done.result !== "resolved") {
-    h += `<div class="stage"><h3><span class="n">8</span> Handover to an engineer</h3><ul class="steps">
-      <li><span class="ic">📣</span><span>Posted to Slack: what was tried, the revert, and that the fix must be done manually</span></li>
-      ${done.stopped_by ? `<li><span class="ic">✓</span><span>${esc(done.stopped_by)} pressed Stop and owns the incident</span></li>`
-        : `<li><span class="ic">🔒</span><span><code>${esc(done.component)}</code> is locked against automatic remediation until acknowledged</span></li>
-           <li><span class="ic">${I.auto.ack ? "✓" : "⏳"}</span><span>${I.auto.ack ? "Acknowledged by " + esc(I.auto.ack.by) + " at " + hms(I.auto.ack.at) + " — automatic remediation re-enabled for " + esc(I.auto.ack.components.join(", ")) : "Waiting for an engineer to press Acknowledge in Slack"}</span></li>`}
-    </ul></div>`;
+    let hb = `<ul class="list">${item(OK, "Posted to Slack", "What was tried, the revert, and that the fix must be done manually.")}`;
+    hb += done.stopped_by ? item(OK, `${esc(done.stopped_by)} pressed Stop and owns the incident`)
+      : item(mark("warn", "!"), `<code>${esc(done.component)}</code> is locked against automatic remediation until acknowledged`)
+        + item(I.auto.ack ? OK : WAIT, I.auto.ack ? `Acknowledged by ${esc(I.auto.ack.by)} at ${hms(I.auto.ack.at)}` : "Waiting for an engineer to press Acknowledge in Slack",
+          I.auto.ack ? `Automatic remediation is enabled again for ${esc(I.auto.ack.components.join(", "))}.` : "");
+    h += stage(I.auto.ack || done.stopped_by ? "done" : "waiting", "Handover to an engineer", "", hb + `</ul>`);
   }
   return h;
 }
@@ -546,15 +758,34 @@ function addSlack(text, t, ok) {
   if (!text) return;
   const f = $("#slack-feed"); if (f.querySelector(".muted")) f.innerHTML = "";
   const d = document.createElement("div");
-  d.innerHTML = `<span class="ts">${hms(t)}</span>${ok === false ? "✗ " : "✓ "}${esc(text)}`;
+  d.className = "row";
+  d.innerHTML = `<span class="ts">${hms(t)}</span><span class="dot ${ok === false ? "bad" : "ok"}"></span><span>${esc(text.replace(/:[a-z0-9_+-]+:\s*/g, ""))}</span>`;
   f.appendChild(d); f.scrollTop = f.scrollHeight;
 }
 function addOp(o) {
   const box = $("#ops"), d = document.createElement("div");
-  d.className = o.level; d.textContent = `${hms(o.t)} ${o.text}`; box.appendChild(d);
+  d.className = o.level; d.textContent = `${hms(o.t)}  ${o.text}`; box.appendChild(d);
   while (box.children.length > 200) box.removeChild(box.firstChild);
   box.scrollTop = box.scrollHeight;
 }
+
+// the Agents arrow in the header shows the agents and their models; a click elsewhere or Escape closes it
+function setAgentsOpen(open, refocus) {
+  if (!!S.agentsOpen === open) return;
+  S.agentsOpen = open; renderConfig();
+  if (refocus) $("#agents-btn").focus();
+}
+document.addEventListener("click", (e) => {
+  if (e.target.closest("#agents-btn")) setAgentsOpen(!S.agentsOpen, true);
+  else if (S.agentsOpen && !e.target.closest("#agents-pop")) setAgentsOpen(false);
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && S.agentsOpen) setAgentsOpen(false, true); });
+
+// a user's open or close of a section survives the live re-renders
+$("#incident").addEventListener("click", (e) => {
+  const s = e.target.closest("summary"); if (!s) return;
+  const d = s.parentElement; if (d && d.dataset.k) OPEN.set(d.dataset.k, !d.open);
+});
 
 // ------------------------------------------------------------------ events
 function onEvent(ev) {

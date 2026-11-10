@@ -43,7 +43,7 @@ ROOT = Path(__file__).resolve().parent.parent
 INCIDENTS = {
     "db-misconfig": {"title": "Wrong database host", "script": "scripts/inject/db-misconfig.ps1",
                      "what": "Changes backend's DATABASE_URL in its ConfigMap to a host that does not exist "
-                             "(postgres-wrong) and rolls the backend out - like a bad configuration deploy."},
+                             "(postgres-wrong) and rolls the backend out, like a bad configuration deploy."},
     "db-down": {"title": "Database down", "script": "scripts/inject/db-down.ps1",
                 "what": "Scales the PostgreSQL deployment to 0 replicas. The backend's configuration stays correct."},
     "oom": {"title": "Memory exhaustion (traffic spike)", "script": "scripts/inject/oom.ps1",
