@@ -161,3 +161,24 @@ def test_prometheus_restores_its_port_forward_and_retries_once():
     except prom.PrometheusError:
         pass
     assert restored == [1]
+
+
+def test_the_investigators_fallback_model_gets_the_investigators_timeout(tmp_path, monkeypatch):
+    from demo.agent.llm import ChatModel
+    eng, _, _ = engine(tmp_path, monkeypatch)
+    eng.model = ChatModel("http://x", "k", "big", timeout=90)
+    eng.reviewers = [ChatModel("http://x", "k", "small", timeout=30), eng.model]
+    seen = {}
+
+    class Spy:
+        def __init__(self, model, tb, emit, **kw):
+            seen["fallback"] = kw.get("fallback")
+
+        def run(self, inc):
+            return {"status": "unavailable", "error": "x"}
+    monkeypatch.setattr("demo.engine.InvestigatorAgent", Spy)
+    monkeypatch.setattr(eng, "providers", SimpleNamespace(capabilities=lambda store: SimpleNamespace(
+        list_components=lambda: ["backend"]), clock=time.time), raising=False)
+    eng._agent({"id": "INC-T", "detected_at": time.time()}, {}, {"mode": "lead", "budget": {"tool_calls": 1, "seconds": 1}})
+    fb = seen["fallback"]
+    assert fb.model == "small" and fb.timeout == 90 and eng.reviewers[0].timeout == 30   # the Reviewer keeps 30 s

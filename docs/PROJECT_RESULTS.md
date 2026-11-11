@@ -109,8 +109,8 @@ Measured on 2026-11-11 on `main` (commit `7ee0d01`).
 
 ### Automated tests
 
-**273 tests, all passing.** The suite runs offline against a fake Kubernetes API (`tests/fake_cluster.py`) and
-scripted LLM models, with no network and no cluster. Measured run time: 17.8 s, 17.6 s and 16.8 s over three runs.
+**274 tests, all passing.** The suite runs offline against a fake Kubernetes API (`tests/fake_cluster.py`) and
+scripted LLM models, with no network and no cluster. Measured run time: 17.8 s, 17.6 s and 16.8 s over three runs (273 tests); 20.0 s for 274 tests later the same day.
 
 At the end of Iteration 2 the suite had 7 tests; they remain in the suite as the regression baseline.
 
@@ -122,7 +122,7 @@ At the end of Iteration 2 the suite had 7 tests; they remain in the suite as the
 | Evidence history, timeline, impact and metrics (`test_history`, `test_recorder`, `test_timeline*`, `test_impact`, `test_metrics_correlation`, `test_temporal_semantics`, `test_dependency_history`) | 76 |
 | Diagnosis scenarios, planner and similar-symptom traps (`test_scenarios`, `test_planner`, `test_similar_symptoms`, `test_legacy`, `test_adapter`) | 25 |
 | Detection (`test_detector`) | 10 |
-| LLM agents, timing facts and reconnecting (`test_demo_agent`, `test_demo_reviewer`, `test_demo_hybrid`, `test_demo_timing`) | 24 |
+| LLM agents, timing facts and reconnecting (`test_demo_agent`, `test_demo_reviewer`, `test_demo_hybrid`, `test_demo_timing`) | 25 |
 | Architecture boundaries (`test_architecture`) | 11 |
 
 The 11 architecture tests check, by reading the code, that the design rules hold. For example: only the actuator
@@ -279,8 +279,9 @@ for at least 75 s, past the 60 s detection pause that follows a reset.
 | Backend scaled to zero | 0.4 s | **30 s** | the backend pods shutting down gracefully |
 | Wrong database host | 19 s | **30 s** | the script's own rollout of the backend (11 s after it finished) |
 
-**Result: every incident was detected within 7–30 s of the injection**, most of that being the failure itself taking
-effect. Database down was also measured on 2026-11-10 at 6 s and 7 s.
+**Result: the six incidents measured this way were detected within 7–30 s of the injection**, most of that being the
+failure itself taking effect. Database down was also measured on 2026-11-10 at 6 s. Stale database credentials, Memory
+exhaustion and Sustained overload were not re-measured this way, so their detection latency is not reported.
 
 ### 9.2 Investigation, review and outcome
 
@@ -320,9 +321,10 @@ then the two agents run.
 
 **Variation between runs.** The LLM verdicts are not identical from run to run. Sustained overload was challenged on
 2026-11-10 and agreed on 2026-11-11, where the gate refused automation anyway (the agent led). Memory exhaustion and
-Broken release were agreed on 2026-11-10 and challenged on 2026-11-11. Over the three live passes there were 23
-reviews: 20 agreements and 3 challenges, every challenge backed by valid evidence, and no rejects or unsupported
-objections. Because the Reviewer can only block, this variation can make the system more cautious, never less.
+Broken release were agreed on 2026-11-10 and challenged on 2026-11-11. Over the three structured live passes there
+were 23 reviews: 20 agreements and 3 challenges, every challenge backed by valid evidence, and no rejects or
+unsupported objections. Two more reviews ran on 2026-11-10 outside those passes: an agreement on Database down after the
+fixes, and a partial challenge on the 22:39 blip (section 10). Because the Reviewer can only block, this variation can make the system more cautious, never less.
 
 **Compared with the day before.** The Investigator was faster when leading (46–159 s, against 140–285 s on
 2026-11-10), and it completed every run; on 2026-11-10 it had timed out twice.
@@ -478,14 +480,14 @@ test.
 | Offline diagnosis accuracy | **20 / 20** correct (10 scenarios, 4 of them deliberate traps, × 2 strategies) | 4 |
 | Planner efficiency | the same answers with **~20% fewer** capability calls than collecting everything | 4 |
 | Value of evidence history | a lost OOM went from **Undetermined, 0% → Memory exhaustion, 85%**; a wrong diagnosis was corrected | 5 |
-| Automated tests | **273**, all passing, in about 17 s, offline (from 7 at Iteration 2) | 3 |
+| Automated tests | **274**, all passing, in about 17–20 s, offline (from 7 at Iteration 2) | 3 |
 | Design rules enforced by tests | **11** architecture tests (for example: only the executor can change the cluster) | 3, 12 |
-| Detection latency | every incident opened **7–30 s** after the injection | 9.1 |
+| Detection latency | the 6 incidents measured opened **7–30 s** after the injection | 9.1 |
 | Time to a decision-ready plan | **68–224 s** after detection, with two LLM agents | 9.2 |
 | Investigator evidence quality | **55 / 55** findings supported by collected evidence | 9.2 |
 | Automatic remediation | **6 / 6** gate-eligible runs resolved on the first attempt (Database down ×3, Memory limit too low ×3); nothing applied without a passed gate | 9.2, 10, 11 |
 | Engineer-approved remediation | **4 / 4** approved fixes the Reviewer agreed with were RESOLVED; the one executed against its challenge came back NOT_RESOLVED, as it predicted | 10 |
-| Reviewer Agent | **23** live reviews: 20 agreements, **3 evidence-backed challenges**, 1 of them stopping a wrong automatic fix | 9.2, 10 |
+| Reviewer Agent | **23** reviews in three structured live passes: 20 agreements, **3 evidence-backed challenges**, 1 of them stopping a wrong automatic fix | 9.2, 10 |
 | False alarms | **0** in 10 min idle and **0** from 7 induced stalls (5xx up to 45%), down from 2 in about 3 h before the fix | 11 |
 | Resilience | recovered by itself from a killed metrics connection and from a full cluster restart, with no false incident | 11 |
 | Safety | every change behind approval (or a passed gate), policy, live recheck, dry run, **exactly one** typed change and verification; a failed fix is never retried | 7, 12 |

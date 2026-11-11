@@ -455,8 +455,10 @@ class Engine:
                      detected_at=inc["detected_at"])
         inc["components"] = list(tb.components)
         self._agent_tb = tb
-        # If the Investigator's model stops answering, the investigation continues with the Reviewer's model
-        fallback = next((m for m in self.reviewers if m.model != self.model.model), None)
+        # If the Investigator's model stops answering, the investigation continues with the Reviewer's model, given the
+        # Investigator's request timeout: a full investigation's context takes longer than a review
+        fallback = next((ChatModel(m.base_url, m.api_key, m.model, self.model.timeout) for m in self.reviewers
+                         if m.model != self.model.model), None)
         out = InvestigatorAgent(self.model, tb, lambda t, d: self._emit(t, d), mode=r["mode"],
                                 rule_summary=_rule_summary(report),
                                 max_tool_calls=r["budget"]["tool_calls"],
