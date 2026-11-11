@@ -142,5 +142,5 @@ def test_the_slack_reply_shows_the_verdict_and_its_evidence():
         {"verdict": "reject", "summary": "wrong component",
          "objections": [{"statement": "postgres is ready", "evidence_ids": ["E1"]}]}, tb)}
     text = json.dumps(slack_ai.review(inc, rv))
-    assert "rejects the conclusion" in text and "postgres is ready" in text and "E1" in text
+    assert "rejects the diagnosis" in text and "postgres is ready" in text and "E1" in text
     assert "unavailable" in json.dumps(slack_ai.review(inc, {"status": "unavailable", "error": "timeout"}))

@@ -119,9 +119,9 @@ def test_a_resolved_execution_ends_with_its_own_final_status_message(tmp_path, m
                                                            "status": "pass"}], "reason": "held"})
     eng._mirror_slack()
     final = eng.transport.posts[-1]
-    assert final[0] is None and headers(eng.transport)[-1] == ":white_check_mark: Resolved · INC-TEST"
+    assert final[0] is None and headers(eng.transport)[-1] == ":white_check_mark: Resolved: INC-TEST"
     text = str(final[1])
-    assert "the limit is too low" in text and "1/1 checks held" in text and "Duration:" in text
+    assert "the limit is too low" in text and "1 of 1 checks held" in text and "Duration:" in text
     assert eng.registry.get("INC-TEST")["final_ts"] and "*Status:* :white_check_mark: Resolved" in \
         str(eng.transport.updates[-1][1])
 
@@ -130,7 +130,7 @@ def test_a_rejection_ends_with_a_final_status(tmp_path, monkeypatch):
     eng, d = slack_engine(tmp_path, monkeypatch)
     eng.review.decide("INC-TEST", d, 0, "rejected", APPROVER)
     eng._mirror_slack()
-    assert headers(eng.transport)[-1] == ":no_entry: Fix not applied · INC-TEST" and eng.transport.posts[-1][0] is None
+    assert headers(eng.transport)[-1] == ":no_entry: Fix not applied: INC-TEST" and eng.transport.posts[-1][0] is None
 
 
 def test_the_investigation_message_carries_the_agents_verdict(tmp_path):
@@ -142,8 +142,8 @@ def test_the_investigation_message_carries_the_agents_verdict(tmp_path):
              "report": {"root_cause": "x", "root_cause_component": "backend", "findings": [], "summary": "",
                         "validation": {"ok": True, "problems": []}, "agreement": {"category": True, "component": True}}}
     t = str(slack_ai.investigation(inc, report, agree))
-    assert "Investigation · INC-TEST" in t and "agrees" in t and report["likely_root_cause"][:40] in t
+    assert "Investigation: INC-TEST" in t and "agrees" in t and report["likely_root_cause"][:40] in t
     assert "AI agent unavailable" in str(slack_ai.investigation(inc, report, {"status": "error", "error": "timeout"}))
     manual = str(slack_ai.manual({"id": "INC-TEST", "cause": "bad data"},
                                  {"reason": "no typed action fits", "manual_steps": ["Delete the bad order"]}))
-    assert "Handed to engineer" in manual and "1. Delete the bad order" in manual and "Acknowledge" in manual
+    assert "Handed to an engineer" in manual and "1. Delete the bad order" in manual and "Acknowledge" in manual

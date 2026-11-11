@@ -137,3 +137,11 @@ def test_agent_unavailable_is_reported_not_hidden():
     events = []
     out = InvestigatorAgent(ScriptedModel(fail=True), tb, lambda t, d: events.append(t)).run({"id": "INC-T"})
     assert out["status"] == "unavailable" and "agent_error" in events
+
+
+def test_an_argument_a_tool_does_not_have_is_ignored_not_a_failure():
+    tb, _ = toolbox(fc.world_db_down())
+    res, rec = tb.call("get_events", {"purview": "incident", "purpose": "events in the window"})
+    assert res["ignored_arguments"] == ["purview"] and rec["args"] == {} and rec["id"] == "E1"
+    res, _ = tb.call("get_events", {"component": "postgres"})
+    assert "ignored_arguments" not in res

@@ -10,6 +10,7 @@ Rules enforced here, in code (never left to the prompt):
   * recorded moments carry when they happened relative to detection and whether they are inside the incident
     window, so old restarts and changes are not mistaken for the cause.
 """
+import inspect
 import json
 import re
 import time
@@ -126,12 +127,15 @@ class ToolBox:
         fn = getattr(self, f"_t_{name}", None)
         if fn is None:
             raise ToolRejected(f"unknown tool '{name}'")
-        args = {k: v for k, v in (args or {}).items() if k != "purpose"}
+        # Models sometimes add arguments a tool does not have; they are ignored and named, not a failed call
+        accepted = set(inspect.signature(fn).parameters)
+        ignored = sorted(k for k in (args or {}) if k != "purpose" and k not in accepted)
+        args = {k: v for k, v in (args or {}).items() if k in accepted}
         result, summary = fn(**args)
         eid = f"E{len(self.evidence) + 1}"
         rec = {"id": eid, "tool": name, "args": args, "summary": summary}
         self.evidence[eid] = rec
-        return {"evidence_id": eid, **result}, rec
+        return {"evidence_id": eid, **result, **({"ignored_arguments": ignored} if ignored else {})}, rec
 
     def _tr(self) -> TimeRange:
         return TimeRange(self.start, self.clock())

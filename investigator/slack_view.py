@@ -5,29 +5,30 @@ execute anything: every word it shows comes from the report dict, the Remediatio
 contract) and the review status it is given. The same objects remain usable by a web UI or an API.
 
 Each incident is a few headed channel messages, each holding only what a reader needs at that step:
-  Incident detected (status kept current) · Investigation (+ a reply with the details) · Remediation (buttons;
-  decisions and execution progress are replies to it) · the final status (posted by the caller, e.g. the demo).
+  Incident detected (status kept current), Investigation (with a reply holding the details), Remediation (buttons;
+  decisions and execution progress are replies to it), and the final status (posted by the caller, e.g. the demo).
 
 Interactive controls carry only identifiers (incident, plan digest, action index); the decision itself is made and
 recorded by review.py, never here.
 """
+import re
 import json
 from datetime import datetime
 
 STALE_AFTER_S = 15 * 60                  # default only: callers pass the execution policy's max plan age
 ROLLBACK_MARK = "#rollback-"             # review key of a rollback plan: <incident>#rollback-<execution>
 OUTCOME_ICON = {"RESOLVED": ":white_check_mark:", "NOT_RESOLVED": ":x:", "INCONCLUSIVE": ":grey_question:"}
-EXEC_TEXT = {"claimed": ":gear: executing — safety checks running", "applying": ":gear: executing — applying the change",
-             "verifying": ":mag: change applied — verifying", "refused": ":no_entry: execution refused",
-             "apply_failed": ":no_entry: the change was rejected by the cluster", "uncertain": ":warning: execution "
-             "state uncertain — not retried; fresh investigation required"}
+EXEC_TEXT = {"claimed": ":gear: Running the safety checks", "applying": ":gear: Applying the change",
+             "verifying": ":mag: Change applied, verifying", "refused": ":no_entry: Execution refused",
+             "apply_failed": ":no_entry: The cluster rejected the change", "uncertain": ":warning: State uncertain. "
+             "Not retried; run a fresh investigation"}
 CHECK_MARK = {True: ":white_check_mark:", False: ":x:", None: ":grey_question:"}
 CHANGE_TYPES = {"adjust_resource_limit", "scale_workload", "restore_configuration", "rollback_release"}
 STATUS_ICON = {"awaiting_review": ":hourglass_flowing_sand:", "approved": ":white_check_mark:", "rejected": ":x:",
                "investigate_first": ":mag:", "acknowledged": ":ballot_box_with_check:", "superseded": ":no_entry_sign:"}
-STATUS_TEXT = {"awaiting_review": "awaiting review", "approved": "approved",
-               "rejected": "rejected", "investigate_first": "investigate first (no change approved)",
-               "acknowledged": "acknowledged", "superseded": "superseded by a newer plan: this decision no longer applies"}
+STATUS_TEXT = {"awaiting_review": "Waiting for review", "approved": "Approved",
+               "rejected": "Rejected", "investigate_first": "Sent back to investigate first",
+               "acknowledged": "Acknowledged", "superseded": "Replaced by a newer plan, so this decision no longer applies"}
 TYPE_TEXT = {"adjust_resource_limit": "Adjust resource limit", "scale_workload": "Scale workload",
              "restore_configuration": "Restore configuration", "rollback_release": "Roll back release",
              "investigate_further": "Investigate further"}
@@ -40,6 +41,13 @@ PARAMETER_HINT = {"adjust_resource_limit": ("New memory limit", "e.g. 256Mi or 1
 
 def hms(t) -> str:
     return datetime.fromtimestamp(t).astimezone().strftime("%H:%M:%S") if t else "?"
+
+
+def mention(user: str | None) -> str:
+    """A Slack mention for a Slack user ID; anything else (e.g. `remediation-agent`) as a plain name."""
+    if user and re.fullmatch(r"[UW][A-Z0-9]{2,}", user):
+        return f"<@{user}>"
+    return "the Remediation Agent" if user == "remediation-agent" else str(user or "someone").replace("-", " ")
 
 
 def _trim(text: str, limit: int = 2900) -> str:
@@ -70,7 +78,7 @@ def _age(collected_at: float | None, now: float, stale_after_s: float = STALE_AF
     # Slack renders the date token in the viewer's time zone and keeps "{ago}" current whenever the message is
     # viewed; the text after "|" is the fallback for clients that cannot render it (fixed at render time).
     token = f"<!date^{int(collected_at)}^{{time_secs}} ({{ago}})|{hms(collected_at)} ({span} ago)>"
-    return f"evidence collected at {token}", age > stale_after_s
+    return f"Evidence from {token}", age > stale_after_s
 
 
 # --------------------------------------------------------------------------- incident detected (kept current)
@@ -89,13 +97,13 @@ def thread_root(incident_id: str, namespace: str, signals: list[str] | None = No
         if execution_summary:
             parts.append(f"*Remediation:* {execution_summary}")
         if not headline and not resolved:
-            parts.append("_Investigating…_")
+            parts.append("*Status:* Investigating")
     if resolved:
-        parts.append(":large_green_circle: symptoms have cleared")
+        parts.append(":large_green_circle: The symptoms have cleared.")
     return {"text": f"Incident {incident_id} in {namespace}", "blocks": [
-        _header(f":rotating_light: Incident detected · {incident_id}"),
-        _section("\n".join(f"• {s[:200]}" for s in (signals or [])[:3]) or "_no signal recorded_"),
-        _context(f"`{namespace}` · " + " · ".join(parts))]}
+        _header(f":rotating_light: Incident detected: {incident_id}"),
+        _section("\n".join(f"• {s[:200]}" for s in (signals or [])[:3]) or "_No signal recorded._"),
+        _context("\n".join(parts + [f"Namespace `{namespace}`"]))]}
 
 
 # --------------------------------------------------------------------------- investigation
@@ -108,7 +116,7 @@ def _rcc_text(r: dict) -> str:
 def investigation_message(r: dict) -> dict:
     """The diagnosis at a glance: what failed, why, how sure, the strongest evidence and who is affected."""
     blocks = [
-        _header(f":mag: Investigation · {r['id']}"),
+        _header(f":mag: Investigation: {r['id']}"),
         _section(f"*{r['failure_category_label']}* in `{r['affected_component']['name']}`\n"
                  f"*Root cause:* {r['likely_root_cause']}"),
         {"type": "section", "fields": [
@@ -125,30 +133,29 @@ def investigation_message(r: dict) -> dict:
         else None
     if users:
         blocks.append(_section(f"*User impact*\n{users[:300]}"))
-    blocks.append(_context("Details (all evidence, impact, timeline) are in the replies."))
     return {"text": f"Investigation of {r['id']}: {r['failure_category_label']} in {r['affected_component']['name']}",
             "blocks": blocks}
 
 
-def investigation_details(r: dict) -> dict:
-    """A reply to the Investigation message: everything behind the summary, for whoever wants to check it."""
-    blocks = [_section("*All evidence*\n" + ("\n".join(f"• `{e['id']}` {e['text'][:220]}" for e in r["evidence"][:8])
-                                            or "_none_"))]
+def investigation_details(r: dict, shown: int = 3) -> dict:
+    """A reply to the Investigation message: what is behind the summary that the summary did not already show.
+    `shown` is how many evidence items the Investigation message listed; they are not repeated here."""
+    blocks = []
+    more = r["evidence"][shown:shown + 3]
+    if more:
+        blocks.append(_section(("*More evidence*" if shown else "*Evidence*") + "\n"
+                               + "\n".join(f"• {e['text'][:200]} `{e['id']}`" for e in more)))
     imp = r.get("impact") or {}
     if imp.get("assessed"):
-        blocks.append(_section("*Impact*\n" + "\n".join(f"• {x}" for x in [
-            imp["instances"]["statement"], imp["users"]["statement"], "Duration: " + imp["duration"]["statement"],
-            "Propagation: " + imp["propagation_statement"]])))
+        blocks.append(_section(f"*Duration:* {imp['duration']['statement']}"))
     answers = ((r.get("reconstruction") or {}).get("answers") or {})
-    timeline = [answers[k]["statement"][:240] for k in ("what_changed_first", "failure_occurred", "after_recovery")
-                if k in answers]
+    timeline = [answers[k]["statement"][:220] for k in ("what_changed_first", "failure_occurred") if k in answers]
     if timeline:
         blocks.append(_section("*Timeline*\n" + "\n".join(f"• {x}" for x in timeline)))
-    alts = [a for a in r.get("alternatives_considered", []) if a.get("score", 0) >= 0.3][:3]
+    alts = [a for a in r.get("alternatives_considered", []) if a.get("score", 0) >= 0.3][:2]
     if alts:
-        blocks.append(_context("Also considered: " + "; ".join(f"{a['label']} in {a['component']} ({a['score']:.2f})"
-                                                                for a in alts)))
-    blocks.append(_context(f"{r['facts_collected']} facts collected · {r['generated_by']}"))
+        blocks.append(_context("Also considered: " + "; ".join(f"{a['label']} in {a['component']}" for a in alts)))
+    blocks.append(_context(f"Rule engine: {r['facts_collected']} facts collected"))
     return {"text": f"Investigation details for {r['id']}", "blocks": blocks[:50]}
 
 
@@ -178,7 +185,7 @@ def _change_line(a: dict, supplied: dict | None = None) -> str | None:
         return None
     after_text = (f"`{after}`" if after not in (None, "its previous value") else
                   after or "_the value you enter_")
-    return f"{what}: `{before}` → {after_text}"
+    return f"{what} from `{before}` to {after_text}"
 
 
 def plan_message(plan: dict, digest: str, statuses: dict[int, dict], collected_at: float | None, now: float,
@@ -192,30 +199,25 @@ def plan_message(plan: dict, digest: str, statuses: dict[int, dict], collected_a
     age, stale = _age(collected_at, now, stale_after_s)
     rollback = ROLLBACK_MARK in str(plan.get("incident_id", ""))
     incident = str(plan.get("incident_id", "")).split(ROLLBACK_MARK)[0]
-    blocks = [_header(f":leftwards_arrow_with_hook: Rollback plan · {incident}" if rollback
-                      else f":hammer_and_wrench: Remediation · {incident}")]
+    blocks = [_header(f":leftwards_arrow_with_hook: Rollback plan: {incident}" if rollback
+                      else f":hammer_and_wrench: Remediation: {incident}")]
     if plan["assessment"] != "action_proposed":
-        blocks.append(_section(f"*{ASSESSMENT_TEXT.get(plan['assessment'], plan['assessment'])}* — "
+        blocks.append(_section(f"*{ASSESSMENT_TEXT.get(plan['assessment'], plan['assessment'])}.* "
                                f"{plan['assessment_reason']}"))
     if note:
         blocks.append(_section(note))
     if stale:
-        blocks.append(_section(f":warning: *This plan reflects the state observed at {hms(collected_at)}.* It is older "
-                               f"than the {stale_after_s / 60:.0f} min the execution policy allows: Execute will be "
-                               f"refused; run a fresh investigation."))
+        blocks.append(_section(f":warning: *This plan is based on the state at {hms(collected_at)}.* It is older than "
+                               f"the {stale_after_s / 60:.0f} min the policy allows, so Execute will be refused. Run a "
+                               f"fresh investigation."))
     for i, a in enumerate(plan["actions"]):
         blocks += _action_blocks(i, a, plan, digest, statuses.get(i, {"status": "awaiting_review"}), interactive,
                                  executable and not stale, (executions or {}).get(i))
     u = plan["uncertainty"]
-    doubts = []
     if u["competing_causes"]:
-        doubts.append("*Competing explanations:* " + "; ".join(f"{c['category']} in {c['component']} ({c['score']:.2f})"
-                                                              for c in u["competing_causes"]))
-    if u["evidence_gaps"]:
-        doubts.append("*Evidence gaps:* " + "; ".join(g[:160] for g in u["evidence_gaps"][:2]))
-    if doubts:
-        blocks.append(_context("\n".join(doubts)))
-    blocks.append(_context(f"{age} · plan `{digest[:12]}`"))
+        blocks.append(_context("Other possible causes: " + "; ".join(f"{c['category'].replace('_', ' ')} in "
+                                                                     f"{c['component']}" for c in u["competing_causes"])))
+    blocks.append(_context(f"{age}. Plan `{digest[:12]}`"))
     return {"text": f"Remediation plan for {plan['incident_id']}: {ASSESSMENT_TEXT.get(plan['assessment'])}",
             "blocks": blocks[:50]}
 
@@ -237,9 +239,10 @@ def _action_blocks(i: int, a: dict, plan: dict, digest: str, st: dict, interacti
         if not a["parameters_complete"] and not st.get("supplied_parameters"):
             lines.append(":memo: *Needs your input:* " + "; ".join(a["preconditions"]))
         if a["risks"]:
-            lines.append(f"*Risk:* {a['risks'][0]['statement'][:220]}")
+            lines.append(f"*Risk:* {a['risks'][0]['statement'][:200]}")
         if a["verification"]:
-            lines.append("*Success check:* " + " · ".join(v["statement"] for v in a["verification"]))
+            lines.append(f"*Verified by:* {len(a['verification'])} checks, for example "
+                         f"\"{a['verification'][0]['statement'][:120]}\"")
         if a["rollback"]:
             lines.append(f"*Undo:* {a['rollback']['statement']}")
         out.append(_section("\n".join(lines)))
@@ -274,13 +277,12 @@ def _status_line(a: dict, st: dict, executable: bool, execution: dict | None) ->
     if execution:
         return execution_status_line(execution)
     status = st.get("status", "awaiting_review")
-    who = f" by <@{st['reviewer']}> at {hms(st['at'])}" if st.get("reviewer") else ""
-    line = f"{STATUS_ICON.get(status, '')} *{STATUS_TEXT.get(status, status)}*{who}"
+    who = f" by {mention(st['reviewer'])} at {hms(st['at'])}" if st.get("reviewer") else ""
+    line = f"{STATUS_ICON.get(status, '')} *{STATUS_TEXT.get(status, status)}*{who}."
     if status == "awaiting_review":
-        line += (" — next: *Approve*, then *Execute*" if a["type"] in CHANGE_TYPES else
-                 " — *Acknowledge* when you take it over")
+        line += (" Approve, then Execute." if a["type"] in CHANGE_TYPES else " Acknowledge when you take it over.")
     elif status == "approved" and a["type"] in CHANGE_TYPES and executable:
-        line += " — next: *Execute*"
+        line += " Press Execute to apply it."
     return line
 
 
@@ -296,9 +298,9 @@ def decision_message(record: dict, plan: dict) -> dict:
     a = plan["actions"][record["action_index"]]
     supplied = record.get("supplied_parameters") or {}
     text = (f"{STATUS_ICON.get(record['decision'], '')} *{STATUS_TEXT.get(record['decision'], record['decision'])}* "
-            f"by <@{record['reviewer']}>"
-            + (" with " + ", ".join(f"`{v}`" for v in supplied.values()) if supplied else "")
-            + (" — next: *Execute*" if record["decision"] == "approved" and a["type"] in CHANGE_TYPES else ""))
+            f"by {mention(record['reviewer'])}"
+            + (" with " + ", ".join(f"`{v}`" for v in supplied.values()) if supplied else "") + "."
+            + (" Press Execute to apply it." if record["decision"] == "approved" and a["type"] in CHANGE_TYPES else ""))
     return {"text": f"Decision recorded: {record['decision']}", "blocks": [_section(text)]}
 
 
@@ -310,9 +312,9 @@ def notice(text: str) -> dict:
 
 def execution_status_line(rec: dict) -> str:
     """One line under an action in the plan message, from its execution record."""
-    who = f" — executed by <@{rec['executor']}>" if rec.get("executor") else ""
+    who = f", executed by {mention(rec['executor'])}" if rec.get("executor") else ""
     if rec.get("status") == "completed" and rec.get("outcome"):
-        return f"{OUTCOME_ICON.get(rec['outcome'], '')} *executed — {rec['outcome']}*{who}"
+        return f"{OUTCOME_ICON.get(rec['outcome'], '')} *Executed: {rec['outcome']}*{who}"
     return f"*{EXEC_TEXT.get(rec.get('status'), rec.get('status'))}*{who}" + (
         f": {rec['message'][:200]}" if rec.get("status") in ("refused", "apply_failed", "uncertain") and rec.get("message")
         else "")
@@ -322,7 +324,7 @@ def _checks_text(checks: list[dict]) -> str:
     """All passed: one line. Otherwise only the checks that did not pass, with why."""
     failed = [c for c in checks if c.get("ok") is not True]
     if not failed:
-        return f":white_check_mark: all {len(checks)} passed"
+        return f":white_check_mark: All {len(checks)} passed"
     return "\n".join(f"{CHECK_MARK.get(c.get('ok'))} {c.get('detail', c.get('check'))[:220]}" for c in failed[:8])
 
 
@@ -334,8 +336,8 @@ def execution_message(plan: dict, index: int, executor: str, stage: str, checks:
     rec = record or {}
     title = {"checks": "Execution checks", "applied": "Executing", "verifying": "Verifying", "observing": "Verifying",
              "completed": "Execution result", "stopped": "Execution stopped"}.get(stage, "Execution")
-    lines = [f"*{title}* — {TYPE_TEXT.get(a['type'], a['type'])} `{_target(a)}` · by <@{executor}>"
-             + (f" · approved by <@{rec['approver']}>" if rec.get("approver") else "")]
+    lines = [f"*{title}:* {TYPE_TEXT.get(a['type'], a['type']).lower()} on `{_target(a)}`. Executed by {mention(executor)}"
+             + (f", approved by {mention(rec['approver'])}" if rec.get("approver") else "") + "."]
     if rec.get("change"):
         lines.append(f"*Change:* {_describe(a['type'], rec['change'])}")
     if checks:
@@ -343,33 +345,32 @@ def execution_message(plan: dict, index: int, executor: str, stage: str, checks:
     dry = rec.get("dry_run")
     if dry:
         lines.append(f"*Dry run:* {CHECK_MARK[bool(dry.get('accepted'))]} "
-                     + ("accepted" if dry.get("accepted") else f"rejected — {dry.get('error')}"))
+                     + ("accepted" if dry.get("accepted") else f"rejected: {dry.get('error')}"))
     applied = rec.get("applied")
     if applied and applied.get("accepted"):
-        lines.append(f"*Applied at {hms(applied.get('at'))}:* `{applied.get('before')}` → `{applied.get('after')}`")
+        lines.append(f"*Applied at {hms(applied.get('at'))}:* `{applied.get('before')}` to `{applied.get('after')}`")
     blocks = [_section("\n".join(lines))]
     v = rec.get("verification")
     if v and v.get("criteria") is not None and rec.get("outcome"):
         crit = "\n".join(f"{CHECK_MARK.get({'pass': True, 'fail': False}.get(c['status']))} {c['statement'][:120]}"
-                         + ("" if c["status"] == "pass" else f" — _{(c.get('evidence') or ['no evidence'])[-1][:160]}_")
+                         + ("" if c["status"] == "pass" else f": _{(c.get('evidence') or ['no evidence'])[-1][:160]}_")
                          for c in v["criteria"][:8])
         w = v.get("window") or {}
         span = (f" (settled after {(v['settle']['ended_at'] - v['settle']['started_at']):.0f} s, then observed "
                 f"{(w.get('ended_at', 0) - w.get('started_at', 0)):.0f} s)" if v.get("settle") and w else "")
-        blocks.append(_section(f"*Verification{span}:*\n{crit or '_no criteria_'}\n"
-                               f"{OUTCOME_ICON.get(rec['outcome'], '')} *Outcome: {rec['outcome']}* — "
-                               f"{v.get('reason', '')[:400]}"))
+        blocks.append(_section(f"*Verification{span}:*\n{crit or '_No criteria._'}\n"
+                               f"{OUTCOME_ICON.get(rec['outcome'], '')} *Outcome: {rec['outcome']}*"))
         rb = v.get("rollback")
         if rec["outcome"] != "RESOLVED":
             blocks.append(_context("No further change was made." + (
-                " A rollback plan has been posted below for review: it needs its own approval and Execute."
+                " A rollback plan is posted below. It needs its own approval and Execute."
                 if rb and rb.get("available") else (f" No rollback is available ({rb['reason']})." if rb else ""))))
     elif stage in ("applied", "verifying", "observing") and window:
-        blocks.append(_context(f":hourglass_flowing_sand: Verifying: up to {window.get('settle_max_s', 0):.0f} s to "
+        blocks.append(_context(f":hourglass_flowing_sand: Verifying. Up to {window.get('settle_max_s', 0):.0f} s to "
                                f"settle, then {window.get('window_s', 0):.0f} s of observation."))
     if rec.get("status") in ("refused", "apply_failed", "uncertain"):
         blocks.append(_section(f":no_entry: *{EXEC_TEXT.get(rec['status'])}:* {rec.get('message', '')[:500]}"))
-    return {"text": f"{title} — action {index + 1}: {rec.get('outcome') or rec.get('status') or stage}",
+    return {"text": f"{title}, action {index + 1}: {rec.get('outcome') or rec.get('status') or stage}",
             "blocks": blocks[:50]}
 
 
@@ -377,8 +378,8 @@ def execution_refused_message(plan: dict | None, index: int, executor: str, mess
                               checks: list[dict] | None = None) -> dict:
     """A request refused before anything was claimed (stale plan, superseded, not approved, policy, ...)."""
     a = (plan or {}).get("actions", [{}] * (index + 1))[index] if plan else {}
-    head = f":no_entry: *Execution refused* — action {index + 1}" + (
-        f" ({TYPE_TEXT.get(a.get('type'), a.get('type'))})" if a else "") + f", requested by <@{executor}>"
+    head = f":no_entry: *Execution refused* for action {index + 1}" + (
+        f" ({TYPE_TEXT.get(a.get('type'), a.get('type'))})" if a else "") + f", requested by {mention(executor)}."
     blocks = [_section(f"{head}\n{message}")]
     if checks:
         blocks.append(_context(_checks_text(checks)))
@@ -387,14 +388,14 @@ def execution_refused_message(plan: dict | None, index: int, executor: str, mess
 
 def _describe(atype: str, c: dict) -> str:
     if atype == "adjust_resource_limit":
-        return (f"memory limit of `{c.get('component')}` `{_mi(c.get('expected_bytes'))}` → "
+        return (f"memory limit of `{c.get('component')}` from `{_mi(c.get('expected_bytes'))}` to "
                 f"`{_mi(c.get('target_bytes'))}`")
     if atype == "scale_workload":
-        return f"replicas of `{c.get('component')}` `{c.get('expected_replicas')}` → `{c.get('target_replicas')}`"
+        return f"replicas of `{c.get('component')}` from `{c.get('expected_replicas')}` to `{c.get('target_replicas')}`"
     if atype == "rollback_release":
-        return f"image of `{c.get('component')}` `{c.get('expected_image')}` → `{c.get('target_image')}`"
-    return (f"host in `{c.get('item')}` (`{c.get('source')}`) `{c.get('expected_host')}` → "
-            f"`{c.get('target_host') or 'recorded previous value'}`, then restart `{c.get('component')}`")
+        return f"image of `{c.get('component')}` from `{c.get('expected_image')}` to `{c.get('target_image')}`"
+    return (f"host in `{c.get('item')}` from `{c.get('expected_host')}` to "
+            f"`{c.get('target_host') or 'the recorded previous value'}`, then restart `{c.get('component')}`")
 
 
 def _mi(b) -> str:
