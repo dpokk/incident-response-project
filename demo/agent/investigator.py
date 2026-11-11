@@ -199,7 +199,11 @@ def validate_report(r: dict, tb: ToolBox) -> dict:
         if bad:
             problems.append(f"finding cites unknown evidence {', '.join(bad)}")
     comp = str(r.get("root_cause_component") or "")
-    if comp not in tb.components:
+    # A component, or the rule engine's own root cause when that is a configuration item (e.g. DATABASE_URL in a
+    # ConfigMap), which the agent may adopt
+    rule_rcc = ((tb.rule or {}).get("root_cause_component") or {}).get("name")
+    comp_valid = comp in tb.components or (bool(comp) and comp == rule_rcc)
+    if not comp_valid:
         problems.append(f"root-cause component '{comp}' does not exist")
     fix = r.get("suggested_fix") or {}
     action = fix.get("action")
@@ -212,7 +216,7 @@ def validate_report(r: dict, tb: ToolBox) -> dict:
         problems.append(f"suggested fix cites unknown evidence {', '.join(fbad)}")
     return {
         "summary": str(r.get("summary", ""))[:600], "category": r.get("category"),
-        "root_cause_component": comp, "root_cause_component_valid": comp in tb.components,
+        "root_cause_component": comp, "root_cause_component_valid": comp_valid,
         "root_cause": str(r.get("root_cause", ""))[:600], "confidence": r.get("confidence"),
         "findings": findings,
         "suggested_fix": {"action": action, "target": str(fix.get("target", ""))[:80],

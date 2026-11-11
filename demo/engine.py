@@ -382,7 +382,7 @@ class Engine:
                 self._actor("remediation", "standby", f"not automated: {failed}")
                 self._actor("engineer", "waiting", "Approve, then Execute, in Slack")
                 self._phase("awaiting_approval")
-                self._slack_status(inc, ":hourglass_flowing_sand: Awaiting approval — Approve, then Execute")
+                self._slack_status(inc, ":hourglass_flowing_sand: Waiting for approval. Approve, then Execute")
             else:
                 self._actor("remediation", "standby", "no typed action fits: nothing to execute")
                 self._actor("engineer", "waiting", "manual fix (the agent's steps are in Slack)")
@@ -590,7 +590,7 @@ class Engine:
                     self._actor("engineer", "working", f"{d['reviewer']} acknowledged in Slack and owns the manual fix")
                     self._phase("acknowledged")
                     self._slack_reply(inc, slack_ai.acknowledged(d["reviewer"]), under="final")
-                    self._slack_status(inc, f":construction_worker: <@{d['reviewer']}> is fixing it manually")
+                    self._slack_status(inc, f":construction_worker: <@{d['reviewer']}> is fixing it by hand")
             return
         d = self.review.effective_decision(inc["id"], inc["digest"], idx)
         if d and inc.get("mirror_decision") != d["id"]:
@@ -601,7 +601,7 @@ class Engine:
                         f"{d['decision']} in Slack" + (": Execute next" if d["decision"] == "approved" else ""))
             if d["decision"] == "approved":
                 self._phase("approved")
-                self._slack_status(inc, f":white_check_mark: Approved by <@{d['reviewer']}> — awaiting Execute")
+                self._slack_status(inc, f":white_check_mark: Approved by <@{d['reviewer']}>, waiting for Execute")
             else:
                 if d["decision"] == "rejected":
                     self._phase("rejected")
@@ -630,7 +630,7 @@ class Engine:
             self._phase("remediating")
             self._actor("engineer", "done", "approved and executed in Slack")
             self._actor("remediation", "working", "executing the engineer's approved change (deterministic executor)")
-            self._slack_status(inc, ":gear: Fix being applied and verified")
+            self._slack_status(inc, ":gear: Applying and verifying the fix")
         self._emit("remediation", {"stage": rec["status"], "checks": checks, "record": _public(rec),
                                    "requested_at": rec.get("requested_at"),
                                    "window": {"settle_max_s": self.execution.policy.verification.settle_max_s,

@@ -59,17 +59,17 @@ def test_execute_is_offered_only_on_approved_change_actions_where_execution_is_a
     assert buttons(slack_view.plan_message(plan, d, approved, NOW, NOW)) == []                  # no executor here
     assert "exec:0" not in buttons(slack_view.plan_message(plan, d, {}, NOW, NOW, executable=True))   # not approved
     stale = slack_view.plan_message(plan, d, approved, NOW - 1000, NOW, executable=True, stale_after_s=900)
-    assert buttons(stale) == [] and "older than the 15 min the execution policy allows" in text_of(stale)
+    assert buttons(stale) == [] and "older than the 15 min the policy allows" in text_of(stale)
     assert ":warning:" not in text_of(slack_view.plan_message(plan, d, approved, NOW - 1000, NOW, stale_after_s=1800))
     done = slack_view.plan_message(plan, d, approved, NOW, NOW, executable=True,
                                    executions={0: {"status": "completed", "outcome": "RESOLVED", "executor": EXECUTOR}})
-    assert buttons(done) == [] and "executed — RESOLVED" in text_of(done)
+    assert buttons(done) == [] and "Executed: RESOLVED" in text_of(done)
 
 
 def test_rollback_plans_are_labelled_as_such():
     plan, _ = make_plan()
     plan["incident_id"] = "INC-TEST#rollback-abc"
-    assert "Rollback plan · INC-TEST" in text_of(slack_view.plan_message(plan, "d" * 64, {}, NOW, NOW))
+    assert "Rollback plan: INC-TEST" in text_of(slack_view.plan_message(plan, "d" * 64, {}, NOW, NOW))
 
 
 # --------------------------------------------------------------------------- the lifecycle in the thread
@@ -85,12 +85,12 @@ def test_execute_shows_checks_progress_evidence_and_outcome_in_one_message(tmp_p
     assert len(tr.posts) == posts_before + 1 and tr.posts[-1][0] == plan_ts  # ONE execution reply, under Remediation
     ts = reg.get("INC-TEST")["executions"][out["result"].execution_id]
     final = text_of(last_update(tr, ts))
-    for part in ("*Execution result*", f"<@{EXECUTOR}>", f"approved by <@{APPROVER}>", "*Safety checks:*",
-                 "passed", "Dry run:", "Applied at", "`192Mi` → `256Mi`", "Verification (settled after",
+    for part in ("*Execution result:*", f"<@{EXECUTOR}>", f"approved by <@{APPROVER}>", "*Safety checks:*",
+                 "passed", "Dry run:", "Applied at", "from `192Mi` to `256Mi`", "Verification (settled after",
                  "Outcome: RESOLVED"):
         assert part in final, part
     assert "memory limit is still 192Mi" not in final                       # passed checks are summarised, not listed
-    assert "executed — RESOLVED" in text_of(last_update(tr, plan_ts)) and "exec:0" not in buttons(last_update(tr, plan_ts))
+    assert "Executed: RESOLVED" in text_of(last_update(tr, plan_ts)) and "exec:0" not in buttons(last_update(tr, plan_ts))
     assert "Remediation:* action 1 → RESOLVED" in text_of(last_update(tr, root))
     stages = [text_of(p).split("\n")[0] for t, p in tr.updates if t == ts]
     assert any("Verifying" in s for s in stages)                              # progress shown before the outcome
@@ -101,10 +101,10 @@ def test_a_failed_verification_posts_the_outcome_and_a_rollback_plan_that_needs_
     out = execute(svc, review, tr, reg, "INC-TEST", d)
     assert out["result"].code == "NOT_RESOLVED"
     ts = reg.get("INC-TEST")["executions"][out["result"].execution_id]
-    assert "No further change was made. A rollback plan has been posted below" in text_of(last_update(tr, ts))
+    assert "No further change was made. A rollback plan is posted below" in text_of(last_update(tr, ts))
     [(key, slot)] = reg.get("INC-TEST")["rollbacks"].items()
     rb_msg = tr.posts[-1][1]
-    assert "Rollback plan · INC-TEST" in text_of(rb_msg) and tr.posts[-1][0] == reg.get("INC-TEST")["plan_ts"]
+    assert "Rollback plan: INC-TEST" in text_of(rb_msg) and tr.posts[-1][0] == reg.get("INC-TEST")["plan_ts"]
     assert buttons(rb_msg) == ["review:approved:0", "review:rejected:0", "review:investigate_first:0"]   # review first
     calls = len(svc.actuator.calls)
     assert execute(svc, review, tr, reg, key, slot["digest"])["result"].code == "EXECUTION_REFUSED_NOT_APPROVED"
@@ -136,7 +136,7 @@ def test_a_refusal_after_the_live_recheck_is_shown_in_the_execution_message(tmp_
     out = execute(svc, review, tr, reg, "INC-TEST", d)
     assert out["result"].code == "EXECUTION_REFUSED_STATE_CHANGED"
     text = text_of(last_update(tr, reg.get("INC-TEST")["executions"][out["result"].execution_id]))
-    assert "execution refused" in text and "384Mi" in text and svc.actuator.calls == []
+    assert "Execution refused" in text and "384Mi" in text and svc.actuator.calls == []
 
 
 def test_duplicate_clicks_never_execute_twice_and_are_answered_privately(tmp_path):
